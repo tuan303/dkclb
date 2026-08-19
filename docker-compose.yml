@@ -1,0 +1,11 @@
+services:
+  nshm-clubs:
+    build: .
+    ports:
+      - "4173:4173"
+    volumes:
+      - nshm-club-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  nshm-club-data:
