@@ -86,6 +86,16 @@ function normalizeStudent(item) {
   return { ...item, gradeNumber: item.grade, grade: item.gradeLabel || `Lớp ${item.homeroom}` };
 }
 
+function showScreen(screen) {
+  const showApplication = screen === "application";
+  const loginScreen = $("#login-screen");
+  const appShell = $("#app-shell");
+  loginScreen.hidden = showApplication;
+  appShell.hidden = !showApplication;
+  loginScreen.classList.toggle("hidden", showApplication);
+  appShell.classList.toggle("hidden", !showApplication);
+}
+
 async function hydrateRole() {
   state.cart = [];
   state.filters = { search: "", category: "all", availability: "all" };
@@ -117,8 +127,7 @@ async function hydrateRole() {
 }
 
 function showLogin(message = "") {
-  $("#app-shell").classList.add("hidden");
-  $("#login-screen").classList.remove("hidden");
+  showScreen("login");
   $(".login-role-tabs").classList.remove("hidden");
   $("#password-change-panel").classList.add("hidden");
   const parent = selectedLoginRole === "parent";
@@ -134,8 +143,7 @@ function showLogin(message = "") {
 
 function showInitialPasswordChange(user) {
   state.me = user;
-  $("#app-shell").classList.add("hidden");
-  $("#login-screen").classList.remove("hidden");
+  showScreen("login");
   $(".login-role-tabs").classList.add("hidden");
   $("#local-login-fields").classList.add("hidden");
   $("#login-submit").classList.add("hidden");
@@ -157,8 +165,7 @@ async function enterApplication(user) {
 }
 
 function showApplication() {
-  $("#login-screen").classList.add("hidden");
-  $("#app-shell").classList.remove("hidden");
+  showScreen("application");
 }
 
 async function login(account, password) {
