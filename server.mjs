@@ -330,13 +330,28 @@ function firestoreSeedData() {
 }
 
 let businessStore = null;
-if (DATA_BACKEND === "firestore") {
-  const { createFirestoreStore } = await import("./firestore-store.mjs");
-  businessStore = await createFirestoreStore({
-    projectId: FIREBASE_PROJECT_ID,
-    seed: firestoreSeedData(),
-    authClient: googleCloudAuth.workloadIdentityConfigured ? await googleCloudAuth.getClient() : undefined,
-  });
+let businessStorePromise = null;
+
+async function ensureBusinessStore() {
+  if (DATA_BACKEND !== "firestore") return null;
+  if (businessStore) return businessStore;
+  if (!businessStorePromise) {
+    businessStorePromise = (async () => {
+      const { createFirestoreStore } = await import("./firestore-store.mjs");
+      return createFirestoreStore({
+        projectId: FIREBASE_PROJECT_ID,
+        seed: firestoreSeedData(),
+        authClient: googleCloudAuth.workloadIdentityConfigured ? await googleCloudAuth.getClient() : undefined,
+      });
+    })();
+  }
+  try {
+    businessStore = await businessStorePromise;
+    return businessStore;
+  } catch (error) {
+    businessStorePromise = null;
+    throw error;
+  }
 }
 
 function parseCookies(req) {
@@ -628,13 +643,18 @@ async function handleApi(req, res, url) {
     if (origin.host !== req.headers.host) throw httpError(403, "INVALID_ORIGIN", "Yêu cầu không đến từ miền ứng dụng hợp lệ.");
   }
 
-  if (method === "GET" && url.pathname === "/api/health") return sendJson(res, 200, {
-    ok: true,
-    service: "nshm-clubs",
-    dataBackend: DATA_BACKEND,
-    firebaseProjectId: DATA_BACKEND === "firestore" ? FIREBASE_PROJECT_ID : undefined,
-    time: nowIso(),
-  });
+  if (method === "GET" && url.pathname === "/api/health") {
+    await ensureBusinessStore();
+    return sendJson(res, 200, {
+      ok: true,
+      service: "nshm-clubs",
+      dataBackend: DATA_BACKEND,
+      firebaseProjectId: DATA_BACKEND === "firestore" ? FIREBASE_PROJECT_ID : undefined,
+      time: nowIso(),
+    });
+  }
+
+  await ensureBusinessStore();
 
   if (method === "POST" && url.pathname === "/api/auth/login") {
     const { account = "", password = "" } = await readJson(req);
