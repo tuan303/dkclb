@@ -41,9 +41,48 @@
       <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8Z"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
       <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h8"/></symbol>
+      <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/></symbol>
     </svg>
 
-    <div class="app-shell">
+    <section id="login-screen" class="login-screen">
+      <div class="login-showcase">
+        <div class="login-brand"><span class="brand-mark">★</span><div><strong>NSHM Clubs</strong><small>Cổng đăng ký ngoại khóa</small></div></div>
+        <div class="login-message">
+          <span class="eyebrow">Một hành trình liền mạch</span>
+          <h1>Đúng học sinh.<br />Đúng câu lạc bộ.<br />Đúng lịch học.</h1>
+          <p>Từ đăng ký của phụ huynh đến vận hành lớp học, mọi trạng thái được kiểm soát trên một nền tảng.</p>
+        </div>
+        <div class="login-features"><span>✓ Lọc CLB theo khối</span><span>✓ Kiểm soát trùng lịch</span><span>✓ Quản lý quota & phí</span></div>
+      </div>
+      <div class="login-panel">
+        <form id="login-form" class="login-card">
+          <span class="eyebrow">Đăng nhập hệ thống</span>
+          <h2>Chào mừng trở lại</h2>
+          <p id="login-intro" class="login-intro">Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường.</p>
+          <div class="login-role-tabs" role="group" aria-label="Chọn cổng đăng nhập">
+            <button type="button" class="login-role active" data-login-role="parent">Phụ huynh</button>
+            <button type="button" class="login-role" data-login-role="admin">Nhà trường</button>
+          </div>
+          <div id="local-login-fields">
+            <label class="form-field"><span id="account-label">Số điện thoại</span><input id="login-account" inputmode="tel" autocomplete="username" value="0901234567" required /></label>
+            <label class="form-field"><span>Mật khẩu</span><input id="login-password" type="password" autocomplete="current-password" value="123456" required /></label>
+          </div>
+          <div id="login-error" class="form-error" role="alert"></div>
+          <button id="login-submit" class="button button-primary login-submit" type="submit">Đăng nhập →</button>
+          <button id="microsoft-login" class="button button-microsoft login-submit hidden" type="button"><span class="microsoft-mark" aria-hidden="true">▦</span> Đăng nhập bằng Microsoft 365</button>
+          <div id="credential-box" class="demo-credentials"><strong>Tài khoản minh họa</strong><span id="credential-hint">Phụ huynh: 0901234567 / 123456</span></div>
+          <div id="password-change-panel" class="password-change-panel hidden">
+            <strong>Đổi mật khẩu khởi tạo</strong>
+            <p>Số điện thoại chỉ là mật khẩu lần đầu. Mật khẩu mới cần ít nhất 8 ký tự, gồm chữ hoa, chữ thường, số và ký tự đặc biệt.</p>
+            <label class="form-field"><span>Mật khẩu mới</span><input id="new-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" /></label>
+            <label class="form-field"><span>Nhập lại mật khẩu mới</span><input id="confirm-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" /></label>
+            <button id="change-password-submit" class="button button-primary login-submit" type="button">Lưu mật khẩu và tiếp tục →</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <div id="app-shell" class="app-shell hidden">
       <aside id="sidebar" class="sidebar" aria-label="Điều hướng chính">
         <div class="brand">
           <div class="brand-mark" aria-hidden="true"><span>★</span></div>
@@ -86,6 +125,9 @@
             </div>
           </div>
           <div class="topbar-actions">
+            <button id="logout-button" class="icon-button" aria-label="Đăng xuất" title="Đăng xuất">
+              <svg class="icon"><use href="#i-logout"></use></svg>
+            </button>
             <button class="icon-button notification-button" aria-label="Thông báo">
               <svg class="icon"><use href="#i-bell"></use></svg>
               <span class="notification-dot"></span>
@@ -127,6 +169,7 @@
     <div id="modal-root"></div>
     <div id="toast-root" class="toast-root" aria-live="assertive"></div>
 
+    <script type="module" src="./firebase-client.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

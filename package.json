@@ -1,0 +1,22 @@
+{
+  "name": "nshm-club-registration",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MVP full-stack đăng ký CLB ngoại khóa NSHM",
+  "scripts": {
+    "dev": "node --watch server.mjs",
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check server.mjs && node --check api/index.mjs && node --check firestore-store.mjs && node --check google-cloud-auth.mjs && node --check sheets-directory.mjs && node --check microsoft-auth.mjs && node --check password-policy.mjs && node --check app.js && node --check firebase-client.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^5.5.0",
+    "@google-cloud/firestore": "^9.0.0",
+    "@vercel/oidc": "^3.8.4",
+    "google-auth-library": "^11.0.2"
+  }
+}

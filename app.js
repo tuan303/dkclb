@@ -1,61 +1,39 @@
 const state = {
+  me: null,
   role: "parent",
   page: "home",
-  studentId: "hs01",
+  studentId: null,
   cart: [],
-  registrations: [
-    { id: "DK-260812-0142", clubId: "piano", studentId: "hs01", status: "payment", created: "12/08/2026" },
-  ],
+  registrations: [],
   filters: { search: "", category: "all", availability: "all" },
   adminStatus: "all",
+  dashboard: null,
+  sheetIntegration: null,
+  sheetPreview: null,
 };
 
-const students = [
-  { id: "hs01", name: "Nguyễn Minh An", short: "MA", grade: "Lớp 3A2", level: "Tiểu học", color: "blue" },
-  { id: "hs02", name: "Nguyễn Gia Hân", short: "GH", grade: "Lớp 6A1", level: "THCS", color: "aqua" },
-];
+let students = [];
+let clubs = [];
+let adminApplications = [];
+let selectedLoginRole = "parent";
 
-const clubs = [
-  {
-    id: "basketball", name: "Bóng rổ nền tảng", category: "Thể thao", visual: "sport", emoji: "🏀",
-    grade: [1,2,3,4,5], schedule: "Thứ 3 · 16:15–17:30", room: "Sân thể thao A", teacher: "Thầy Hoàng Nam",
-    capacity: 24, enrolled: 17, fee: 1200000, description: "Phát triển thể lực, phối hợp vận động và tinh thần đồng đội qua giáo trình bóng rổ cơ bản.",
-  },
-  {
-    id: "robotics", name: "Robotics & Coding", category: "STEM", visual: "stem", emoji: "🤖",
-    grade: [3,4,5,6,7], schedule: "Thứ 5 · 16:15–17:45", room: "Phòng Lab 3.2", teacher: "Cô Thu Hương",
-    capacity: 18, enrolled: 16, fee: 1650000, description: "Lắp ráp robot, tư duy thuật toán và giải quyết vấn đề theo dự án nhỏ mỗi tháng.",
-  },
-  {
-    id: "painting", name: "Mỹ thuật sáng tạo", category: "Nghệ thuật", visual: "art", emoji: "🎨",
-    grade: [1,2,3,4,5,6], schedule: "Thứ 4 · 16:15–17:30", room: "Phòng Mỹ thuật 2", teacher: "Cô Minh Trang",
-    capacity: 20, enrolled: 20, fee: 1100000, description: "Khám phá màu sắc, chất liệu và kể chuyện bằng hình ảnh trong môi trường khuyến khích sáng tạo.",
-  },
-  {
-    id: "piano", name: "Piano nhập môn", category: "Âm nhạc", visual: "music", emoji: "🎹",
-    grade: [2,3,4,5], schedule: "Thứ 3 · 16:15–17:30", room: "Phòng Âm nhạc 1", teacher: "Cô Phương Linh",
-    capacity: 12, enrolled: 8, fee: 1900000, description: "Làm quen nhạc lý, tư thế, kỹ thuật ngón và biểu diễn các tác phẩm ngắn phù hợp lứa tuổi.",
-  },
-  {
-    id: "debate", name: "English Debate", category: "Ngôn ngữ", visual: "life", emoji: "💬",
-    grade: [5,6,7,8,9], schedule: "Thứ 6 · 16:15–17:45", room: "Phòng 4.1", teacher: "Ms. Anna & Cô Hà",
-    capacity: 20, enrolled: 11, fee: 1450000, description: "Rèn tư duy phản biện, kỹ năng trình bày và sử dụng tiếng Anh trong các chủ đề gần gũi.",
-  },
-  {
-    id: "dance", name: "Nhảy hiện đại", category: "Nghệ thuật", visual: "art", emoji: "💃",
-    grade: [1,2,3,4,5,6,7], schedule: "Thứ 7 · 08:30–10:00", room: "Hội trường tầng 5", teacher: "Cô Khánh Vy",
-    capacity: 24, enrolled: 19, fee: 1250000, description: "Phát triển cảm thụ âm nhạc, sự tự tin và khả năng trình diễn theo nhóm.",
-  },
-];
-
-let adminApplications = [
-  { id:"DK-260818-0158", student:"Lê Minh Khang", className:"3A1", club:"Robotics & Coding", date:"18/08 · 15:42", status:"payment", amount:1650000 },
-  { id:"DK-260818-0157", student:"Trần Bảo Ngọc", className:"2A3", club:"Mỹ thuật sáng tạo", date:"18/08 · 15:38", status:"waitlist", amount:1100000 },
-  { id:"DK-260818-0156", student:"Phạm Anh Tú", className:"6A2", club:"English Debate", date:"18/08 · 15:31", status:"confirmed", amount:1450000 },
-  { id:"DK-260818-0155", student:"Nguyễn Hà My", className:"4A1", club:"Bóng rổ nền tảng", date:"18/08 · 15:22", status:"conflict", amount:1200000 },
-  { id:"DK-260818-0154", student:"Đỗ Gia Linh", className:"3A4", club:"Piano nhập môn", date:"18/08 · 15:17", status:"submitted", amount:1900000 },
-  { id:"DK-260818-0153", student:"Vũ Minh Quân", className:"5A2", club:"Nhảy hiện đại", date:"18/08 · 15:03", status:"confirmed", amount:1250000 },
-];
+async function api(path, options = {}) {
+  const response = await fetch(`/api${path}`, {
+    credentials: "same-origin",
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json") ? await response.json() : null;
+  if (!response.ok) {
+    const error = new Error(payload?.error?.message || "Không thể kết nối tới hệ thống.");
+    error.status = response.status;
+    error.code = payload?.error?.code;
+    error.details = payload?.error?.details;
+    throw error;
+  }
+  return payload;
+}
 
 const parentNav = [
   { section: "Dành cho gia đình" },
@@ -100,22 +78,147 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const icon = (name, className = "icon") => `<svg class="${className}"><use href="#i-${name}"></use></svg>`;
 const formatMoney = (value) => new Intl.NumberFormat("vi-VN").format(value) + " đ";
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
 const student = () => students.find((item) => item.id === state.studentId);
-const gradeNumber = () => Number(student().grade.match(/\d+/)?.[0] || 0);
+const gradeNumber = () => student()?.gradeNumber || Number(student()?.grade.match(/\d+/)?.[0] || 0);
+
+function normalizeStudent(item) {
+  return { ...item, gradeNumber: item.grade, grade: item.gradeLabel || `Lớp ${item.homeroom}` };
+}
+
+async function hydrateRole() {
+  state.cart = [];
+  state.filters = { search: "", category: "all", availability: "all" };
+  if (state.role === "parent") {
+    const studentPayload = await api("/students");
+    students = studentPayload.students.map(normalizeStudent);
+    state.studentId = students.some((item) => item.id === state.studentId) ? state.studentId : students[0]?.id;
+    const [clubPayload, registrationPayload] = await Promise.all([
+      api(`/clubs?studentId=${encodeURIComponent(state.studentId)}`),
+      api("/registrations"),
+    ]);
+    clubs = clubPayload.clubs;
+    state.registrations = registrationPayload.registrations;
+    state.dashboard = null;
+    adminApplications = [];
+  } else {
+    const [clubPayload, registrationPayload, dashboardPayload, sheetPayload] = await Promise.all([
+      api("/clubs"), api("/registrations"), api("/admin/dashboard"), api("/admin/integrations/google-sheets"),
+    ]);
+    clubs = clubPayload.clubs;
+    adminApplications = registrationPayload.registrations;
+    state.dashboard = dashboardPayload.dashboard;
+    state.sheetIntegration = sheetPayload.integration;
+    state.sheetPreview = null;
+    state.registrations = [];
+    students = [];
+    state.studentId = null;
+  }
+}
+
+function showLogin(message = "") {
+  $("#app-shell").classList.add("hidden");
+  $("#login-screen").classList.remove("hidden");
+  $(".login-role-tabs").classList.remove("hidden");
+  $("#password-change-panel").classList.add("hidden");
+  const parent = selectedLoginRole === "parent";
+  $("#local-login-fields").classList.toggle("hidden", !parent);
+  $("#login-submit").classList.toggle("hidden", !parent);
+  $("#microsoft-login").classList.toggle("hidden", parent);
+  $("#credential-box").classList.toggle("hidden", !parent);
+  $("#login-intro").textContent = parent
+    ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường."
+    : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
+  $("#login-error").textContent = message;
+}
+
+function showInitialPasswordChange(user) {
+  state.me = user;
+  $("#app-shell").classList.add("hidden");
+  $("#login-screen").classList.remove("hidden");
+  $(".login-role-tabs").classList.add("hidden");
+  $("#local-login-fields").classList.add("hidden");
+  $("#login-submit").classList.add("hidden");
+  $("#microsoft-login").classList.add("hidden");
+  $("#credential-box").classList.add("hidden");
+  $("#password-change-panel").classList.remove("hidden");
+  $("#login-intro").textContent = `Xin chào ${user.displayName}. Đây là lần đăng nhập đầu tiên của tài khoản.`;
+  $("#login-error").textContent = "";
+  $("#new-password").focus();
+}
+
+async function enterApplication(user) {
+  state.me = user;
+  state.role = user.role;
+  state.page = state.role === "parent" ? "home" : "dashboard";
+  await hydrateRole();
+  showApplication();
+  renderApp();
+}
+
+function showApplication() {
+  $("#login-screen").classList.add("hidden");
+  $("#app-shell").classList.remove("hidden");
+}
+
+async function login(account, password) {
+  const submit = $("#login-submit");
+  submit.disabled = true;
+  submit.textContent = "Đang đăng nhập...";
+  $("#login-error").textContent = "";
+  try {
+    const payload = await api("/auth/login", { method: "POST", body: JSON.stringify({ account, password }) });
+    if (payload.user.mustChangePassword) showInitialPasswordChange(payload.user);
+    else await enterApplication(payload.user);
+  } catch (error) {
+    showLogin(error.message);
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Đăng nhập →";
+  }
+}
+
+async function switchRole(role) {
+  const credentials = role === "parent"
+    ? ["0901234567", "123456"]
+    : ["admin@nshm.edu.vn", "Admin@123"];
+  await login(...credentials);
+  toast(role === "parent" ? "Đã chuyển sang cổng Phụ huynh." : "Đã chuyển sang cổng Nhà trường.");
+}
+
+async function logout() {
+  try { await api("/auth/logout", { method: "POST", body: "{}" }); } catch {}
+  state.me = null;
+  showLogin();
+}
+
+async function boot() {
+  bindLoginEvents();
+  bindGlobalEvents();
+  try {
+    const payload = await api("/me");
+    if (payload.user.mustChangePassword) showInitialPasswordChange(payload.user);
+    else await enterApplication(payload.user);
+  } catch {
+    showLogin();
+  }
+}
 
 function renderApp() {
   renderNav();
   renderHeader();
   renderPage();
-  renderCart();
+  if (state.role === "parent") renderCart();
+  else closeCart();
 }
 
 function renderNav() {
   const nav = state.role === "parent" ? parentNav : adminNav;
   $("#main-nav").innerHTML = nav.map((item) => {
     if (item.section) return `<div class="nav-section">${item.section}</div>`;
+    const badge = item.id === "registrations" ? state.registrations.length : item.id === "applications" ? state.dashboard?.needAction : item.badge;
     return `<button class="nav-link ${state.page === item.id ? "active" : ""}" data-page="${item.id}">
-      ${icon(item.icon)}<span>${item.label}</span>${item.badge ? `<b class="nav-badge">${item.badge}</b>` : ""}
+      ${icon(item.icon)}<span>${item.label}</span>${badge ? `<b class="nav-badge">${badge}</b>` : ""}
     </button>`;
   }).join("");
   $$(".role-button").forEach((button) => button.classList.toggle("active", button.dataset.role === state.role));
@@ -126,9 +229,9 @@ function renderHeader() {
   $("#page-title").textContent = title;
   $("#topbar-context").textContent = context;
   const admin = state.role === "admin";
-  $("#profile-name").textContent = admin ? "Nguyễn Thu Hà" : "Mai Lan";
+  $("#profile-name").textContent = state.me?.displayName || (admin ? "Nhà trường" : "Phụ huynh");
   $("#profile-role").textContent = admin ? "Vận hành CLB" : "Phụ huynh";
-  $("#profile-avatar").textContent = admin ? "TH" : "ML";
+  $("#profile-avatar").textContent = (state.me?.displayName || "NS").split(" ").slice(-2).map((part) => part[0]).join("").toUpperCase();
   $("#cart-button").style.display = admin ? "none" : "flex";
   $("#cart-count").textContent = state.cart.length;
 }
@@ -254,44 +357,47 @@ function renderClubCard(club) {
 }
 
 function renderRegistrations() {
-  const rows = state.registrations.map((registration) => {
+  const currentRegistrations = state.registrations.filter((registration) => registration.studentId === state.studentId);
+  const rows = currentRegistrations.map((registration) => {
     const club = clubs.find(c => c.id === registration.clubId);
     const [label, color] = statusMap[registration.status];
-    return `<div class="application-card"><div class="application-icon">${icon("clipboard")}</div><div class="application-copy"><h3>${club.name}</h3><p>${registration.id} · ${student().name} · ${club.schedule}</p></div><div class="application-meta"><span class="badge badge-${color}">${label}</span><strong>${formatMoney(club.fee)}</strong></div></div>`;
+    return `<div class="application-card"><div class="application-icon">${icon("clipboard")}</div><div class="application-copy"><h3>${club?.name || registration.club}</h3><p>${registration.id} · ${student().name} · ${registration.schedule || club?.schedule}</p></div><div class="application-meta"><span class="badge badge-${color}">${label}</span><strong>${formatMoney(registration.amount || club?.fee || 0)}</strong></div></div>`;
   }).join("");
   return `
-    <div class="kpi-strip"><div class="kpi-item"><span>Tổng đăng ký</span><strong>${state.registrations.length}</strong></div><div class="kpi-item"><span>Đã xác nhận</span><strong>${state.registrations.filter(r => r.status === "confirmed").length}</strong></div><div class="kpi-item"><span>Chờ thanh toán</span><strong>${state.registrations.filter(r => r.status === "payment").length}</strong></div><div class="kpi-item"><span>Danh sách chờ</span><strong>${state.registrations.filter(r => r.status === "waitlist").length}</strong></div></div>
+    <div class="kpi-strip"><div class="kpi-item"><span>Tổng đăng ký</span><strong>${currentRegistrations.length}</strong></div><div class="kpi-item"><span>Đã xác nhận</span><strong>${currentRegistrations.filter(r => r.status === "confirmed").length}</strong></div><div class="kpi-item"><span>Chờ thanh toán</span><strong>${currentRegistrations.filter(r => r.status === "payment").length}</strong></div><div class="kpi-item"><span>Danh sách chờ</span><strong>${currentRegistrations.filter(r => r.status === "waitlist").length}</strong></div></div>
     <section class="section"><div class="section-head"><div><span class="eyebrow">Theo dõi theo thời gian thực</span><h2>Đăng ký của ${student().name}</h2><p>Trạng thái được cập nhật sau khi nhà trường xử lý hoặc đối soát phí.</p></div><button class="button button-primary" data-go="clubs">+ Đăng ký thêm</button></div>
     <div class="grid">${rows || `<div class="panel empty-state"><div class="empty-icon">${icon("clipboard")}</div><h3>Chưa có đăng ký</h3><p>Khám phá danh mục CLB phù hợp để bắt đầu.</p></div>`}</div></section>
     <section class="section"><div class="info-note"><strong>Quy ước trạng thái:</strong> “Đã gửi” chưa đồng nghĩa với có tên trong danh sách chính thức. Đăng ký chỉ được chốt khi đạt điều kiện xác nhận/đối soát theo quy định của nhà trường.</div></section>`;
 }
 
 function renderSchedule() {
-  const active = state.registrations.filter(r => r.status !== "cancelled");
+  const active = state.registrations.filter(r => r.studentId === state.studentId && r.status !== "cancelled");
   return `<section class="panel"><div class="panel-head"><div><h3>Lịch ngoại khóa của ${student().name}</h3><p>Tuần minh họa 24–30/08/2026</p></div><button class="button button-secondary">${icon("calendar")} Đồng bộ lịch</button></div><div class="panel-body">
-    ${active.length ? `<div class="grid">${active.map(r => { const c = clubs.find(x => x.id === r.clubId); return `<div class="application-card"><div class="cart-emoji">${c.emoji}</div><div class="application-copy"><h3>${c.name}</h3><p>${c.schedule} · ${c.room}</p></div><div class="application-meta"><span class="badge badge-${statusMap[r.status][1]}">${statusMap[r.status][0]}</span></div></div>`}).join("")}</div>` : `<div class="empty-state"><div class="empty-icon">${icon("calendar")}</div><h3>Chưa có lịch CLB</h3></div>`}
+    ${active.length ? `<div class="grid">${active.map(r => { const c = clubs.find(x => x.id === r.clubId); return `<div class="application-card"><div class="cart-emoji">${c?.emoji || "★"}</div><div class="application-copy"><h3>${c?.name || r.club}</h3><p>${r.schedule || c?.schedule} · ${r.room || c?.room}</p></div><div class="application-meta"><span class="badge badge-${statusMap[r.status][1]}">${statusMap[r.status][0]}</span></div></div>`}).join("")}</div>` : `<div class="empty-state"><div class="empty-icon">${icon("calendar")}</div><h3>Chưa có lịch CLB</h3></div>`}
   </div></section>`;
 }
 
 function renderSupport() {
+  const options = state.registrations.filter((item) => item.studentId === state.studentId).map((item) => `<option value="${item.id}">${item.id} · ${item.club}</option>`).join("");
   return `<div class="dashboard-layout"><section class="panel"><div class="panel-head"><div><h3>Gửi yêu cầu hỗ trợ</h3><p>Yêu cầu được chuyển tới CSKH/điều phối CLB.</p></div></div><div class="panel-body">
-    <div class="grid grid-2"><label class="search-field"><input id="support-topic" placeholder="Nội dung: đổi lịch, hủy, phí..." /></label><select class="select-field"><option>Chọn đăng ký liên quan</option><option>DK-260812-0142 · Piano nhập môn</option></select></div>
+    <div class="grid grid-2"><label class="search-field"><input id="support-topic" placeholder="Nội dung: đổi lịch, hủy, phí..." /></label><select id="support-registration" class="select-field"><option value="">Chọn đăng ký liên quan</option>${options}</select></div>
     <textarea id="support-message" style="width:100%;min-height:140px;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px" placeholder="Mô tả yêu cầu và thời gian có thể liên hệ..."></textarea>
     <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="button button-primary" data-send-support>Gửi yêu cầu</button></div>
   </div></section><aside class="panel"><div class="panel-head"><div><h3>Kênh hỗ trợ</h3><p>Giờ làm việc 08:00–17:00</p></div></div><div class="panel-body"><div class="attention-list"><div class="attention-item"><span class="attention-dot" style="background:var(--blue)"></span><div class="attention-copy"><strong>Hotline CLB</strong><span>024 7300 6688</span></div></div><div class="attention-item"><span class="attention-dot" style="background:var(--aqua)"></span><div class="attention-copy"><strong>Email</strong><span>clb@nshm.edu.vn</span></div></div><div class="attention-item"><span class="attention-dot" style="background:var(--gold)"></span><div class="attention-copy"><strong>Thời gian phản hồi</strong><span>Trong 01 ngày làm việc</span></div></div></div></div></aside></div>`;
 }
 
 function renderAdminDashboard() {
+  const dashboard = state.dashboard || { total: 0, students: 0, needAction: 0, pendingPayment: 0, pendingAmount: 0, categories: [] };
   return `
     <div class="demo-banner"><span><strong>Đợt Học kỳ I đang mở</strong> · 12/08–24/08/2026 · Tự động khóa đăng ký sau 23:59 ngày kết thúc.</span><button class="button button-secondary" data-go="campaigns">Xem cấu hình</button></div>
     <section class="grid grid-4">
-      ${renderStat("clipboard","blue","158","Tổng đơn đăng ký","+18 hôm nay")}
-      ${renderStat("users","aqua","132","Học sinh tham gia","83,5% hợp lệ")}
-      ${renderStat("clock","gold","12","Đơn cần xử lý","4 trùng lịch")}
-      ${renderStat("credit","red","28","Chờ đối soát phí","34,7 triệu đồng")}
+      ${renderStat("clipboard","blue",dashboard.total,"Tổng đơn đăng ký","Dữ liệu trực tiếp")}
+      ${renderStat("users","aqua",dashboard.students,"Học sinh tham gia",`${dashboard.total ? Math.round(dashboard.students / dashboard.total * 100) : 0}% đơn duy nhất`)}
+      ${renderStat("clock","gold",dashboard.needAction,"Đơn cần xử lý","Ngoại lệ & chờ duyệt")}
+      ${renderStat("credit","red",dashboard.pendingPayment,"Chờ đối soát phí",formatMoney(dashboard.pendingAmount))}
     </section>
     <section class="section dashboard-layout">
-      <div class="panel"><div class="panel-head"><div><h3>Tỷ lệ lấp đầy theo nhóm CLB</h3><p>Đã xác nhận so với tổng quota</p></div><select class="select-field"><option>Theo nhóm môn</option><option>Theo khối</option></select></div><div class="panel-body">${renderBarChart()}</div></div>
+      <div class="panel"><div class="panel-head"><div><h3>Tỷ lệ lấp đầy theo nhóm CLB</h3><p>Đăng ký giữ chỗ so với tổng quota</p></div><select class="select-field"><option>Theo nhóm môn</option><option>Theo khối</option></select></div><div class="panel-body">${renderBarChart(dashboard.categories)}</div></div>
       <div class="panel"><div class="panel-head"><div><h3>Cần chú ý</h3><p>Các ngoại lệ ưu tiên xử lý</p></div><button class="text-button" data-go="applications">Xem đơn</button></div><div class="panel-body"><div class="attention-list">
         ${attention("var(--red)","Trùng lịch","Cần phụ huynh chọn lại",4)}
         ${attention("var(--purple)","Danh sách chờ","3 lớp đã đầy",9)}
@@ -306,8 +412,8 @@ function renderStat(iconName, color, value, label, trend) {
   return `<article class="stat-card"><div class="stat-top"><span class="stat-icon ${color}">${icon(iconName)}</span><span class="trend">${trend}</span></div><h3>${value}</h3><p>${label}</p></article>`;
 }
 
-function renderBarChart() {
-  const bars = [["Thể thao",78],["STEM",92],["Nghệ thuật",86],["Âm nhạc",67],["Ngôn ngữ",58],["Kỹ năng",43]];
+function renderBarChart(categoryData = []) {
+  const bars = categoryData.length ? categoryData.map((item) => [item.category, item.fillRate]) : [["Chưa có dữ liệu",0]];
   return `<div class="bar-chart">${bars.map(([label,value],i) => `<div class="bar-group"><div class="bar ${value < 60 ? "gold" : ""}" style="height:${value}%" title="${value}%"></div><span class="bar-label">${label}</span></div>`).join("")}</div><div class="legend"><span><i></i> Từ 60% quota</span><span><i class="gold"></i> Dưới 60% quota</span></div>`;
 }
 
@@ -372,7 +478,31 @@ function renderStructure() {
 }
 
 function renderSettings() {
-  return `<section class="grid grid-3">${renderModuleCard("01","Người dùng & vai trò","8 nhóm vai trò với phạm vi xem/thao tác khác nhau.",["Phụ huynh","Vận hành/Giáo vụ/Kế toán","GV/BGH/IT Admin"])}${renderModuleCard("02","Quy tắc nghiệp vụ","Cấu hình giới hạn CLB, waitlist, thời hạn đổi/hủy.",["Không hard-code theo năm","Ghi log mọi ngoại lệ"])}${renderModuleCard("03","Tích hợp","Kết nối dữ liệu học sinh, OTP, thông báo và kế toán.",["Import Excel ở MVP","API khi hệ thống nguồn sẵn sàng"])}</section><section class="section panel"><div class="panel-head"><div><h3>Ma trận quyền tóm tắt</h3><p>Ví dụ phạm vi thao tác theo vai trò</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Vai trò</th><th>Xem hồ sơ</th><th>Cấu hình CLB</th><th>Xử lý đơn</th><th>Xác nhận phí</th><th>Xuất dữ liệu</th></tr></thead><tbody><tr><td>Phụ huynh</td><td>Chỉ con mình</td><td>—</td><td>Tạo/yêu cầu đổi</td><td>—</td><td>—</td></tr><tr><td>Vận hành CLB</td><td>Theo phạm vi đợt</td><td>Được phép</td><td>Được phép</td><td>Xem</td><td>Theo mẫu</td></tr><tr><td>Kế toán</td><td>Trường tối thiểu</td><td>—</td><td>Xem</td><td>Được phép</td><td>Báo cáo phí</td></tr><tr><td>Giáo viên</td><td>Lớp phụ trách</td><td>—</td><td>—</td><td>Trạng thái</td><td>DS lớp</td></tr><tr><td>IT Admin</td><td>Theo phân quyền</td><td>Hỗ trợ</td><td>Hỗ trợ</td><td>—</td><td>Audit kỹ thuật</td></tr></tbody></table></div></section>`;
+  const integration = state.sheetIntegration || {};
+  const preview = state.sheetPreview;
+  const fieldLabels = {
+    studentCode: "Mã học sinh", studentName: "Họ tên", dateOfBirth: "Ngày sinh", className: "Lớp",
+    educationLevel: "Cấp học", gradeBand: "Khối", fatherName: "Tên bố", fatherPhone: "SĐT bố", motherName: "Tên mẹ", motherPhone: "SĐT mẹ",
+  };
+  const previewHtml = preview ? `<div class="sync-preview">
+    <div class="kpi-strip">
+      <div class="kpi-item"><span>Dòng đã kiểm tra</span><strong>${preview.analysis?.scannedRows ?? 0}</strong></div>
+      <div class="kpi-item"><span>Dòng hợp lệ</span><strong>${preview.analysis?.validRows ?? 0}</strong></div>
+      <div class="kpi-item"><span>Lỗi / cảnh báo</span><strong>${preview.analysis?.invalidRows ?? 0} / ${preview.analysis?.warningRows ?? 0}</strong></div>
+      <div class="kpi-item"><span>Phụ huynh duy nhất</span><strong>${preview.analysis?.uniqueGuardians ?? 0}</strong></div>
+    </div>
+    <div class="mapping-list">${Object.entries(preview.mapping || {}).map(([field, header]) => `<span><b>${escapeHtml(fieldLabels[field] || field)}</b>${escapeHtml(header)}</span>`).join("")}</div>
+    ${preview.missing?.length ? `<div class="inline-alert">Thiếu mapping bắt buộc: ${preview.missing.map(escapeHtml).join(", ")}.</div>` : ""}
+    ${preview.analysis?.issues?.length ? `<div class="info-note"><strong>Cần rà soát:</strong> ${preview.analysis.issues.slice(0, 8).map((issue) => `Dòng ${issue.row} (${issue.severity === "warning" ? "cảnh báo" : "lỗi"}): ${issue.codes.map(escapeHtml).join(", ")}`).join(" · ")}</div>` : ""}
+    <div class="sync-verdict ${preview.readyToSync ? "ready" : "blocked"}">${preview.readyToSync ? "✓ Mapping và dữ liệu mẫu hợp lệ. Có thể đồng bộ tài khoản vào hệ thống." : "Chưa cho phép ghi dữ liệu: cần xử lý mapping hoặc lỗi nguồn trước."}</div>
+    ${preview.readyToSync ? `<div class="sync-actions"><button class="button button-primary" data-sync-sheets>Đồng bộ học sinh & tài khoản PH</button><span>Chỉ thêm/cập nhật; không xóa tài khoản và không sửa Google Sheet.</span></div>` : ""}
+  </div>` : `<div class="info-note"><strong>Chế độ an toàn:</strong> Nút kiểm tra chỉ đọc metadata, tiêu đề và tối đa 100 dòng; không ghi hoặc sửa Google Sheet.</div>`;
+  return `<section class="grid grid-3">${renderModuleCard("01","Người dùng & vai trò","8 nhóm vai trò với phạm vi xem/thao tác khác nhau.",["Phụ huynh","Vận hành/Giáo vụ/Kế toán","GV/BGH/IT Admin"])}${renderModuleCard("02","Quy tắc nghiệp vụ","Cấu hình giới hạn CLB, waitlist, thời hạn đổi/hủy.",["Không hard-code theo năm","Ghi log mọi ngoại lệ"])}${renderModuleCard("03","Tích hợp","Kết nối dữ liệu học sinh, OTP, thông báo và kế toán.",["Google Sheets chỉ đọc","Mã hóa trước khi ghi Firestore"])}</section>
+  <section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets</h3><p>Application Default Credentials · scope chỉ đọc</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
+    <div class="integration-source"><div><span>Spreadsheet ID</span><strong>${escapeHtml(integration.spreadsheetId || "—")}</strong></div><div><span>Tab / tiêu đề</span><strong>${escapeHtml(integration.sheetName || "—")} · dòng ${Number(integration.headerRow || 1)}</strong></div><div><span>Service account</span><strong>${escapeHtml(integration.serviceAccountEmail || "—")}</strong></div><div><span>Quyền</span><strong>Viewer · Read-only</strong></div></div>
+    ${previewHtml}
+  </div></section>
+  <section class="section panel"><div class="panel-head"><div><h3>Ma trận quyền tóm tắt</h3><p>Ví dụ phạm vi thao tác theo vai trò</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Vai trò</th><th>Xem hồ sơ</th><th>Cấu hình CLB</th><th>Xử lý đơn</th><th>Xác nhận phí</th><th>Xuất dữ liệu</th></tr></thead><tbody><tr><td>Phụ huynh</td><td>Chỉ con mình</td><td>—</td><td>Tạo/yêu cầu đổi</td><td>—</td><td>—</td></tr><tr><td>Vận hành CLB</td><td>Theo phạm vi đợt</td><td>Được phép</td><td>Được phép</td><td>Xem</td><td>Theo mẫu</td></tr><tr><td>Kế toán</td><td>Trường tối thiểu</td><td>—</td><td>Xem</td><td>Được phép</td><td>Báo cáo phí</td></tr><tr><td>Giáo viên</td><td>Lớp phụ trách</td><td>—</td><td>—</td><td>Trạng thái</td><td>DS lớp</td></tr><tr><td>IT Admin</td><td>Theo phân quyền</td><td>Hỗ trợ</td><td>Hỗ trợ</td><td>—</td><td>Audit kỹ thuật</td></tr></tbody></table></div></section>`;
 }
 
 function renderModuleCard(number, title, description, bullets) {
@@ -386,9 +516,18 @@ function flowNodes(nodes) {
 function addToCart(clubId) {
   if (state.cart.includes(clubId)) return;
   const target = clubs.find(c => c.id === clubId);
-  const conflict = state.cart.map(id => clubs.find(c => c.id === id)).find(c => c.schedule === target.schedule);
+  const overlaps = (left, right) => left.dayOfWeek === right.dayOfWeek && left.startTime < right.endTime && right.startTime < left.endTime;
+  const conflict = state.cart.map(id => clubs.find(c => c.id === id)).find(c => overlaps(c, target));
   if (conflict) {
     toast(`${target.name} trùng lịch với ${conflict.name}. Vui lòng chọn phương án khác.`, "error");
+    return;
+  }
+  const existing = state.registrations
+    .filter((registration) => registration.studentId === state.studentId && ["submitted", "payment", "confirmed"].includes(registration.status))
+    .map((registration) => clubs.find((club) => club.id === registration.clubId))
+    .find((club) => club && (club.id === target.id || overlaps(club, target)));
+  if (existing) {
+    toast(existing.id === target.id ? `${target.name} đã có trong đăng ký hiện tại.` : `${target.name} trùng lịch với ${existing.name} đã đăng ký.`, "error");
     return;
   }
   state.cart.push(clubId);
@@ -428,17 +567,29 @@ function showModal(content) {
 }
 function closeModal() { $("#modal-root").innerHTML = ""; }
 
-function submitRegistration() {
-  const now = Date.now().toString().slice(-4);
-  state.cart.forEach((clubId,index) => {
-    const club = clubs.find(c => c.id === clubId);
-    state.registrations.push({ id:`DK-260818-${now}${index}`, clubId, studentId: state.studentId, status: club.enrolled >= club.capacity ? "waitlist" : "payment", created:"18/08/2026" });
-  });
+async function submitRegistration() {
+  const submit = $("#submit-cart");
+  submit.disabled = true;
+  submit.textContent = "Đang kiểm tra và gửi...";
   const count = state.cart.length;
-  state.cart = [];
-  closeCart(); renderApp();
-  showModal(`<div class="modal-body" style="padding-top:28px"><div class="success-mark">${icon("check")}</div><div class="success-copy"><h2>Đã gửi đăng ký thành công</h2><p>Hệ thống đã tiếp nhận ${count} lựa chọn cho ${student().name}. Thông báo minh họa đã được gửi tới phụ huynh.</p></div><div class="code-box"><span>Mã nhóm đăng ký</span><strong>DK-260818-${now}</strong></div><div class="info-note"><strong>Bước tiếp theo:</strong> Theo dõi trạng thái “Chờ thanh toán” hoặc “Danh sách chờ” tại mục Đăng ký của tôi.</div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-view-registrations>Xem trạng thái</button></div>`);
-  $("[data-view-registrations]")?.addEventListener("click", () => { closeModal(); goTo("registrations"); });
+  try {
+    const result = await api("/registrations", { method: "POST", body: JSON.stringify({ studentId: state.studentId, clubIds: state.cart, acceptedTerms: true }) });
+    state.cart = [];
+    const [registrationPayload, clubPayload] = await Promise.all([
+      api("/registrations"), api(`/clubs?studentId=${encodeURIComponent(state.studentId)}`),
+    ]);
+    state.registrations = registrationPayload.registrations;
+    clubs = clubPayload.clubs;
+    closeCart();
+    renderApp();
+    showModal(`<div class="modal-body" style="padding-top:28px"><div class="success-mark">${icon("check")}</div><div class="success-copy"><h2>Đã gửi đăng ký thành công</h2><p>Hệ thống đã tiếp nhận ${count} lựa chọn cho ${student().name}. Dữ liệu đã được lưu vào hệ thống.</p></div><div class="code-box"><span>Mã nhóm đăng ký</span><strong>${result.groupId}</strong></div><div class="info-note"><strong>Bước tiếp theo:</strong> Theo dõi trạng thái “Chờ thanh toán” hoặc “Danh sách chờ” tại mục Đăng ký của tôi.</div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-view-registrations>Xem trạng thái</button></div>`);
+    $("[data-view-registrations]")?.addEventListener("click", () => { closeModal(); goTo("registrations"); });
+  } catch (error) {
+    const details = error.details?.map((item) => item.message).join(" ");
+    toast(details || error.message, "error");
+    submit.disabled = false;
+    submit.innerHTML = `${icon("check")} Xác nhận và gửi đăng ký`;
+  }
 }
 
 function goTo(page) {
@@ -448,12 +599,9 @@ function goTo(page) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-function setRole(role) {
-  state.role = role;
-  state.page = role === "parent" ? "home" : "dashboard";
-  renderApp();
+async function setRole(role) {
   closeSidebar();
-  toast(role === "parent" ? "Đã chuyển sang trải nghiệm Phụ huynh." : "Đã chuyển sang cổng vận hành Nhà trường.");
+  await switchRole(role);
 }
 
 function openSidebar() { $("#sidebar").classList.add("open"); $("#sidebar-overlay").classList.add("open"); }
@@ -465,12 +613,13 @@ function toast(message, type = "") {
 }
 
 function exportCsv() {
-  const header = ["Ma don","Hoc sinh","Lop","CLB","Thoi gian","Trang thai","So tien"];
-  const rows = adminApplications.map(a => [a.id,a.student,a.className,a.club,a.date,statusMap[a.status][0],a.amount]);
-  const csv = "\uFEFF" + [header,...rows].map(row => row.map(value => `"${String(value).replaceAll('"','""')}"`).join(",")).join("\r\n");
-  const url = URL.createObjectURL(new Blob([csv], {type:"text/csv;charset=utf-8"}));
-  const link = document.createElement("a"); link.href = url; link.download = "NSHM_Danh_sach_dang_ky_demo.csv"; link.click(); URL.revokeObjectURL(url);
-  toast("Đã xuất file CSV demo.", "success");
+  const link = document.createElement("a");
+  link.href = "/api/admin/reports/registrations.csv";
+  link.download = "NSHM_Danh_sach_dang_ky.csv";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  toast("Đang xuất danh sách từ hệ thống.", "success");
 }
 
 function bindGlobalEvents() {
@@ -482,12 +631,75 @@ function bindGlobalEvents() {
   $("#sidebar-overlay").addEventListener("click", closeSidebar);
   $("#cart-button").addEventListener("click", openCart);
   $("#drawer-overlay").addEventListener("click", closeCart);
+  $("#logout-button").addEventListener("click", logout);
   $$('[data-close-drawer]').forEach(el => el.addEventListener("click", closeCart));
+}
+
+function bindLoginEvents() {
+  $$("[data-login-role]").forEach((button) => button.addEventListener("click", () => {
+    selectedLoginRole = button.dataset.loginRole;
+    $$("[data-login-role]").forEach((item) => item.classList.toggle("active", item === button));
+    const parent = selectedLoginRole === "parent";
+    $("#local-login-fields").classList.toggle("hidden", !parent);
+    $("#login-submit").classList.toggle("hidden", !parent);
+    $("#microsoft-login").classList.toggle("hidden", parent);
+    $("#credential-box").classList.toggle("hidden", !parent);
+    $("#login-intro").textContent = parent
+      ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường."
+      : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
+    $("#login-account").value = "0901234567";
+    $("#login-password").value = "123456";
+    $("#credential-hint").textContent = "Phụ huynh: 0901234567 / 123456";
+    $("#login-error").textContent = "";
+  }));
+  $("#login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (selectedLoginRole !== "parent") return;
+    await login($("#login-account").value, $("#login-password").value);
+  });
+  $("#microsoft-login").addEventListener("click", async () => {
+    $("#login-error").textContent = "";
+    try {
+      const payload = await api("/auth/microsoft/status");
+      if (!payload.microsoft.configured) throw new Error("Microsoft 365 SSO chưa được cấu hình trên máy chủ. Cần bổ sung Tenant ID, Client ID, Client Secret và Redirect URI.");
+      window.location.assign("/api/auth/microsoft/start");
+    } catch (error) {
+      $("#login-error").textContent = error.message;
+    }
+  });
+  $("#change-password-submit").addEventListener("click", async () => {
+    const password = $("#new-password").value;
+    const confirmation = $("#confirm-password").value;
+    $("#login-error").textContent = "";
+    if (password !== confirmation) {
+      $("#login-error").textContent = "Hai mật khẩu mới chưa trùng khớp.";
+      return;
+    }
+    const button = $("#change-password-submit");
+    button.disabled = true;
+    try {
+      const payload = await api("/auth/change-initial-password", { method: "POST", body: JSON.stringify({ newPassword: password }) });
+      await enterApplication(payload.user);
+      toast("Đã đổi mật khẩu khởi tạo thành công.", "success");
+    } catch (error) {
+      $("#login-error").textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
 
 function bindPageEvents() {
   $$('[data-go]').forEach(el => el.addEventListener("click", () => goTo(el.dataset.go)));
-  $$('[data-student]').forEach(el => el.addEventListener("click", () => { state.studentId = el.dataset.student; state.cart = []; renderApp(); toast(`Đã chọn ${student().name}.`); }));
+  $$('[data-student]').forEach(el => el.addEventListener("click", async () => {
+    state.studentId = el.dataset.student;
+    state.cart = [];
+    try {
+      clubs = (await api(`/clubs?studentId=${encodeURIComponent(state.studentId)}`)).clubs;
+      renderApp();
+      toast(`Đã chọn ${student().name}.`);
+    } catch (error) { toast(error.message, "error"); }
+  }));
   $$('[data-add]').forEach(el => el.addEventListener("click", () => addToCart(el.dataset.add)));
   $$('[data-detail]').forEach(el => el.addEventListener("click", () => showDetail(el.dataset.detail)));
   $$('[data-open-cart]').forEach(el => el.addEventListener("click", openCart));
@@ -498,9 +710,64 @@ function bindPageEvents() {
   $("[data-clear-filters]")?.addEventListener("click", () => { state.filters = {search:"",category:"all",availability:"all"}; renderPage(); });
   $$('[data-status-tab]').forEach(el => el.addEventListener("click", () => { state.adminStatus = el.dataset.statusTab; renderPage(); }));
   $("#admin-search")?.addEventListener("input", e => { const q=e.target.value.toLowerCase(); $$('[data-row-text]').forEach(row=>row.style.display=row.dataset.rowText.includes(q)?"":"none"); });
-  $$('[data-confirm-payment]').forEach(el => el.addEventListener("click", () => { const app=adminApplications.find(a=>a.id===el.dataset.confirmPayment); app.status="confirmed"; renderPage(); toast(`Đã xác nhận phí cho ${app.id}.`,"success"); }));
+  $$('[data-confirm-payment]').forEach(el => el.addEventListener("click", async () => {
+    const registrationId = el.dataset.confirmPayment;
+    el.disabled = true;
+    try {
+      await api(`/admin/registrations/${encodeURIComponent(registrationId)}/confirm-payment`, { method: "PATCH", body: "{}" });
+      const [registrationPayload, dashboardPayload] = await Promise.all([api("/registrations"), api("/admin/dashboard")]);
+      adminApplications = registrationPayload.registrations;
+      state.dashboard = dashboardPayload.dashboard;
+      renderApp();
+      toast(`Đã xác nhận phí cho ${registrationId}.`,"success");
+    } catch (error) { el.disabled = false; toast(error.message, "error"); }
+  }));
+  $("[data-preview-sheets]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Đang kiểm tra...";
+    try {
+      state.sheetPreview = (await api("/admin/integrations/google-sheets/preview", { method: "POST", body: "{}" })).preview;
+      renderPage();
+      toast(state.sheetPreview.readyToSync ? "Kết nối và mapping Google Sheet hợp lệ." : "Đã đọc Sheet; cần rà soát mapping hoặc dữ liệu nguồn.", state.sheetPreview.readyToSync ? "success" : "");
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Kiểm tra kết nối";
+      toast(error.message, "error");
+    }
+  });
+  $("[data-sync-sheets]")?.addEventListener("click", async (event) => {
+    if (!window.confirm("Đồng bộ toàn bộ học sinh và tài khoản phụ huynh hợp lệ từ tab dshs26-27? Thao tác không sửa Google Sheet.")) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Đang đồng bộ...";
+    try {
+      const { result } = await api("/admin/integrations/google-sheets/sync", {
+        method: "POST",
+        body: JSON.stringify({ confirmation: "SYNC_STUDENT_DIRECTORY" }),
+      });
+      toast(`Đồng bộ hoàn tất: ${result.counters.parentsCreated} tài khoản PH mới, ${result.counters.parentsExisting} tài khoản đã có.`, "success");
+      state.sheetPreview = null;
+      renderPage();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Đồng bộ học sinh & tài khoản PH";
+      toast(error.message, "error");
+    }
+  });
   $("[data-export]")?.addEventListener("click", exportCsv);
-  $("[data-send-support]")?.addEventListener("click", () => { if (!$("#support-message").value.trim()) return toast("Vui lòng mô tả yêu cầu cần hỗ trợ.","error"); toast("Đã tạo yêu cầu hỗ trợ HT-260818-021.","success"); $("#support-message").value=""; });
+  $("[data-send-support]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const message = $("#support-message").value.trim();
+    if (message.length < 10) return toast("Vui lòng mô tả yêu cầu tối thiểu 10 ký tự.","error");
+    button.disabled = true;
+    try {
+      const payload = await api("/support-requests", { method: "POST", body: JSON.stringify({ registrationId: $("#support-registration").value || null, topic: $("#support-topic").value || "Hỗ trợ đăng ký", message }) });
+      toast(`Đã tạo yêu cầu hỗ trợ ${payload.id}.`,"success");
+      $("#support-message").value = "";
+    } catch (error) { toast(error.message, "error"); }
+    finally { button.disabled = false; }
+  });
 }
 
 function bindDrawerEvents() {
@@ -510,5 +777,4 @@ function bindDrawerEvents() {
   $("[data-drawer-go-clubs]")?.addEventListener("click", () => { closeCart(); goTo("clubs"); });
 }
 
-bindGlobalEvents();
-renderApp();
+boot();

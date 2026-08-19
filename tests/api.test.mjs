@@ -1,0 +1,118 @@
+import test, { after, before } from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+const port = 4199;
+const baseUrl = `http://127.0.0.1:${port}`;
+let processHandle;
+let tempDir;
+
+async function waitForServer() {
+  for (let i = 0; i < 40; i += 1) {
+    try {
+      const response = await fetch(`${baseUrl}/api/health`);
+      if (response.ok) return;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Test server did not start");
+}
+
+async function login(account, password) {
+  const response = await fetch(`${baseUrl}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account, password }) });
+  assert.equal(response.status, 200);
+  return response.headers.get("set-cookie").split(";")[0];
+}
+
+async function request(path, cookie, options = {}) {
+  return fetch(`${baseUrl}${path}`, { ...options, headers: { "Content-Type": "application/json", Cookie: cookie, ...(options.headers || {}) } });
+}
+
+before(async () => {
+  tempDir = await mkdtemp(join(tmpdir(), "nshm-clubs-"));
+  processHandle = spawn(process.execPath, ["server.mjs"], { cwd: new URL("..", import.meta.url), env: { ...process.env, PORT: String(port), DATA_FILE: join(tempDir, "test.sqlite") }, stdio: "ignore" });
+  await waitForServer();
+});
+
+after(async () => {
+  processHandle.kill();
+  await once(processHandle, "exit");
+  await rm(tempDir, { recursive: true, force: true });
+});
+
+test("health endpoint is available", async () => {
+  const response = await fetch(`${baseUrl}/api/health`);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ok, true);
+});
+
+test("parent phone login accepts the Sheet format without a leading zero", async () => {
+  const cookie = await login("901234567", "123456");
+  assert.match(cookie, /^nshm_session=/);
+});
+
+test("Microsoft 365 status exposes configuration state but no secret", async () => {
+  const response = await fetch(`${baseUrl}/api/auth/microsoft/status`);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.microsoft.configured, false);
+  assert.equal(payload.microsoft.allowedDomain, "hoangmaistarschool.edu.vn");
+  assert.equal(JSON.stringify(payload).includes("clientSecret"), false);
+});
+
+test("server source and environment files are never exposed as static assets", async () => {
+  const sourceResponse = await fetch(`${baseUrl}/server.mjs`);
+  const environmentResponse = await fetch(`${baseUrl}/.env.example`);
+  assert.equal(sourceResponse.status, 404);
+  assert.equal(environmentResponse.status, 404);
+});
+
+test("parent is scoped to linked students and eligible clubs", async () => {
+  const cookie = await login("0901234567", "123456");
+  const studentsResponse = await request("/api/students", cookie);
+  const students = (await studentsResponse.json()).students;
+  assert.equal(students.length, 2);
+  assert.equal(students[0].id, "hs01");
+
+  const clubsResponse = await request("/api/clubs?studentId=hs01", cookie);
+  const clubs = (await clubsResponse.json()).clubs;
+  assert.equal(clubs.find((club) => club.id === "debate").eligible, false);
+  assert.equal(clubs.find((club) => club.id === "basketball").eligible, true);
+});
+
+test("server blocks a schedule conflict with an existing registration", async () => {
+  const cookie = await login("0901234567", "123456");
+  const response = await request("/api/registrations/validate", cookie, { method: "POST", body: JSON.stringify({ studentId: "hs01", clubIds: ["basketball"] }) });
+  const payload = await response.json();
+  assert.equal(payload.valid, false);
+  assert.equal(payload.issues[0].type, "conflict");
+});
+
+test("parent can create a valid waitlist registration", async () => {
+  const cookie = await login("0901234567", "123456");
+  const response = await request("/api/registrations", cookie, { method: "POST", body: JSON.stringify({ studentId: "hs01", clubIds: ["painting"], acceptedTerms: true }) });
+  assert.equal(response.status, 201);
+  const payload = await response.json();
+  assert.equal(payload.registrations[0].status, "waitlist");
+});
+
+test("admin sees dashboard and can confirm payment", async () => {
+  const cookie = await login("admin@nshm.edu.vn", "Admin@123");
+  const dashboardResponse = await request("/api/admin/dashboard", cookie);
+  const dashboard = (await dashboardResponse.json()).dashboard;
+  assert.ok(dashboard.total >= 7);
+
+  const response = await request("/api/admin/registrations/DK-260818-0158/confirm-payment", cookie, { method: "PATCH", body: "{}" });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "confirmed");
+
+  const integrationResponse = await request("/api/admin/integrations/google-sheets", cookie);
+  assert.equal(integrationResponse.status, 200);
+  const integration = (await integrationResponse.json()).integration;
+  assert.equal(integration.sheetName, "dshs26-27");
+  assert.equal(integration.accessMode, "read-only");
+});

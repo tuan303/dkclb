@@ -1,0 +1,11 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Mọi truy cập dữ liệu nghiệp vụ đi qua backend đã xác thực.
+    // Firebase Admin SDK chạy bằng IAM và không phụ thuộc rule phía client.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
