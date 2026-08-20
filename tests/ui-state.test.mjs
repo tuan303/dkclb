@@ -4,9 +4,9 @@ import { readFile } from "node:fs/promises";
 
 test("login and application screens cannot be visible at the same time", async () => {
   const [html, css, script] = await Promise.all([
-    readFile(new URL("../index.html", import.meta.url), "utf8"),
-    readFile(new URL("../styles.css", import.meta.url), "utf8"),
-    readFile(new URL("../app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../public/app.js", import.meta.url), "utf8"),
   ]);
 
   assert.match(html, /id="app-shell"[^>]*\bhidden\b/);
@@ -16,7 +16,7 @@ test("login and application screens cannot be visible at the same time", async (
 });
 
 test("lối tắt tài khoản minh họa bị ẩn khi máy chủ không có tài khoản demo", async () => {
-  const script = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  const script = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 
   // Cờ demo phải lấy từ máy chủ, không suy đoán ở trình duyệt.
   assert.match(script, /state\.demoAccounts = Boolean\(\(await api\("\/health"\)\)\.demoAccounts\)/);

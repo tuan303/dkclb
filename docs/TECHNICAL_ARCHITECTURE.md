@@ -23,10 +23,11 @@ flowchart LR
 
 | Thành phần | Trách nhiệm |
 |---|---|
-| `index.html` | Khung ứng dụng, màn hình đăng nhập và thư viện icon SVG |
-| `styles.css` | Design tokens, layout desktop/mobile, component states |
-| `app.js` | API client, phiên UI, routing nội bộ và tương tác người dùng |
-| `sheet-reader.js` | Đọc `.xlsx`/`.csv` ngay trong trình duyệt để file danh mục không phải rời máy người dùng |
+| `public/` | Thư mục duy nhất được phục vụ tĩnh ra Internet |
+| `public/index.html` | Khung ứng dụng, màn hình đăng nhập và thư viện icon SVG |
+| `public/styles.css` | Design tokens, layout desktop/mobile, component states |
+| `public/app.js` | API client, phiên UI, routing nội bộ và tương tác người dùng |
+| `public/sheet-reader.js` | Đọc `.xlsx`/`.csv` ngay trong trình duyệt để file danh mục không phải rời máy người dùng |
 | `catalog-schema.mjs` | Module thuần: chuẩn hóa và kiểm tra đợt/CLB/lớp, nhận diện cột và phân tích file nhập |
 | `server.mjs` | Static server, JSON API, session auth, validation, báo cáo CSV |
 | SQLite | Dữ liệu dự phòng chỉ cho phát triển và kiểm thử local |
@@ -45,7 +46,8 @@ flowchart LR
 - Phiên dùng token ngẫu nhiên 256 bit; Production chỉ lưu SHA-256 của token trong Firestore.
 - Cookie phiên có `HttpOnly`, `Secure`, `SameSite=Lax` và thời hạn 8 giờ ở Production.
 - Kiểm tra vai trò và phạm vi học sinh được thực hiện ở API.
-- Không cho tải trực tiếp thư mục `data` qua static server; không đưa credential vào repository.
+- Chỉ thư mục `public/` được phục vụ tĩnh (`vercel.json` đặt `outputDirectory`, server local dùng danh sách trắng). Mã nguồn backend, `firestore.rules` và tài liệu nội bộ ở thư mục gốc không truy cập được qua HTTP; có test chặn hồi quy.
+- Không đưa credential vào repository.
 - Firestore Rules mặc định từ chối mọi truy cập client; backend được cấp quyền qua IAM.
 - Web config chỉ khởi tạo Firebase/Analytics và không mang quyền Admin.
 - Có security headers cơ bản và giới hạn body JSON 1 MB (riêng hai endpoint nhập danh mục là 8 MB).

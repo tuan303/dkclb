@@ -69,10 +69,24 @@ test("Microsoft 365 status exposes configuration state but no secret", async () 
 });
 
 test("server source and environment files are never exposed as static assets", async () => {
-  const sourceResponse = await fetch(`${baseUrl}/server.mjs`);
-  const environmentResponse = await fetch(`${baseUrl}/.env.example`);
-  assert.equal(sourceResponse.status, 404);
-  assert.equal(environmentResponse.status, 404);
+  // Chỉ các tệp trong thư mục `public` mới được phục vụ; mọi mã nguồn backend,
+  // cấu hình và tài liệu nội bộ ở thư mục gốc đều phải trả 404.
+  const blocked = [
+    "/server.mjs", "/.env.example", "/catalog-schema.mjs", "/firestore-store.mjs",
+    "/microsoft-auth.mjs", "/sheets-directory.mjs", "/google-cloud-auth.mjs",
+    "/password-policy.mjs", "/firestore.rules", "/package.json",
+    "/BA_CAU_TRUC_HE_THONG_CLB.md", "/api/index.mjs",
+  ];
+  for (const path of blocked) {
+    const response = await fetch(`${baseUrl}${path}`);
+    assert.equal(response.status, 404, `${path} không được phục vụ như tệp tĩnh`);
+  }
+
+  const served = ["/", "/index.html", "/app.js", "/styles.css", "/sheet-reader.js", "/firebase-client.js"];
+  for (const path of served) {
+    const response = await fetch(`${baseUrl}${path}`);
+    assert.equal(response.status, 200, `${path} phải phục vụ được`);
+  }
 });
 
 test("parent is scoped to linked students and eligible clubs", async () => {

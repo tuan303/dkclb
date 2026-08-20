@@ -34,6 +34,9 @@ const SHEETS_SERVICE_ACCOUNT = process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT || "nsh
 const MICROSOFT_REDIRECT_URI = process.env.MICROSOFT_REDIRECT_URI || `http://127.0.0.1:${PORT}/api/auth/microsoft/callback`;
 const SESSION_COOKIE = "nshm_session";
 const SESSION_MAX_AGE = 8 * 60 * 60;
+// Toàn bộ tệp giao diện nằm trong thư mục `public`. Vercel chỉ phục vụ tĩnh thư mục này,
+// nhờ đó mã nguồn backend và tài liệu nội bộ ở thư mục gốc không bị lộ ra ngoài.
+const PUBLIC_DIR = join(ROOT, "public");
 const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-client.js", "sheet-reader.js"]);
 
 if (!["sqlite", "firestore"].includes(DATA_BACKEND)) {
@@ -1402,8 +1405,8 @@ async function serveStatic(req, res, url) {
   const requested = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
   const safePath = normalize(requested).replace(/^(\.\.[/\\])+/, "");
   if (!PUBLIC_FILES.has(safePath.replaceAll("\\", "/"))) throw httpError(404, "NOT_FOUND", "Không tìm thấy tệp.");
-  const filePath = resolve(ROOT, safePath);
-  if (!filePath.startsWith(resolve(ROOT)) || !existsSync(filePath) || filePath.includes(`${join(ROOT, "data")}`)) throw httpError(404, "NOT_FOUND", "Không tìm thấy tệp.");
+  const filePath = resolve(PUBLIC_DIR, safePath);
+  if (!filePath.startsWith(resolve(PUBLIC_DIR)) || !existsSync(filePath) || filePath.includes(`${join(ROOT, "data")}`)) throw httpError(404, "NOT_FOUND", "Không tìm thấy tệp.");
   const content = await readFile(filePath);
   res.writeHead(200, { "Content-Type": mimeTypes[extname(filePath)] || "application/octet-stream", "Content-Length": content.length, "Cache-Control": "no-cache" });
   res.end(content);

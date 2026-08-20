@@ -5,6 +5,7 @@
       "maxDuration": 300
     }
   },
+  "outputDirectory": "public",
   "regions": ["sin1"],
   "rewrites": [
     {

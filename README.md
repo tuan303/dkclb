@@ -207,17 +207,18 @@ docker compose up --build
 
 ```text
 .
-├── index.html                    # Khung giao diện và đăng nhập
-├── styles.css                    # Design system responsive
-├── app.js                        # Trạng thái UI và kết nối API
-├── sheet-reader.js               # Đọc .xlsx/.csv ngay trong trình duyệt
+├── public/                       # Thư mục DUY NHẤT được phục vụ tĩnh ra Internet
+│   ├── index.html                # Khung giao diện và đăng nhập
+│   ├── styles.css                # Design system responsive
+│   ├── app.js                    # Trạng thái UI và kết nối API
+│   ├── sheet-reader.js           # Đọc .xlsx/.csv ngay trong trình duyệt
+│   └── firebase-client.js        # Firebase Web app và Analytics
 ├── server.mjs                    # HTTP server, API, auth và rule engine
 ├── catalog-schema.mjs            # Chuẩn hóa/kiểm tra đợt, CLB, lớp và dữ liệu nhập
 ├── api/index.mjs                 # Vercel Function duy nhất cho toàn bộ API
 ├── firestore-store.mjs           # Google Cloud Firestore SDK phía backend
 ├── google-cloud-auth.mjs         # Vercel OIDC → Google Workload Identity
 ├── sheets-directory.mjs          # Connector Sheets chỉ đọc và kiểm tra mapping
-├── firebase-client.js            # Firebase Web app và Analytics
 ├── firestore.rules               # Chặn truy cập dữ liệu trực tiếp từ client
 ├── tests/api.test.mjs            # Kiểm thử tích hợp API
 ├── tests/catalog-api.test.mjs    # Kiểm thử tích hợp quản trị danh mục
@@ -233,6 +234,12 @@ docker compose up --build
 - [Cấu trúc nghiệp vụ BA](./BA_CAU_TRUC_HE_THONG_CLB.md)
 - [Kiến trúc kỹ thuật](./docs/TECHNICAL_ARCHITECTURE.md)
 - [Thiết kế đồng bộ Google Sheets an toàn](./docs/GOOGLE_SHEETS_SYNC_SECURITY.md)
+
+## Ranh giới tệp công khai
+
+Chỉ thư mục `public/` được phục vụ ra Internet. `vercel.json` khai báo `"outputDirectory": "public"`, và server local cũng chỉ đọc tệp trong thư mục đó theo một danh sách trắng.
+
+Mọi thứ ngoài `public/` — mã nguồn backend `.mjs`, `firestore.rules`, `package.json`, tài liệu BA nội bộ — **không** được truy cập qua HTTP. Khi thêm tệp giao diện mới, đặt vào `public/` và bổ sung tên tệp vào `PUBLIC_FILES` trong `server.mjs`; bộ kiểm thử có một test chặn hồi quy cho ranh giới này.
 
 ## Giới hạn MVP
 
