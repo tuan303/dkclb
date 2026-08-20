@@ -39,6 +39,7 @@ flowchart LR
 | `tests/api.test.mjs` | Kiểm thử tích hợp trên CSDL tạm độc lập |
 | `tests/catalog-api.test.mjs` | Kiểm thử tích hợp quản trị danh mục và nhập hàng loạt |
 | `tests/catalog-schema.test.mjs` | Kiểm thử chuẩn hóa dữ liệu danh mục, độc lập với CSDL |
+| `tests/account-support.test.mjs` | Kiểm thử tra cứu tài khoản và đặt lại mật khẩu khởi tạo |
 
 ## 3. Bảo mật đang có
 
@@ -53,6 +54,8 @@ flowchart LR
 - Có security headers cơ bản và giới hạn body JSON 1 MB (riêng hai endpoint nhập danh mục là 8 MB).
 - Chuyển trạng thái phí tạo audit log trước/sau.
 - Mọi thay đổi đợt, CLB và lớp đều ghi audit log kèm giá trị trước/sau; nhập hàng loạt ghi log số bản ghi tạo mới và cập nhật.
+- Tra cứu tài khoản hỗ trợ chỉ trả trạng thái (đang hoạt động, còn mật khẩu khởi tạo, số lần sai, thời điểm hết khóa) và không bao giờ trả salt hay hash.
+- Đặt lại mật khẩu chỉ đưa tài khoản phụ huynh về đúng trạng thái mà đồng bộ tạo ra: mật khẩu là số điện thoại và bắt buộc đổi ngay lần đăng nhập kế tiếp. Quản trị không tự chọn mật khẩu; thao tác ghi audit log kèm lý do.
 
 ## 4. Quy tắc đăng ký
 
@@ -103,6 +106,8 @@ API không tin kết quả kiểm tra từ trình duyệt. Khi tạo đơn, serv
 | `PATCH` | `/api/admin/classes/:id` | Nhà trường |
 | `POST` | `/api/admin/catalog/import/preview` | Nhà trường, chỉ đọc và phân tích |
 | `POST` | `/api/admin/catalog/import/commit` | Nhà trường, xác nhận bắt buộc |
+| `GET` | `/api/admin/accounts/lookup?account=...` | Nhà trường, chỉ đọc trạng thái tài khoản |
+| `POST` | `/api/admin/accounts/reset-initial-password` | Nhà trường, xác nhận bắt buộc |
 
 ## 6. Nâng cấp production
 

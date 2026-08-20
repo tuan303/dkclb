@@ -235,6 +235,16 @@ docker compose up --build
 - [Kiến trúc kỹ thuật](./docs/TECHNICAL_ARCHITECTURE.md)
 - [Thiết kế đồng bộ Google Sheets an toàn](./docs/GOOGLE_SHEETS_SYNC_SECURITY.md)
 
+## Phụ huynh không đăng nhập được
+
+Cổng Nhà trường → **Cấu hình & phân quyền → Tra cứu tài khoản phụ huynh**. Nhập số điện thoại rồi bấm Tra cứu. Màn hình trả lời ba câu hỏi cùng lúc:
+
+1. **Hệ thống đã có bao nhiêu tài khoản phụ huynh và lần đồng bộ gần nhất là khi nào.** Nếu hiện `Chưa từng chạy` thì chưa có tài khoản phụ huynh nào — cần chạy đồng bộ từ Google Sheets trước.
+2. **Số này đã có tài khoản chưa.** Chưa có thường là do số chưa nằm trong Sheet, nằm ở cột không được nhận diện, hoặc được thêm vào Sheet sau lần đồng bộ gần nhất. Chạy lại đồng bộ là đủ.
+3. **Nếu đã có tài khoản** thì đang ở trạng thái nào: còn dùng mật khẩu khởi tạo (chính là số điện thoại), đã đổi mật khẩu riêng, đang bị tạm khóa 15 phút do sai 5 lần, hay đã bị tắt. Kèm danh sách học sinh đã liên kết.
+
+Khi phụ huynh quên mật khẩu, bấm **Đặt lại về mật khẩu khởi tạo**: mật khẩu trở lại chính là số điện thoại, khóa tạm được gỡ, và phụ huynh bắt buộc đổi mật khẩu ngay lần đăng nhập kế tiếp. Quản trị không tự đặt mật khẩu và hệ thống không bao giờ hiển thị mật khẩu hiện tại. Thao tác ghi audit log kèm người thực hiện.
+
 ## Ranh giới tệp công khai
 
 Chỉ thư mục `public/` được phục vụ ra Internet. `vercel.json` khai báo `"outputDirectory": "public"`, và server local cũng chỉ đọc tệp trong thư mục đó theo một danh sách trắng.

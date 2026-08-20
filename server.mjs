@@ -1039,6 +1039,99 @@ function readCatalogImportPayload(payload) {
   return { headers, rows: rows.map((row) => (Array.isArray(row) ? row : [])) };
 }
 
+// ---- Hỗ trợ tài khoản phụ huynh: tra cứu và đặt lại mật khẩu khởi tạo ----
+
+// Trả về đúng những gì bộ phận IT cần để trả lời "vì sao phụ huynh không đăng nhập được",
+// không trả về salt hay hash.
+async function lookupAccount(rawAccount) {
+  const input = String(rawAccount || "").trim();
+  const normalized = toVietnameseLocalPhone(input) || input.toLowerCase();
+  const user = businessStore
+    ? await businessStore.findAccount(normalized)
+    : db.prepare("SELECT * FROM users WHERE lower(account) = lower(?)").get(normalized) || null;
+
+  const directory = businessStore
+    ? await businessStore.directorySummary()
+    : {
+      parents: asInt(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'parent'").get().count),
+      students: asInt(db.prepare("SELECT COUNT(*) AS count FROM students WHERE status = 'active'").get().count),
+      lastSyncAt: db.prepare("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'SYNC_STUDENT_DIRECTORY'").get().at || null,
+    };
+
+  if (!user) {
+    return {
+      input,
+      normalized,
+      found: false,
+      directory,
+      diagnosis: directory.parents === 0
+        ? "Hệ thống chưa có tài khoản phụ huynh nào. Cần chạy Đồng bộ học sinh & tài khoản PH từ Google Sheets trước."
+        : "Không tìm thấy tài khoản cho số này. Thường do số điện thoại chưa có trong Google Sheets, nằm ở cột không được nhận diện, hoặc lần đồng bộ gần nhất chạy trước khi bổ sung số này.",
+    };
+  }
+
+  const students = businessStore
+    ? await businessStore.listStudentsByParent(user.id)
+    : db.prepare(`SELECT s.code, s.name, s.homeroom, ps.relationship FROM students s
+        JOIN parent_students ps ON ps.student_id = s.id WHERE ps.parent_user_id = ? ORDER BY s.grade, s.name`).all(user.id);
+
+  const locked = Boolean(user.locked_until && user.locked_until > nowIso());
+  const account = {
+    account: user.account,
+    displayName: user.display_name,
+    role: user.role,
+    authProvider: user.auth_provider,
+    active: Boolean(user.active),
+    mustChangePassword: Boolean(user.must_change_password),
+    loginFailures: asInt(user.login_failures),
+    lockedUntil: locked ? user.locked_until : null,
+    createdAt: user.created_at,
+    linkedStudents: students.length,
+  };
+
+  let diagnosis;
+  if (!account.active) diagnosis = "Tài khoản đang bị tắt nên mọi lần đăng nhập đều báo sai.";
+  else if (account.role !== "parent") diagnosis = "Số này đang gắn với tài khoản nhà trường, không đăng nhập được ở cổng Phụ huynh.";
+  else if (account.authProvider !== "local") diagnosis = "Tài khoản này đăng nhập bằng Microsoft 365, không dùng mật khẩu riêng.";
+  else if (locked) diagnosis = `Đang tạm khóa 15 phút do đăng nhập sai ${account.loginFailures} lần. Hết khóa lúc ${account.lockedUntil} (giờ UTC).`;
+  else if (account.mustChangePassword) diagnosis = `Tài khoản vẫn dùng mật khẩu khởi tạo, chính là số điện thoại: ${normalized}. Nhập đúng chuỗi này, không có dấu cách.`;
+  else diagnosis = "Phụ huynh đã đổi sang mật khẩu riêng. Nếu quên thì đặt lại về mật khẩu khởi tạo bằng nút bên dưới.";
+  if (!students.length) diagnosis += " Lưu ý: tài khoản chưa liên kết học sinh nào nên sau khi vào sẽ không thấy con.";
+
+  return { input, normalized, found: true, account, students, directory, diagnosis };
+}
+
+// Đặt lại đúng về trạng thái mà đồng bộ tạo ra: mật khẩu là số điện thoại và
+// bắt buộc đổi ngay lần đăng nhập kế tiếp. Quản trị không tự chọn mật khẩu.
+async function resetInitialPassword({ actorUserId, rawAccount }) {
+  const input = String(rawAccount || "").trim();
+  const normalized = toVietnameseLocalPhone(input);
+  if (!normalized) throw httpError(422, "ACCOUNT_NOT_PHONE", "Chỉ đặt lại được cho tài khoản phụ huynh dùng số điện thoại.");
+  const user = businessStore
+    ? await businessStore.findAccount(normalized)
+    : db.prepare("SELECT * FROM users WHERE lower(account) = lower(?)").get(normalized) || null;
+  if (!user) throw httpError(404, "ACCOUNT_NOT_FOUND", "Không tìm thấy tài khoản phụ huynh cho số này.");
+  if (user.role !== "parent") throw httpError(409, "ACCOUNT_NOT_PARENT", "Chỉ đặt lại được mật khẩu của tài khoản phụ huynh.");
+  if (user.auth_provider !== "local") throw httpError(409, "ACCOUNT_NOT_LOCAL", "Tài khoản này đăng nhập bằng Microsoft 365.");
+
+  const secured = await hashPasswordAsync(normalized);
+  if (businessStore) await businessStore.resetToInitialPassword(user.id, secured);
+  else {
+    db.prepare(`UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 1,
+      login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`).run(secured.salt, secured.hash, user.id);
+  }
+  await writeAudit({
+    actorUserId,
+    action: "RESET_INITIAL_PASSWORD",
+    entityType: "user",
+    entityId: user.id,
+    before: { mustChangePassword: Boolean(user.must_change_password), loginFailures: asInt(user.login_failures), lockedUntil: user.locked_until || null },
+    after: { mustChangePassword: true, loginFailures: 0, lockedUntil: null },
+    reason: "Hỗ trợ phụ huynh không đăng nhập được",
+  });
+  return { account: normalized, mustChangePassword: true };
+}
+
 async function handleApi(req, res, url) {
   const method = req.method || "GET";
 
@@ -1278,6 +1371,22 @@ async function handleApi(req, res, url) {
     const { confirmation = "" } = await readJson(req);
     if (confirmation !== "SYNC_STUDENT_DIRECTORY") throw httpError(422, "SYNC_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đồng bộ danh bạ học sinh.");
     return sendJson(res, 200, { result: await syncGoogleDirectory(user.id) });
+  }
+
+  if (method === "GET" && url.pathname === "/api/admin/accounts/lookup") {
+    await requireUser(req, "admin");
+    const account = url.searchParams.get("account") || "";
+    if (!String(account).trim()) throw httpError(400, "ACCOUNT_REQUIRED", "Vui lòng nhập số điện thoại hoặc email cần tra cứu.");
+    return sendJson(res, 200, { lookup: await lookupAccount(account) });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/accounts/reset-initial-password") {
+    const user = await requireUser(req, "admin");
+    const { account = "", confirmation = "" } = await readJson(req);
+    if (confirmation !== "RESET_INITIAL_PASSWORD") {
+      throw httpError(422, "RESET_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đặt lại mật khẩu của phụ huynh.");
+    }
+    return sendJson(res, 200, { result: await resetInitialPassword({ actorUserId: user.id, rawAccount: account }) });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/periods") {

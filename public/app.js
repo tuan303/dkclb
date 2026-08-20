@@ -15,6 +15,8 @@ const state = {
   importDraft: null,
   period: null,
   demoAccounts: false,
+  accountLookup: null,
+  accountLookupInput: "",
 };
 
 let students = [];
@@ -1134,6 +1136,103 @@ async function commitCatalogImport(button) {
   }
 }
 
+/* ---------- Hỗ trợ tài khoản phụ huynh ---------- */
+
+function renderAccountSupport() {
+  const lookup = state.accountLookup;
+  const directory = lookup?.directory;
+  const summary = directory
+    ? `<div class="kpi-strip">
+        <div class="kpi-item"><span>Tài khoản phụ huynh</span><strong>${directory.parents}</strong></div>
+        <div class="kpi-item"><span>Học sinh trong hệ thống</span><strong>${directory.students}</strong></div>
+        <div class="kpi-item"><span>Đồng bộ gần nhất</span><strong>${directory.lastSyncAt ? formatDateTime(directory.lastSyncAt) : "Chưa từng chạy"}</strong></div>
+      </div>`
+    : "";
+
+  let detail = "";
+  if (lookup && !lookup.found) {
+    detail = `<div class="sync-verdict blocked">Không tìm thấy tài khoản cho <b>${escapeHtml(lookup.normalized)}</b>.</div>
+      <div class="info-note">${escapeHtml(lookup.diagnosis)}</div>`;
+  } else if (lookup) {
+    const account = lookup.account;
+    const rows = [
+      ["Tài khoản", account.account],
+      ["Tên hiển thị", account.displayName],
+      ["Trạng thái", account.active ? "Đang hoạt động" : "Đã tắt"],
+      ["Kiểu đăng nhập", account.authProvider === "local" ? "Mật khẩu" : "Microsoft 365"],
+      ["Mật khẩu", account.mustChangePassword ? "Vẫn là mật khẩu khởi tạo" : "Phụ huynh đã đổi riêng"],
+      ["Đăng nhập sai liên tiếp", String(account.loginFailures)],
+      ["Tạm khóa đến", account.lockedUntil ? formatDateTime(account.lockedUntil) : "Không"],
+      ["Học sinh đã liên kết", `${account.linkedStudents}`],
+      ["Tạo lúc", formatDateTime(account.createdAt)],
+    ];
+    detail = `<div class="integration-source">${rows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("")}</div>
+      ${lookup.students.length ? `<div class="mapping-list">${lookup.students.map((item) => `<span><b>${escapeHtml(item.name)}</b>${escapeHtml(item.homeroom || "")}${item.relationship ? ` · ${escapeHtml(item.relationship)}` : ""}</span>`).join("")}</div>` : ""}
+      <div class="sync-verdict ${account.mustChangePassword && account.active && !account.lockedUntil ? "ready" : "blocked"}">${escapeHtml(lookup.diagnosis)}</div>
+      ${account.role === "parent" && account.authProvider === "local"
+        ? `<div class="sync-actions"><button class="button button-primary" data-reset-password="${escapeHtml(lookup.normalized)}">Đặt lại về mật khẩu khởi tạo</button><span>Mật khẩu trở lại chính là số điện thoại và phụ huynh phải đổi ngay lần đăng nhập kế tiếp. Thao tác được ghi log.</span></div>`
+        : ""}`;
+  }
+
+  return `<section class="section panel"><div class="panel-head">
+      <div><span class="eyebrow">Hỗ trợ vận hành</span><h3>Tra cứu tài khoản phụ huynh</h3>
+      <p>Dùng khi phụ huynh báo không đăng nhập được. Không hiển thị mật khẩu.</p></div></div>
+    <div class="panel-body">
+      <div class="grid grid-2">
+        <label class="search-field">${icon("search")}<input id="account-lookup-input" value="${escapeHtml(state.accountLookupInput || "")}" placeholder="Số điện thoại phụ huynh, ví dụ 0975662437" /></label>
+        <div><button class="button button-secondary" data-lookup-account>Tra cứu</button></div>
+      </div>
+      ${summary}
+      ${detail}
+    </div></section>`;
+}
+
+async function runAccountLookup(button) {
+  const value = $("#account-lookup-input").value.trim();
+  if (!value) return toast("Vui lòng nhập số điện thoại cần tra cứu.", "error");
+  state.accountLookupInput = value;
+  button.disabled = true;
+  button.textContent = "Đang tra cứu…";
+  try {
+    state.accountLookup = (await api(`/admin/accounts/lookup?account=${encodeURIComponent(value)}`)).lookup;
+    renderPage();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Tra cứu";
+    toast(error.message, "error");
+  }
+}
+
+async function runPasswordReset(account, button) {
+  if (!window.confirm(`Đặt lại mật khẩu của ${account} về chính số điện thoại? Phụ huynh sẽ phải đổi mật khẩu ngay lần đăng nhập kế tiếp.`)) return;
+  button.disabled = true;
+  button.textContent = "Đang đặt lại…";
+  try {
+    await api("/admin/accounts/reset-initial-password", {
+      method: "POST",
+      body: JSON.stringify({ account, confirmation: "RESET_INITIAL_PASSWORD" }),
+    });
+    state.accountLookup = (await api(`/admin/accounts/lookup?account=${encodeURIComponent(account)}`)).lookup;
+    renderPage();
+    toast(`Đã đặt lại. Mật khẩu tạm thời của ${account} chính là số điện thoại đó.`, "success");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Đặt lại về mật khẩu khởi tạo";
+    toast(error.message, "error");
+  }
+}
+
+function bindAccountSupportEvents() {
+  $("[data-lookup-account]")?.addEventListener("click", (event) => runAccountLookup(event.currentTarget));
+  $("#account-lookup-input")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      $("[data-lookup-account]")?.click();
+    }
+  });
+  $("[data-reset-password]")?.addEventListener("click", (event) => runPasswordReset(event.currentTarget.dataset.resetPassword, event.currentTarget));
+}
+
 function bindCatalogEvents() {
   $("[data-new-period]")?.addEventListener("click", () => openPeriodForm(null));
   $$("[data-edit-period]").forEach((element) => element.addEventListener("click", () => openPeriodForm(element.dataset.editPeriod)));
@@ -1226,6 +1325,7 @@ function renderSettings() {
     <div class="integration-source"><div><span>Spreadsheet ID</span><strong>${escapeHtml(integration.spreadsheetId || "—")}</strong></div><div><span>Tab / tiêu đề</span><strong>${escapeHtml(integration.sheetName || "—")} · dòng ${Number(integration.headerRow || 1)}</strong></div><div><span>Service account</span><strong>${escapeHtml(integration.serviceAccountEmail || "—")}</strong></div><div><span>Quyền</span><strong>Viewer · Read-only</strong></div></div>
     ${previewHtml}
   </div></section>
+  ${renderAccountSupport()}
   <section class="section panel"><div class="panel-head"><div><h3>Ma trận quyền tóm tắt</h3><p>Ví dụ phạm vi thao tác theo vai trò</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Vai trò</th><th>Xem hồ sơ</th><th>Cấu hình CLB</th><th>Xử lý đơn</th><th>Xác nhận phí</th><th>Xuất dữ liệu</th></tr></thead><tbody><tr><td>Phụ huynh</td><td>Chỉ con mình</td><td>—</td><td>Tạo/yêu cầu đổi</td><td>—</td><td>—</td></tr><tr><td>Vận hành CLB</td><td>Theo phạm vi đợt</td><td>Được phép</td><td>Được phép</td><td>Xem</td><td>Theo mẫu</td></tr><tr><td>Kế toán</td><td>Trường tối thiểu</td><td>—</td><td>Xem</td><td>Được phép</td><td>Báo cáo phí</td></tr><tr><td>Giáo viên</td><td>Lớp phụ trách</td><td>—</td><td>—</td><td>Trạng thái</td><td>DS lớp</td></tr><tr><td>IT Admin</td><td>Theo phân quyền</td><td>Hỗ trợ</td><td>Hỗ trợ</td><td>—</td><td>Audit kỹ thuật</td></tr></tbody></table></div></section>`;
 }
 
@@ -1489,6 +1589,7 @@ function bindPageEvents() {
     }
   });
   bindCatalogEvents();
+  bindAccountSupportEvents();
   $("[data-export]")?.addEventListener("click", exportCsv);
   $("[data-send-support]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;

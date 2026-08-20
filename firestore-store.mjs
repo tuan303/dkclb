@@ -279,6 +279,38 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         return Object.fromEntries(snapshot.docs.map((document) => [document.id, Number(document.data().enrolledCount || 0)]));
       },
 
+      // Tra cứu hỗ trợ: trả cả tài khoản đang tắt để IT nhìn thấy đúng nguyên nhân.
+      async findAccount(account) {
+        const normalized = String(account || "").trim().toLowerCase();
+        let snapshot = await users.where("accountLower", "==", normalized).limit(1).get();
+        if (snapshot.empty) snapshot = await users.where("account", "==", account).limit(1).get();
+        return snapshot.empty ? null : asServerUser(snapshot.docs[0]);
+      },
+
+      async directorySummary() {
+        const [parentCount, studentCount, syncLogs] = await Promise.all([
+          users.where("role", "==", "parent").count().get(),
+          students.count().get(),
+          auditLogs.where("action", "==", "SYNC_STUDENT_DIRECTORY").get(),
+        ]);
+        const lastSyncAt = snapshotRows(syncLogs)
+          .map((row) => String(row.createdAt || ""))
+          .sort()
+          .pop() || null;
+        return { parents: parentCount.data().count, students: studentCount.data().count, lastSyncAt };
+      },
+
+      async resetToInitialPassword(userId, password) {
+        await users.doc(userId).update({
+          passwordSalt: password.salt,
+          passwordHash: password.hash,
+          mustChangePassword: true,
+          loginFailures: 0,
+          lockedUntil: null,
+          active: true,
+        });
+      },
+
       async listPeriods() {
         return snapshotRows(await registrationPeriods.get())
           .sort((left, right) => String(right.openAt || "").localeCompare(String(left.openAt || "")));
