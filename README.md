@@ -12,14 +12,20 @@ MVP full-stack cho quy trình đăng ký câu lạc bộ ngoại khóa của Tr�
 - Khóa tạm 15 phút sau 5 lần đăng nhập sai liên tiếp.
 - Chỉ xem học sinh đã liên kết với tài khoản.
 - Lọc CLB theo học sinh, nhóm môn và tình trạng quota.
-- Kiểm tra điều kiện khối, đăng ký trùng, giao nhau lịch học và giới hạn số CLB.
+- Chỉ hiển thị lớp thuộc đợt đăng ký đang mở, kèm hạn nộp và đếm ngược theo giờ máy chủ.
+- Kiểm tra điều kiện khối, đăng ký trùng CLB, giao nhau lịch học và giới hạn số CLB của đợt.
 - Đăng ký lớp còn chỗ hoặc vào danh sách chờ khi lớp đầy.
-- Theo dõi trạng thái, lịch học và gửi yêu cầu hỗ trợ.
+- Thời khóa biểu tuần theo từng học sinh, kèm phòng, giáo viên và trạng thái từng đơn.
+- Theo dõi trạng thái kèm hướng dẫn việc cần làm tiếp, và gửi yêu cầu hỗ trợ.
 
 ### Cổng Nhà trường
 
 - Giao diện đăng nhập Microsoft 365 bằng Authorization Code Flow + PKCE, giới hạn đúng tenant và tên miền `@hoangmaistarschool.edu.vn`.
 - Dashboard lấy dữ liệu trực tiếp từ cơ sở dữ liệu.
+- **Quản trị đợt đăng ký:** tạo/sửa đợt, đặt thời gian mở–đóng theo giờ Việt Nam, giới hạn số CLB mỗi học sinh, mở/đóng đăng ký. Hệ thống tự ngừng nhận đơn khi hết hạn và chỉ cho phép một đợt mở tại một thời điểm.
+- **Quản trị CLB và lớp:** tạo/sửa CLB, thêm nhiều ca học cho một CLB (mỗi ca có lịch, phòng, giáo viên, sĩ số, học phí và khối áp dụng riêng), ngừng mở hoặc mở lại từng ca.
+- **Nhập danh mục hàng loạt từ Excel/CSV** với bước rà soát trước khi ghi.
+- Chốt an toàn khi sửa danh mục: không hạ sĩ số xuống dưới số chỗ đã dùng, không ngừng mở lớp đang có đơn hiệu lực, không xếp hai lớp trùng phòng cùng khung giờ trong một đợt.
 - Danh sách CLB/lớp, quota, học phí và tỷ lệ lấp đầy.
 - Lọc đơn theo trạng thái và tìm kiếm.
 - Xác nhận phí với kiểm tra chuyển trạng thái và audit log.
@@ -98,6 +104,31 @@ firebase deploy --only firestore
 
 Rules hiện chặn toàn bộ truy cập client; backend Admin SDK được kiểm soát bằng IAM.
 
+## Quản trị danh mục và nhập từ Excel
+
+Trong cổng Nhà trường:
+
+1. **Đợt đăng ký → + Tạo đợt đăng ký.** Đặt tên, năm học, học kỳ, thời gian mở–đóng (giờ Việt Nam) và số CLB tối đa mỗi học sinh. Đợt ở trạng thái `Bản nháp` chưa hiển thị với phụ huynh.
+2. **CLB & lịch học → + Tạo CLB**, sau đó thêm từng ca học. Một CLB có thể có nhiều ca khác thứ, khác phòng, khác khối áp dụng.
+3. **CLB & lịch học → Nhập từ Excel** để khai hàng loạt.
+
+File nhập có **mỗi dòng là một ca học**; các dòng cùng mã hoặc cùng tên CLB được gộp thành một CLB nhiều ca. Cột bắt buộc:
+
+| Cột | Ví dụ giá trị chấp nhận |
+|---|---|
+| Tên CLB | `Guitar` |
+| Khối | `3-5`, `1,2,3`, `Khối 6-9` |
+| Thứ | `Thứ 2`, `T2`, `2`, `CN`, `Monday` |
+| Khung giờ | `16:15-17:30`, `16h15 – 17h30` (hoặc tách hai cột Giờ bắt đầu / Giờ kết thúc) |
+| Phòng | `Phòng Nhạc 2` |
+| Giáo viên | `Thầy Sơn` |
+| Sĩ số | `14` |
+| Học phí | `1.500.000`, `1500000` |
+
+Cột tùy chọn: `Mã CLB`, `Nhóm môn`, `Tên lớp`, `Mô tả`, `Biểu tượng`, `Sĩ số tối thiểu`.
+
+File `.xlsx` được đọc ngay trong trình duyệt (không tải file lên máy chủ). Máy chủ chỉ nhận bảng dữ liệu đã đọc, tự nhận diện cột, kiểm tra từng dòng rồi trả về bản rà soát: số dòng hợp lệ, dòng lỗi kèm lý do, cảnh báo trùng phòng và trùng ca. Chỉ khi không còn dòng lỗi mới xuất hiện nút ghi vào hệ thống. Thao tác ghi **chỉ thêm hoặc cập nhật** theo mã CLB và khung lịch, không xóa CLB hay lớp đang có, và được ghi vào audit log.
+
 ## Kết nối Google Sheets
 
 Nguồn danh sách học sinh đã được cấu hình:
@@ -144,14 +175,25 @@ Tài khoản thực hiện lệnh cần quyền `Service Account Token Creator` 
 node --test tests/api.test.mjs
 ```
 
+Chạy toàn bộ:
+
+```powershell
+npm test
+```
+
 Bộ kiểm thử hiện bao phủ:
 
 - Health check.
 - Phạm vi dữ liệu phụ huynh-học sinh.
-- Lọc điều kiện CLB theo khối.
-- Chặn trùng lịch với đăng ký hiện có.
+- Lọc điều kiện CLB theo khối, kể cả khối khai riêng cho từng ca.
+- Chặn trùng lịch với đăng ký hiện có và chặn hai ca của cùng một CLB.
 - Tạo đơn danh sách chờ.
 - Dashboard và xác nhận phí của admin.
+- Đọc dữ liệu danh mục: thứ, giờ (kể cả số thực của Excel), khối, học phí.
+- Quản trị đợt: chặn mở hai đợt cùng lúc, chặn thời gian đóng trước thời gian mở, đóng đợt là ngừng nhận đơn ngay.
+- Quản trị lớp: chặn trùng phòng, chặn hạ sĩ số dưới số chỗ đã dùng, chặn ngừng mở lớp đang có đơn.
+- Nhập danh mục: rà soát trước khi ghi, gộp CLB nhiều ca, nhập lại cùng file thì cập nhật chứ không nhân đôi.
+- Phân quyền: phụ huynh không đọc/ghi được API quản trị.
 
 ## Chạy bằng Docker
 
@@ -168,7 +210,9 @@ docker compose up --build
 ├── index.html                    # Khung giao diện và đăng nhập
 ├── styles.css                    # Design system responsive
 ├── app.js                        # Trạng thái UI và kết nối API
+├── sheet-reader.js               # Đọc .xlsx/.csv ngay trong trình duyệt
 ├── server.mjs                    # HTTP server, API, auth và rule engine
+├── catalog-schema.mjs            # Chuẩn hóa/kiểm tra đợt, CLB, lớp và dữ liệu nhập
 ├── api/index.mjs                 # Vercel Function duy nhất cho toàn bộ API
 ├── firestore-store.mjs           # Google Cloud Firestore SDK phía backend
 ├── google-cloud-auth.mjs         # Vercel OIDC → Google Workload Identity
@@ -176,6 +220,8 @@ docker compose up --build
 ├── firebase-client.js            # Firebase Web app và Analytics
 ├── firestore.rules               # Chặn truy cập dữ liệu trực tiếp từ client
 ├── tests/api.test.mjs            # Kiểm thử tích hợp API
+├── tests/catalog-api.test.mjs    # Kiểm thử tích hợp quản trị danh mục
+├── tests/catalog-schema.test.mjs # Kiểm thử chuẩn hóa dữ liệu danh mục
 ├── docs/TECHNICAL_ARCHITECTURE.md
 ├── BA_CAU_TRUC_HE_THONG_CLB.md
 ├── Dockerfile
@@ -192,6 +238,8 @@ docker compose up --build
 
 - Chưa gửi OTP, email, SMS hoặc Zalo thật.
 - Chưa tích hợp cổng thanh toán hay hệ thống kế toán/SIS.
-- Chưa có giao diện CRUD đầy đủ cho CLB, lịch, tài khoản và phân quyền.
+- Đã có CRUD cho đợt/CLB/lớp; chưa có CRUD cho tài khoản và phân quyền theo vai trò chi tiết (hiện chỉ hai vai trò `parent` và `admin`).
+- Chưa có luồng đổi/hủy đơn, tự động gọi danh sách chờ khi có chỗ trống, khóa và xuất danh sách chính thức.
+- Trang Đối soát phí và Báo cáo vẫn là giao diện minh họa; mới có xác nhận phí từng đơn và xuất CSV.
 - SQLite chỉ dùng cho demo local và kiểm thử; Production dùng Firestore phân tán.
 - Chưa có bước duyệt thay đổi dữ liệu theo từng dòng trước khi đồng bộ hàng loạt từ Sheet.

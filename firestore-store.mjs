@@ -39,6 +39,39 @@ function asServerUser(document) {
   };
 }
 
+// Một dòng danh mục = một lớp CLB. Tách rõ trường của CLB và của lớp để tên lớp
+// không ghi đè tên CLB khi trộn hai document.
+function normalizeCatalogRow(club, clubClass) {
+  return {
+    id: clubClass.id,
+    clubId: club.id,
+    code: club.code,
+    name: club.name,
+    className: clubClass.name || "",
+    category: club.category,
+    description: club.description,
+    emoji: club.emoji,
+    visual: club.visual,
+    grades: Array.isArray(club.grades) ? club.grades : [],
+    classGrades: Array.isArray(clubClass.grades) ? clubClass.grades : [],
+    clubSortOrder: Number(club.sortOrder || 0),
+    sortOrder: Number(clubClass.sortOrder || 0),
+    periodId: clubClass.periodId,
+    dayOfWeek: clubClass.dayOfWeek,
+    startTime: clubClass.startTime,
+    endTime: clubClass.endTime,
+    scheduleLabel: clubClass.scheduleLabel,
+    room: clubClass.room,
+    teacher: clubClass.teacher,
+    capacity: Number(clubClass.capacity || 0),
+    minCapacity: Number(clubClass.minCapacity || 0),
+    enrolledBase: Number(clubClass.enrolledBase || 0),
+    fee: Number(clubClass.fee || 0),
+    waitlistEnabled: clubClass.waitlistEnabled !== false,
+    active: clubClass.active !== false,
+  };
+}
+
 function createHttpError(status, code, message, details) {
   const error = new Error(message);
   Object.assign(error, { status, code, details });
@@ -66,6 +99,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
     const oauthStates = firestore.collection("oauthStates");
     const auditLogs = firestore.collection("auditLogs");
     const classCounters = firestore.collection("classCounters");
+    const registrationPeriods = firestore.collection("registrationPeriods");
 
     async function commitDocuments(documents) {
       for (const group of chunks(documents)) {
@@ -73,6 +107,18 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         for (const item of group) batch.set(firestore.doc(item.path), item.data, item.options || { merge: false });
         await batch.commit();
       }
+    }
+
+    // Bộ đếm chỗ = số ghi danh sẵn + số đơn đang giữ chỗ. Phải tính lại mỗi khi
+    // quản trị sửa lớp để giao dịch đăng ký không dựa trên số cũ.
+    async function recomputeClassCounter(classId, enrolledBase) {
+      const snapshot = await registrations.where("classId", "==", classId).get();
+      const active = snapshotRows(snapshot).filter((row) => ACTIVE_STATUSES.has(row.status)).length;
+      await classCounters.doc(classId).set({
+        classId,
+        enrolledCount: Number(enrolledBase || 0) + active,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
     }
 
     async function seedIfEmpty() {
@@ -219,13 +265,72 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         const clubMap = new Map(snapshotRows(clubSnapshot).filter((club) => club.active !== false).map((club) => [club.id, club]));
         return snapshotRows(classSnapshot)
           .filter((clubClass) => clubClass.active !== false && clubMap.has(clubClass.clubId))
-          .map((clubClass) => ({ ...clubMap.get(clubClass.clubId), ...clubClass, id: clubClass.id }))
-          .sort((left, right) => String(left.category).localeCompare(String(right.category), "vi") || String(left.name).localeCompare(String(right.name), "vi"));
+          .map((clubClass) => normalizeCatalogRow(clubMap.get(clubClass.clubId), clubClass))
+          .sort((left, right) => Number(left.clubSortOrder || 0) - Number(right.clubSortOrder || 0)
+            || String(left.category).localeCompare(String(right.category), "vi")
+            || String(left.name).localeCompare(String(right.name), "vi")
+            || Number(left.sortOrder || 0) - Number(right.sortOrder || 0)
+            || Number(left.dayOfWeek || 0) - Number(right.dayOfWeek || 0)
+            || String(left.startTime || "").localeCompare(String(right.startTime || "")));
       },
 
       async getEnrollmentCounts() {
         const snapshot = await classCounters.get();
         return Object.fromEntries(snapshot.docs.map((document) => [document.id, Number(document.data().enrolledCount || 0)]));
+      },
+
+      async listPeriods() {
+        return snapshotRows(await registrationPeriods.get())
+          .sort((left, right) => String(right.openAt || "").localeCompare(String(left.openAt || "")));
+      },
+
+      async savePeriod(periodId, data) {
+        await registrationPeriods.doc(periodId).set(data, { merge: true });
+        const document = await registrationPeriods.doc(periodId).get();
+        return { id: document.id, ...document.data() };
+      },
+
+      async adminCatalog() {
+        const [clubSnapshot, classSnapshot, counterSnapshot, registrationSnapshot] = await Promise.all([
+          clubs.get(), clubClasses.get(), classCounters.get(), registrations.get(),
+        ]);
+        const activeRegistrations = {};
+        for (const row of snapshotRows(registrationSnapshot)) {
+          if (!ACTIVE_STATUSES.has(row.status)) continue;
+          activeRegistrations[row.classId] = (activeRegistrations[row.classId] || 0) + 1;
+        }
+        return {
+          clubs: snapshotRows(clubSnapshot),
+          classes: snapshotRows(classSnapshot),
+          enrolled: Object.fromEntries(counterSnapshot.docs.map((document) => [document.id, Number(document.data().enrolledCount || 0)])),
+          activeRegistrations,
+        };
+      },
+
+      async saveClub(clubId, data) {
+        await clubs.doc(clubId).set(data, { merge: true });
+        const document = await clubs.doc(clubId).get();
+        return { id: document.id, ...document.data() };
+      },
+
+      async saveClass(classId, data) {
+        await clubClasses.doc(classId).set(data, { merge: true });
+        const document = await clubClasses.doc(classId).get();
+        const saved = { id: document.id, ...document.data() };
+        await recomputeClassCounter(classId, saved.enrolledBase);
+        return saved;
+      },
+
+      async bulkSaveCatalog({ clubs: clubWrites = [], classes: classWrites = [] }) {
+        await commitDocuments([
+          ...clubWrites.map((item) => ({ path: `clubs/${item.id}`, options: { merge: true }, data: item.data })),
+          ...classWrites.map((item) => ({ path: `clubClasses/${item.id}`, options: { merge: true }, data: item.data })),
+        ]);
+        for (const item of classWrites) await recomputeClassCounter(item.id, item.data.enrolledBase);
+      },
+
+      async appendAudit(entry) {
+        await auditLogs.doc(`audit_${randomBytes(8).toString("hex")}`).set(entry, { merge: false });
       },
 
       async listRegistrations({ parentUserId, status, studentId } = {}) {
@@ -258,7 +363,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         }));
       },
 
-      async createRegistrations({ actorUserId, studentId, groupId, clubs: selectedClubs, registrationIds, timestamp }) {
+      async createRegistrations({ actorUserId, studentId, groupId, periodId = null, clubs: selectedClubs, registrationIds, timestamp }) {
         return firestore.runTransaction(async (transaction) => {
           const existingSnapshot = await transaction.get(registrations.where("studentId", "==", studentId));
           const existing = snapshotRows(existingSnapshot).filter((item) => ACTIVE_STATUSES.has(item.status));
@@ -267,6 +372,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           for (const club of selectedClubs) {
             for (const current of existing) {
               if (current.classId === club.id) throw createHttpError(422, "VALIDATION_FAILED", `${club.name} đã có trong đăng ký hiện tại.`, [{ type: "duplicate", clubId: club.id, message: `${club.name} đã có trong đăng ký hiện tại.` }]);
+              if (club.clubId && current.clubId === club.clubId) throw createHttpError(422, "VALIDATION_FAILED", `Học sinh đã đăng ký một lớp khác của ${club.name}.`, [{ type: "duplicate", clubId: club.id, message: `Học sinh đã đăng ký một lớp khác của ${club.name}.` }]);
               const overlaps = current.dayOfWeek === club.dayOfWeek && club.startTime < current.endTime && current.startTime < club.endTime;
               if (overlaps) throw createHttpError(422, "VALIDATION_FAILED", `${club.name} trùng lịch với một CLB đã đăng ký.`, [{ type: "conflict", clubId: club.id, message: `${club.name} trùng lịch với một CLB đã đăng ký.` }]);
             }
@@ -275,7 +381,8 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
             const counter = counterSnapshots[index].exists ? Number(counterSnapshots[index].data().enrolledCount || 0) : Number(club.enrolled || 0);
             const status = counter >= Number(club.capacity) ? "waitlist" : "payment";
             const registration = {
-              id: registrationIds[index], groupId, studentId, parentUserId: actorUserId, classId: club.id, status,
+              id: registrationIds[index], groupId, studentId, parentUserId: actorUserId, classId: club.id,
+              clubId: club.clubId || null, periodId: periodId || club.periodId || null, status,
               feeSnapshot: Number(club.fee), scheduleSnapshot: club.schedule, termsAcceptedAt: timestamp,
               createdAt: timestamp, updatedAt: timestamp, dayOfWeek: club.dayOfWeek, startTime: club.startTime, endTime: club.endTime,
             };

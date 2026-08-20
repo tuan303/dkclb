@@ -47,7 +47,11 @@ after(async () => {
 test("health endpoint is available", async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).ok, true);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+  // Nền sqlite là môi trường phát triển nên có tài khoản minh họa; production Firestore thì không.
+  assert.equal(body.dataBackend, "sqlite");
+  assert.equal(body.demoAccounts, true);
 });
 
 test("parent phone login accepts the Sheet format without a leading zero", async () => {

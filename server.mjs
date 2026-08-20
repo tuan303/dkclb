@@ -10,6 +10,14 @@ import { createGoogleSheetsDirectorySource, toVietnameseLocalPhone } from "./she
 import { createMicrosoftAuth } from "./microsoft-auth.mjs";
 import { createGoogleCloudAuth } from "./google-cloud-auth.mjs";
 import { validatePasswordPolicy } from "./password-policy.mjs";
+import {
+  MAX_IMPORT_ROWS,
+  analyzeCatalogImport,
+  detectCatalogMapping,
+  normalizeClassInput,
+  normalizeClubInput,
+  normalizePeriodInput,
+} from "./catalog-schema.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const LOCAL_ENV_FILE = join(ROOT, ".env");
@@ -26,7 +34,7 @@ const SHEETS_SERVICE_ACCOUNT = process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT || "nsh
 const MICROSOFT_REDIRECT_URI = process.env.MICROSOFT_REDIRECT_URI || `http://127.0.0.1:${PORT}/api/auth/microsoft/callback`;
 const SESSION_COOKIE = "nshm_session";
 const SESSION_MAX_AGE = 8 * 60 * 60;
-const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-client.js"]);
+const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-client.js", "sheet-reader.js"]);
 
 if (!["sqlite", "firestore"].includes(DATA_BACKEND)) {
   throw new Error("DATA_BACKEND chỉ chấp nhận 'sqlite' hoặc 'firestore'.");
@@ -148,7 +156,10 @@ function initializeDatabase() {
       term TEXT NOT NULL,
       open_at TEXT NOT NULL,
       close_at TEXT NOT NULL,
-      status TEXT NOT NULL
+      status TEXT NOT NULL,
+      max_clubs_per_student INTEGER NOT NULL DEFAULT 3,
+      note TEXT,
+      updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS clubs (
       id TEXT PRIMARY KEY,
@@ -159,12 +170,16 @@ function initializeDatabase() {
       emoji TEXT NOT NULL,
       visual TEXT NOT NULL,
       grades_json TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS club_classes (
       id TEXT PRIMARY KEY,
       club_id TEXT NOT NULL REFERENCES clubs(id),
       period_id TEXT NOT NULL REFERENCES registration_periods(id),
+      name TEXT NOT NULL DEFAULT '',
+      min_capacity INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       day_of_week INTEGER NOT NULL,
       start_time TEXT NOT NULL,
       end_time TEXT NOT NULL,
@@ -183,6 +198,7 @@ function initializeDatabase() {
       student_id TEXT NOT NULL REFERENCES students(id),
       parent_user_id TEXT REFERENCES users(id),
       class_id TEXT NOT NULL REFERENCES club_classes(id),
+      period_id TEXT,
       status TEXT NOT NULL,
       fee_snapshot INTEGER NOT NULL,
       schedule_snapshot TEXT NOT NULL,
@@ -233,6 +249,15 @@ function initializeDatabase() {
   ensureColumn("users", "login_failures", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("users", "locked_until", "TEXT");
   ensureColumn("students", "date_of_birth", "TEXT");
+  ensureColumn("registration_periods", "max_clubs_per_student", "INTEGER NOT NULL DEFAULT 3");
+  ensureColumn("registration_periods", "note", "TEXT");
+  ensureColumn("registration_periods", "updated_at", "TEXT");
+  ensureColumn("clubs", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("club_classes", "name", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("club_classes", "min_capacity", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("club_classes", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("registrations", "period_id", "TEXT");
+  ensureColumn("club_classes", "grades_json", "TEXT NOT NULL DEFAULT '[]'");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_microsoft_object_id ON users(microsoft_object_id) WHERE microsoft_object_id IS NOT NULL;");
 
   const count = asInt(db.prepare("SELECT COUNT(*) AS count FROM users").get().count);
@@ -247,6 +272,14 @@ const CLUB_SEED_ROWS = [
   ["debate", "LANG-DB", "English Debate", "Ngôn ngữ", "Rèn tư duy phản biện, kỹ năng trình bày và sử dụng tiếng Anh trong các chủ đề gần gũi.", "💬", "life", [5,6,7,8,9], 5, "16:15", "17:45", "Thứ 6 · 16:15–17:45", "Phòng 4.1", "Ms. Anna & Cô Hà", 20, 10, 1450000],
   ["dance", "ART-DN", "Nhảy hiện đại", "Nghệ thuật", "Phát triển cảm thụ âm nhạc, sự tự tin và khả năng trình diễn theo nhóm.", "💃", "art", [1,2,3,4,5,6,7], 6, "08:30", "10:00", "Thứ 7 · 08:30–10:00", "Hội trường tầng 5", "Cô Khánh Vy", 24, 18, 1250000],
 ];
+
+// Đợt mẫu bám theo ngày chạy thật để bản demo và bộ kiểm thử không hết hạn theo thời gian.
+function seedPeriodWindow(now = Date.now()) {
+  return {
+    openAt: new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    closeAt: new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
 
 function seedDatabase() {
   const createdAt = nowIso();
@@ -276,10 +309,11 @@ function seedDatabase() {
   db.prepare("INSERT INTO parent_students VALUES (?, ?, ?)").run("u_parent", "hs01", "Mẹ");
   db.prepare("INSERT INTO parent_students VALUES (?, ?, ?)").run("u_parent", "hs02", "Mẹ");
 
+  const seedWindow = seedPeriodWindow();
   db.prepare(`INSERT INTO registration_periods
-    (id, name, school_year, term, open_at, close_at, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run("period_2026_hk1", "Đăng ký CLB · Học kỳ I", "2026–2027", "Học kỳ I", "2026-08-12T01:00:00.000Z", "2026-08-24T16:59:59.000Z", "open");
+    (id, name, school_year, term, open_at, close_at, status, max_clubs_per_student, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run("period_2026_hk1", "Đăng ký CLB · Học kỳ I", "2026–2027", "Học kỳ I", seedWindow.openAt, seedWindow.closeAt, "open", 3, createdAt);
 
   const insertClub = db.prepare("INSERT INTO clubs (id, code, name, category, description, emoji, visual, grades_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   const insertClass = db.prepare(`INSERT INTO club_classes
@@ -313,18 +347,18 @@ if (DATA_BACKEND === "sqlite") {
 }
 
 function firestoreSeedData() {
-  const clubs = CLUB_SEED_ROWS.map(([clubId, code, name, category, description, emoji, visual, grades]) => ({
-    id: clubId, code, name, category, description, emoji, visual, grades, active: true,
+  const clubs = CLUB_SEED_ROWS.map(([clubId, code, name, category, description, emoji, visual, grades], index) => ({
+    id: clubId, code, name, category, description, emoji, visual, grades, sortOrder: index, active: true,
   }));
-  const classes = CLUB_SEED_ROWS.map(([clubId, , , , , , , , dayOfWeek, startTime, endTime, scheduleLabel, room, teacher, capacity, enrolledBase, fee]) => ({
-    id: clubId, clubId, periodId: "period_2026_hk1", dayOfWeek, startTime, endTime, scheduleLabel,
-    room, teacher, capacity, enrolledBase, fee, waitlistEnabled: true, active: true,
+  const classes = CLUB_SEED_ROWS.map(([clubId, , , , , , , , dayOfWeek, startTime, endTime, scheduleLabel, room, teacher, capacity, enrolledBase, fee], index) => ({
+    id: clubId, clubId, periodId: "period_2026_hk1", name: "Ca chính", dayOfWeek, startTime, endTime, scheduleLabel,
+    room, teacher, capacity, minCapacity: 0, enrolledBase, fee, waitlistEnabled: true, sortOrder: index, active: true,
   }));
   return {
     users: [], students: [], parentStudents: [], registrations: [], supportRequests: [], auditLogs: [], clubs, classes,
     periods: [{
       id: "period_2026_hk1", name: "Đăng ký CLB · Học kỳ I", schoolYear: "2026–2027", term: "Học kỳ I",
-      openAt: "2026-08-12T01:00:00.000Z", closeAt: "2026-08-24T16:59:59.000Z", status: "open",
+      ...seedPeriodWindow(), status: "open", maxClubsPerStudent: 3, note: "",
     }],
   };
 }
@@ -384,12 +418,12 @@ function httpError(status, code, message, details) {
   return error;
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = 1_000_000) {
   const chunks = [];
   let length = 0;
   for await (const chunk of req) {
     length += chunk.length;
-    if (length > 1_000_000) throw httpError(413, "PAYLOAD_TOO_LARGE", "Dữ liệu gửi lên vượt giới hạn.");
+    if (length > maxBytes) throw httpError(413, "PAYLOAD_TOO_LARGE", "Dữ liệu gửi lên vượt giới hạn.");
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -424,7 +458,7 @@ async function rawRegistrationRows({ parentUserId, status, studentId } = {}) {
   if (status && status !== "all") { conditions.push("r.status = ?"); params.push(status); }
   if (studentId) { conditions.push("r.student_id = ?"); params.push(studentId); }
   return db.prepare(`SELECT r.id, r.group_id AS groupId, r.student_id AS studentId,
-    r.parent_user_id AS parentUserId, r.class_id AS classId, r.status,
+    r.parent_user_id AS parentUserId, r.class_id AS classId, r.period_id AS periodId, r.status,
     r.fee_snapshot AS feeSnapshot, r.schedule_snapshot AS scheduleSnapshot,
     r.terms_accepted_at AS termsAcceptedAt, r.created_at AS createdAt, r.updated_at AS updatedAt,
     cc.day_of_week AS dayOfWeek, cc.start_time AS startTime, cc.end_time AS endTime
@@ -432,12 +466,16 @@ async function rawRegistrationRows({ parentUserId, status, studentId } = {}) {
     WHERE ${conditions.join(" AND ")} ORDER BY r.created_at DESC`).all(...params);
 }
 
-async function clubRows(studentId) {
+async function clubRows(studentId, periodId = null) {
   const student = studentId ? (businessStore ? await businessStore.getStudent(studentId) : db.prepare("SELECT * FROM students WHERE id = ?").get(studentId)) : null;
-  const rows = businessStore ? await businessStore.listClubs() : db.prepare(`SELECT c.*, cc.day_of_week, cc.start_time, cc.end_time, cc.schedule_label,
-      cc.room, cc.teacher, cc.capacity, cc.enrolled_base, cc.fee, cc.waitlist_enabled
+  const rows = businessStore ? await businessStore.listClubs() : db.prepare(`SELECT cc.id AS id, c.id AS club_id, c.code AS club_code, c.name, c.category,
+      c.description, c.emoji, c.visual, c.grades_json, cc.grades_json AS class_grades_json, cc.name AS class_name, cc.period_id,
+      cc.day_of_week, cc.start_time, cc.end_time, cc.schedule_label, cc.room, cc.teacher,
+      cc.capacity, cc.min_capacity, cc.enrolled_base, cc.fee, cc.waitlist_enabled
     FROM clubs c JOIN club_classes cc ON cc.club_id = c.id
-    WHERE c.active = 1 AND cc.active = 1 ORDER BY c.category, c.name`).all();
+    WHERE c.active = 1 AND cc.active = 1
+    ORDER BY c.sort_order, c.category, c.name, cc.sort_order, cc.day_of_week, cc.start_time`).all();
+  const scopedRows = periodId ? rows.filter((row) => (row.periodId || row.period_id) === periodId) : rows;
   let enrollmentCounts;
   if (businessStore) {
     enrollmentCounts = await businessStore.getEnrollmentCounts();
@@ -447,18 +485,38 @@ async function clubRows(studentId) {
       FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`).all();
     enrollmentCounts = Object.fromEntries(counts.map((row) => [row.id, asInt(row.enrolled)]));
   }
-  return rows.map((row) => ({
-    ...(() => {
-      const grades = businessStore ? row.grades : JSON.parse(row.grades_json);
-      return {
-    id: row.id, name: row.name, category: row.category, description: row.description, emoji: row.emoji,
-    visual: row.visual, grade: grades, schedule: row.scheduleLabel || row.schedule_label, room: row.room,
-    teacher: row.teacher, capacity: row.capacity, enrolled: asInt(enrollmentCounts[row.id] ?? row.enrolledBase ?? row.enrolled_base), fee: row.fee,
-    eligible: student ? grades.includes(student.grade) : true,
-    dayOfWeek: row.dayOfWeek ?? row.day_of_week, startTime: row.startTime || row.start_time, endTime: row.endTime || row.end_time,
-      };
-    })(),
-  }));
+  return scopedRows.map((row) => {
+    const clubGrades = businessStore ? row.grades : JSON.parse(row.grades_json);
+    const classGrades = businessStore ? (row.classGrades || []) : JSON.parse(row.class_grades_json || "[]");
+    // Khối khai riêng cho từng ca được ưu tiên; không khai thì dùng khối chung của CLB.
+    const grades = classGrades.length ? classGrades : clubGrades;
+    const waitlist = row.waitlistEnabled ?? row.waitlist_enabled;
+    return {
+      id: row.id,
+      clubId: row.clubId || row.club_id,
+      code: row.code || row.club_code,
+      name: row.name,
+      className: row.className || row.class_name || "",
+      category: row.category,
+      description: row.description,
+      emoji: row.emoji,
+      visual: row.visual,
+      grade: grades,
+      periodId: row.periodId || row.period_id,
+      schedule: row.scheduleLabel || row.schedule_label,
+      room: row.room,
+      teacher: row.teacher,
+      capacity: asInt(row.capacity),
+      minCapacity: asInt(row.minCapacity ?? row.min_capacity),
+      enrolled: asInt(enrollmentCounts[row.id] ?? row.enrolledBase ?? row.enrolled_base),
+      fee: asInt(row.fee),
+      waitlistEnabled: waitlist !== 0 && waitlist !== false,
+      eligible: student ? grades.includes(student.grade) : true,
+      dayOfWeek: row.dayOfWeek ?? row.day_of_week,
+      startTime: row.startTime || row.start_time,
+      endTime: row.endTime || row.end_time,
+    };
+  });
 }
 
 function intervalsOverlap(a, b) {
@@ -469,18 +527,24 @@ async function validateRegistration(user, studentId, clubIds) {
   if (!studentId || !Array.isArray(clubIds) || clubIds.length === 0) {
     throw httpError(400, "INVALID_REGISTRATION", "Vui lòng chọn học sinh và ít nhất một CLB.");
   }
-  if (clubIds.length > 3) throw httpError(422, "MAX_CLUBS", "Mỗi học sinh được đăng ký tối đa 3 CLB trong đợt này.");
+  const period = await requireActivePeriod();
+  if (clubIds.length > period.maxClubsPerStudent) {
+    throw httpError(422, "MAX_CLUBS", `Mỗi học sinh được đăng ký tối đa ${period.maxClubsPerStudent} CLB trong đợt này.`);
+  }
   const ownership = businessStore ? await businessStore.parentOwnsStudent(user.id, studentId) : db.prepare(`SELECT s.* FROM students s JOIN parent_students ps ON ps.student_id = s.id
     WHERE ps.parent_user_id = ? AND s.id = ? AND s.status = 'active'`).get(user.id, studentId);
   if (!ownership) throw httpError(403, "STUDENT_SCOPE", "Học sinh không thuộc tài khoản phụ huynh hiện tại.");
 
-  const available = new Map((await clubRows(studentId)).map((club) => [club.id, club]));
+  const available = new Map((await clubRows(studentId, period.id)).map((club) => [club.id, club]));
   const selected = clubIds.map((clubId) => available.get(clubId));
   if (selected.some((club) => !club)) throw httpError(404, "CLUB_NOT_FOUND", "Có CLB không còn tồn tại hoặc đã bị ẩn.");
 
   const issues = [];
   for (const club of selected) {
     if (!club.eligible) issues.push({ type: "ineligible", clubId: club.id, message: `${club.name} không áp dụng cho khối của học sinh.` });
+    if (club.enrolled >= club.capacity && !club.waitlistEnabled) {
+      issues.push({ type: "full", clubId: club.id, message: `${club.name} đã đủ sĩ số và không nhận danh sách chờ.` });
+    }
   }
   for (let i = 0; i < selected.length; i += 1) {
     for (let j = i + 1; j < selected.length; j += 1) {
@@ -489,30 +553,61 @@ async function validateRegistration(user, studentId, clubIds) {
   }
   const existing = (await rawRegistrationRows({ studentId }))
     .filter((registration) => ["submitted", "payment", "confirmed"].includes(registration.status))
-    .map((registration) => ({
-      id: registration.classId,
-      name: available.get(registration.classId)?.name || registration.classId,
-      dayOfWeek: registration.dayOfWeek,
-      startTime: registration.startTime,
-      endTime: registration.endTime,
-    }));
+    .map((registration) => {
+      const known = available.get(registration.classId);
+      return {
+        id: registration.classId,
+        clubId: known?.clubId || registration.classId,
+        name: known?.name || registration.classId,
+        // Đơn cũ chưa gắn mã đợt thì suy ra từ việc lớp có thuộc đợt đang mở hay không.
+        inPeriod: registration.periodId ? registration.periodId === period.id : available.has(registration.classId),
+        dayOfWeek: registration.dayOfWeek,
+        startTime: registration.startTime,
+        endTime: registration.endTime,
+      };
+    });
+
+  // Hai lớp khác nhau của cùng một CLB vẫn bị coi là đăng ký trùng CLB.
+  const chosenClubIds = new Set();
+  for (const club of selected) {
+    if (chosenClubIds.has(club.clubId)) {
+      issues.push({ type: "duplicate", clubId: club.id, message: `Đã chọn hai lớp của cùng CLB ${club.name}. Vui lòng chỉ giữ một lớp.` });
+    }
+    chosenClubIds.add(club.clubId);
+  }
   for (const club of selected) {
     for (const current of existing) {
       if (current.id === club.id) issues.push({ type: "duplicate", clubId: club.id, message: `${club.name} đã có trong đăng ký hiện tại.` });
+      else if (current.inPeriod && current.clubId === club.clubId) issues.push({ type: "duplicate", clubId: club.id, message: `Học sinh đã đăng ký một lớp khác của ${club.name}.` });
       else if (intervalsOverlap(club, current)) issues.push({ type: "conflict", clubId: club.id, message: `${club.name} trùng lịch với ${current.name} đã đăng ký.` });
     }
   }
-  return { valid: issues.length === 0, issues, clubs: selected.map((club) => ({ ...club, proposedStatus: club.enrolled >= club.capacity ? "waitlist" : "payment" })) };
+
+  const clubsInPeriod = new Set(existing.filter((current) => current.inPeriod).map((current) => current.clubId));
+  for (const club of selected) clubsInPeriod.add(club.clubId);
+  if (clubsInPeriod.size > period.maxClubsPerStudent) {
+    issues.push({ type: "limit", clubId: selected[0].id, message: `Học sinh chỉ được đăng ký tối đa ${period.maxClubsPerStudent} CLB trong đợt này.` });
+  }
+
+  return {
+    valid: issues.length === 0,
+    issues,
+    period: { id: period.id, name: period.name, closeAt: period.closeAt, maxClubsPerStudent: period.maxClubsPerStudent },
+    clubs: selected.map((club) => ({ ...club, proposedStatus: club.enrolled >= club.capacity ? "waitlist" : "payment" })),
+  };
 }
 
 async function listRegistrations(user, status) {
   const rows = await rawRegistrationRows({ parentUserId: user.role === "parent" ? user.id : undefined, status });
-  const hydrated = businessStore ? await businessStore.hydrateRegistrations(rows) : rows.map((registration) => ({
-    registration,
-    student: db.prepare("SELECT name, homeroom FROM students WHERE id = ?").get(registration.studentId) || {},
-    clubClass: db.prepare(`SELECT cc.room, cc.teacher, cc.club_id AS clubId FROM club_classes cc WHERE cc.id = ?`).get(registration.classId) || {},
-    club: db.prepare("SELECT id, name FROM clubs WHERE id = ?").get(registration.classId) || {},
-  }));
+  const hydrated = businessStore ? await businessStore.hydrateRegistrations(rows) : rows.map((registration) => {
+    const clubClass = db.prepare("SELECT cc.room, cc.teacher, cc.name AS className, cc.club_id AS clubId FROM club_classes cc WHERE cc.id = ?").get(registration.classId) || {};
+    return {
+      registration,
+      student: db.prepare("SELECT name, homeroom FROM students WHERE id = ?").get(registration.studentId) || {},
+      clubClass,
+      club: (clubClass.clubId ? db.prepare("SELECT id, name FROM clubs WHERE id = ?").get(clubClass.clubId) : null) || {},
+    };
+  });
   return hydrated.map(({ registration, student, clubClass, club }) => {
     return {
       id: registration.id,
@@ -522,7 +617,12 @@ async function listRegistrations(user, status) {
       className: student.homeroom || "—",
       clubId: club.id || registration.classId,
       club: club.name || registration.classId,
+      classId: registration.classId,
+      classLabel: clubClass.className || clubClass.name || "",
       schedule: registration.scheduleSnapshot,
+      dayOfWeek: registration.dayOfWeek ?? null,
+      startTime: registration.startTime || "",
+      endTime: registration.endTime || "",
       status: registration.status,
       amount: Number(registration.feeSnapshot || 0),
       createdAt: registration.createdAt,
@@ -635,6 +735,307 @@ async function syncGoogleDirectory(actorUserId) {
   }
 }
 
+// ---- Danh mục vận hành: đợt đăng ký, CLB và lớp CLB ----
+
+async function writeAudit({ actorUserId, action, entityType, entityId, before = null, after = null, reason = null }) {
+  const timestamp = nowIso();
+  if (businessStore) {
+    await businessStore.appendAudit({ actorUserId, action, entityType, entityId, before, after, reason, createdAt: timestamp });
+    return;
+  }
+  db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, before_json, after_json, reason, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id("audit"), actorUserId, action, entityType, entityId,
+      before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null, reason, timestamp);
+}
+
+async function listPeriodRows() {
+  const rows = businessStore ? await businessStore.listPeriods() : db.prepare(`SELECT id, name, school_year AS schoolYear, term,
+    open_at AS openAt, close_at AS closeAt, status, max_clubs_per_student AS maxClubsPerStudent, note, updated_at AS updatedAt
+    FROM registration_periods ORDER BY open_at DESC`).all();
+  return rows.map((row) => ({ ...row, maxClubsPerStudent: asInt(row.maxClubsPerStudent) || 3 }));
+}
+
+// Đợt chỉ nhận đơn khi trạng thái là 'open' VÀ giờ máy chủ nằm trong khoảng mở/đóng.
+// Không phụ thuộc đồng hồ thiết bị của phụ huynh.
+function periodAcceptsRegistrations(period, now = nowIso()) {
+  return Boolean(period) && period.status === "open" && String(period.openAt) <= now && now <= String(period.closeAt);
+}
+
+// Chỉ trả ra các trường phụ huynh cần biết về đợt đăng ký.
+function publicPeriod(period) {
+  if (!period) return null;
+  return {
+    id: period.id, name: period.name, schoolYear: period.schoolYear, term: period.term,
+    openAt: period.openAt, closeAt: period.closeAt, maxClubsPerStudent: period.maxClubsPerStudent, note: period.note || "",
+  };
+}
+
+async function getActivePeriod() {
+  const now = nowIso();
+  return (await listPeriodRows()).find((period) => periodAcceptsRegistrations(period, now)) || null;
+}
+
+async function requireActivePeriod() {
+  const period = await getActivePeriod();
+  if (!period) throw httpError(409, "REGISTRATION_CLOSED", "Hiện không có đợt đăng ký nào đang mở. Vui lòng liên hệ nhà trường.");
+  return period;
+}
+
+async function savePeriodRecord({ actorUserId, periodId, input }) {
+  const periods = await listPeriodRows();
+  const existing = periodId ? periods.find((period) => period.id === periodId) : null;
+  if (periodId && !existing) throw httpError(404, "PERIOD_NOT_FOUND", "Không tìm thấy đợt đăng ký.");
+  const data = normalizePeriodInput(input, { existing });
+  const targetId = periodId || id("period");
+  if (data.status === "open") {
+    const clash = periods.find((period) => period.id !== targetId && period.status === "open");
+    if (clash) throw httpError(409, "PERIOD_ALREADY_OPEN", `Đợt "${clash.name}" đang mở. Hãy đóng đợt đó trước khi mở đợt khác.`);
+  }
+  const timestamp = nowIso();
+  if (businessStore) {
+    await businessStore.savePeriod(targetId, { ...data, updatedAt: timestamp });
+  } else if (existing) {
+    db.prepare(`UPDATE registration_periods SET name = ?, school_year = ?, term = ?, open_at = ?, close_at = ?,
+      status = ?, max_clubs_per_student = ?, note = ?, updated_at = ? WHERE id = ?`)
+      .run(data.name, data.schoolYear, data.term, data.openAt, data.closeAt, data.status, data.maxClubsPerStudent, data.note, timestamp, targetId);
+  } else {
+    db.prepare(`INSERT INTO registration_periods (id, name, school_year, term, open_at, close_at, status, max_clubs_per_student, note, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(targetId, data.name, data.schoolYear, data.term, data.openAt, data.closeAt, data.status, data.maxClubsPerStudent, data.note, timestamp);
+  }
+  await writeAudit({
+    actorUserId, action: existing ? "UPDATE_PERIOD" : "CREATE_PERIOD", entityType: "registration_period",
+    entityId: targetId, before: existing || null, after: { id: targetId, ...data },
+  });
+  return { id: targetId, ...data, updatedAt: timestamp };
+}
+
+async function adminCatalogData() {
+  if (businessStore) {
+    const catalog = await businessStore.adminCatalog();
+    return {
+      clubs: catalog.clubs.map((club) => ({
+        id: club.id, code: club.code || "", name: club.name, category: club.category, description: club.description || "",
+        emoji: club.emoji || "🎯", visual: club.visual || "life", grades: Array.isArray(club.grades) ? club.grades : [],
+        sortOrder: asInt(club.sortOrder), active: club.active !== false,
+      })),
+      classes: catalog.classes.map((row) => ({
+        id: row.id, clubId: row.clubId, periodId: row.periodId, name: row.name || "", dayOfWeek: asInt(row.dayOfWeek),
+        startTime: row.startTime, endTime: row.endTime, scheduleLabel: row.scheduleLabel, room: row.room, teacher: row.teacher,
+        capacity: asInt(row.capacity), minCapacity: asInt(row.minCapacity), enrolledBase: asInt(row.enrolledBase),
+        grades: Array.isArray(row.grades) ? row.grades : [],
+        fee: asInt(row.fee), waitlistEnabled: row.waitlistEnabled !== false, sortOrder: asInt(row.sortOrder), active: row.active !== false,
+        enrolled: asInt(catalog.enrolled[row.id] ?? row.enrolledBase),
+        activeRegistrations: asInt(catalog.activeRegistrations[row.id]),
+      })),
+    };
+  }
+  const clubs = db.prepare(`SELECT id, code, name, category, description, emoji, visual, grades_json AS gradesJson,
+    sort_order AS sortOrder, active FROM clubs ORDER BY sort_order, category, name`).all()
+    .map((club) => ({
+      id: club.id, code: club.code, name: club.name, category: club.category, description: club.description,
+      emoji: club.emoji, visual: club.visual, grades: JSON.parse(club.gradesJson), sortOrder: asInt(club.sortOrder), active: club.active === 1,
+    }));
+  const counts = Object.fromEntries(db.prepare(`SELECT cc.id,
+    COALESCE(SUM(CASE WHEN r.status IN ('submitted','payment','confirmed') THEN 1 ELSE 0 END), 0) AS activeRegistrations
+    FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`).all()
+    .map((row) => [row.id, asInt(row.activeRegistrations)]));
+  const classes = db.prepare(`SELECT id, club_id AS clubId, period_id AS periodId, name, day_of_week AS dayOfWeek,
+    start_time AS startTime, end_time AS endTime, schedule_label AS scheduleLabel, room, teacher, capacity,
+    min_capacity AS minCapacity, enrolled_base AS enrolledBase, fee, waitlist_enabled AS waitlistEnabled,
+    grades_json AS gradesJson, sort_order AS sortOrder, active FROM club_classes ORDER BY sort_order, day_of_week, start_time`).all()
+    .map(({ gradesJson, ...row }) => ({
+      ...row, grades: JSON.parse(gradesJson || "[]"),
+      capacity: asInt(row.capacity), minCapacity: asInt(row.minCapacity), enrolledBase: asInt(row.enrolledBase),
+      fee: asInt(row.fee), sortOrder: asInt(row.sortOrder), dayOfWeek: asInt(row.dayOfWeek),
+      waitlistEnabled: row.waitlistEnabled === 1, active: row.active === 1,
+      activeRegistrations: counts[row.id] || 0, enrolled: asInt(row.enrolledBase) + (counts[row.id] || 0),
+    }));
+  return { clubs, classes };
+}
+
+async function saveClubRecord({ actorUserId, clubId, input }) {
+  const catalog = await adminCatalogData();
+  const existing = clubId ? catalog.clubs.find((club) => club.id === clubId) : null;
+  if (clubId && !existing) throw httpError(404, "CLUB_NOT_FOUND", "Không tìm thấy CLB.");
+  const data = normalizeClubInput(input, { existing });
+  const targetId = clubId || id("club");
+  const duplicate = catalog.clubs.find((club) => club.id !== targetId && String(club.code).toUpperCase() === data.code);
+  if (duplicate) throw httpError(409, "CLUB_CODE_TAKEN", `Mã CLB "${data.code}" đã được dùng cho "${duplicate.name}".`);
+  if (businessStore) {
+    await businessStore.saveClub(targetId, data);
+  } else if (existing) {
+    db.prepare(`UPDATE clubs SET code = ?, name = ?, category = ?, description = ?, emoji = ?, visual = ?,
+      grades_json = ?, sort_order = ?, active = ? WHERE id = ?`)
+      .run(data.code, data.name, data.category, data.description, data.emoji, data.visual,
+        JSON.stringify(data.grades), data.sortOrder, data.active ? 1 : 0, targetId);
+  } else {
+    db.prepare(`INSERT INTO clubs (id, code, name, category, description, emoji, visual, grades_json, sort_order, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(targetId, data.code, data.name, data.category, data.description, data.emoji, data.visual,
+        JSON.stringify(data.grades), data.sortOrder, data.active ? 1 : 0);
+  }
+  await writeAudit({
+    actorUserId, action: existing ? "UPDATE_CLUB" : "CREATE_CLUB", entityType: "club",
+    entityId: targetId, before: existing || null, after: { id: targetId, ...data },
+  });
+  return { id: targetId, ...data };
+}
+
+async function saveClassRecord({ actorUserId, classId, input }) {
+  const [catalog, periods] = await Promise.all([adminCatalogData(), listPeriodRows()]);
+  const existing = classId ? catalog.classes.find((row) => row.id === classId) : null;
+  if (classId && !existing) throw httpError(404, "CLASS_NOT_FOUND", "Không tìm thấy lớp CLB.");
+  const data = normalizeClassInput(input, { existing, knownPeriodIds: periods.map((period) => period.id) });
+  const club = catalog.clubs.find((item) => item.id === data.clubId);
+  if (!club) throw httpError(404, "CLUB_NOT_FOUND", "CLB của lớp này không tồn tại.");
+  const targetId = classId || id("class");
+  const held = existing ? existing.activeRegistrations : 0;
+  const occupied = data.enrolledBase + held;
+  if (data.capacity < occupied) {
+    throw httpError(409, "CAPACITY_BELOW_ENROLLED",
+      `Lớp đang dùng ${occupied} chỗ (${data.enrolledBase} ghi danh sẵn + ${held} đơn đang giữ chỗ), không thể đặt sĩ số tối đa nhỏ hơn.`);
+  }
+  if (!data.active && held > 0) {
+    throw httpError(409, "CLASS_HAS_REGISTRATIONS", `Lớp đang có ${held} đơn hiệu lực. Hãy xử lý các đơn này trước khi ngừng mở lớp.`);
+  }
+  // Một phòng không thể có hai lớp giao giờ trong cùng một đợt.
+  const clash = catalog.classes.find((row) => row.id !== targetId && row.active && row.periodId === data.periodId
+    && row.room === data.room && row.dayOfWeek === data.dayOfWeek
+    && row.startTime < data.endTime && data.startTime < row.endTime);
+  if (clash && data.active) {
+    throw httpError(409, "ROOM_CONFLICT", `Phòng ${data.room} đã có lớp "${clash.scheduleLabel}" trong đợt này.`);
+  }
+  if (businessStore) {
+    await businessStore.saveClass(targetId, data);
+  } else if (existing) {
+    db.prepare(`UPDATE club_classes SET club_id = ?, period_id = ?, name = ?, day_of_week = ?, start_time = ?, end_time = ?,
+      schedule_label = ?, grades_json = ?, room = ?, teacher = ?, capacity = ?, min_capacity = ?, enrolled_base = ?, fee = ?,
+      waitlist_enabled = ?, sort_order = ?, active = ? WHERE id = ?`)
+      .run(data.clubId, data.periodId, data.name, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
+        JSON.stringify(data.grades), data.room, data.teacher, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
+        data.waitlistEnabled ? 1 : 0, data.sortOrder, data.active ? 1 : 0, targetId);
+  } else {
+    db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
+      grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(targetId, data.clubId, data.periodId, data.name, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
+        JSON.stringify(data.grades), data.room, data.teacher, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
+        data.waitlistEnabled ? 1 : 0, data.sortOrder, data.active ? 1 : 0);
+  }
+  await writeAudit({
+    actorUserId, action: existing ? "UPDATE_CLUB_CLASS" : "CREATE_CLUB_CLASS", entityType: "club_class",
+    entityId: targetId, before: existing || null, after: { id: targetId, ...data },
+  });
+  return { id: targetId, ...data };
+}
+
+function buildCatalogImportPlan(analysis, { catalog, periodId }) {
+  const clubsByCode = new Map(catalog.clubs.map((club) => [String(club.code).toUpperCase(), club]));
+  const clubsByName = new Map(catalog.clubs.map((club) => [String(club.name).trim().toLowerCase(), club]));
+  const classKey = (row) => `${row.clubId}|${row.periodId}|${row.dayOfWeek}|${row.startTime}|${row.room}`;
+  const existingClasses = new Map(catalog.classes.map((row) => [classKey(row), row]));
+  const clubIdByKey = new Map();
+  const clubWrites = [];
+  const classWrites = [];
+  const counters = { clubsCreated: 0, clubsUpdated: 0, classesCreated: 0, classesUpdated: 0 };
+
+  for (const club of analysis.clubs) {
+    const match = clubsByCode.get(String(club.code).toUpperCase()) || clubsByName.get(club.name.trim().toLowerCase());
+    const data = normalizeClubInput({
+      code: club.code, name: club.name, category: club.category, description: club.description,
+      emoji: club.emoji, grades: club.grades, sortOrder: club.sortOrder, active: true,
+    }, { existing: match });
+    const targetId = match?.id || id("club");
+    clubIdByKey.set(club.key, targetId);
+    clubWrites.push({ id: targetId, data, existing: match || null });
+    if (match) counters.clubsUpdated += 1;
+    else counters.clubsCreated += 1;
+  }
+
+  for (const row of analysis.classes) {
+    const clubId = clubIdByKey.get(row.clubKey);
+    const data = normalizeClassInput({ ...row, clubId, periodId, active: true }, { knownPeriodIds: [periodId] });
+    const match = existingClasses.get(classKey({ ...data }));
+    const targetId = match?.id || id("class");
+    classWrites.push({ id: targetId, data, existing: match || null });
+    if (match) counters.classesUpdated += 1;
+    else counters.classesCreated += 1;
+  }
+  return { clubWrites, classWrites, counters };
+}
+
+async function commitCatalogImport({ actorUserId, analysis, periodId }) {
+  const periods = await listPeriodRows();
+  if (!periods.some((period) => period.id === periodId)) throw httpError(404, "PERIOD_NOT_FOUND", "Đợt đăng ký không tồn tại.");
+  const catalog = await adminCatalogData();
+  const plan = buildCatalogImportPlan(analysis, { catalog, periodId });
+  const timestamp = nowIso();
+
+  if (businessStore) {
+    await businessStore.bulkSaveCatalog({
+      clubs: plan.clubWrites.map((item) => ({ id: item.id, data: item.data })),
+      classes: plan.classWrites.map((item) => ({ id: item.id, data: item.data })),
+    });
+  } else {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const item of plan.clubWrites) {
+        if (item.existing) {
+          db.prepare(`UPDATE clubs SET code = ?, name = ?, category = ?, description = ?, emoji = ?, visual = ?,
+            grades_json = ?, sort_order = ?, active = 1 WHERE id = ?`)
+            .run(item.data.code, item.data.name, item.data.category, item.data.description, item.data.emoji,
+              item.data.visual, JSON.stringify(item.data.grades), item.data.sortOrder, item.id);
+        } else {
+          db.prepare(`INSERT INTO clubs (id, code, name, category, description, emoji, visual, grades_json, sort_order, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
+            .run(item.id, item.data.code, item.data.name, item.data.category, item.data.description,
+              item.data.emoji, item.data.visual, JSON.stringify(item.data.grades), item.data.sortOrder);
+        }
+      }
+      for (const item of plan.classWrites) {
+        if (item.existing) {
+          db.prepare(`UPDATE club_classes SET club_id = ?, period_id = ?, name = ?, day_of_week = ?, start_time = ?,
+            end_time = ?, schedule_label = ?, grades_json = ?, room = ?, teacher = ?, capacity = ?, min_capacity = ?, fee = ?,
+            waitlist_enabled = ?, sort_order = ?, active = 1 WHERE id = ?`)
+            .run(item.data.clubId, item.data.periodId, item.data.name, item.data.dayOfWeek, item.data.startTime,
+              item.data.endTime, item.data.scheduleLabel, JSON.stringify(item.data.grades), item.data.room, item.data.teacher, item.data.capacity,
+              item.data.minCapacity, item.data.fee, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder, item.id);
+        } else {
+          db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time,
+            schedule_label, grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
+            .run(item.id, item.data.clubId, item.data.periodId, item.data.name, item.data.dayOfWeek, item.data.startTime,
+              item.data.endTime, item.data.scheduleLabel, JSON.stringify(item.data.grades), item.data.room, item.data.teacher, item.data.capacity,
+              item.data.minCapacity, item.data.enrolledBase, item.data.fee, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder);
+        }
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  const importId = id("import");
+  await writeAudit({
+    actorUserId, action: "IMPORT_CLUB_CATALOG", entityType: "club_catalog", entityId: importId,
+    after: { periodId, counters: plan.counters, scannedRows: analysis.counters.scannedRows },
+  });
+  return { importId, periodId, counters: plan.counters, timestamp };
+}
+
+// Chỉ nhận mảng hai chiều đã đọc sẵn từ trình duyệt để backend không phải nhúng thư viện đọc .xlsx.
+function readCatalogImportPayload(payload) {
+  const headers = Array.isArray(payload.headers) ? payload.headers.map((value) => String(value ?? "")) : [];
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  if (!headers.length) throw httpError(422, "IMPORT_HEADERS_REQUIRED", "Không đọc được dòng tiêu đề của file.");
+  if (!rows.length) throw httpError(422, "IMPORT_ROWS_REQUIRED", "File không có dòng dữ liệu nào.");
+  if (rows.length > MAX_IMPORT_ROWS) throw httpError(413, "IMPORT_TOO_LARGE", `File vượt quá ${MAX_IMPORT_ROWS} dòng dữ liệu.`);
+  return { headers, rows: rows.map((row) => (Array.isArray(row) ? row : [])) };
+}
+
 async function handleApi(req, res, url) {
   const method = req.method || "GET";
 
@@ -649,6 +1050,8 @@ async function handleApi(req, res, url) {
       ok: true,
       service: "nshm-clubs",
       dataBackend: DATA_BACKEND,
+      // Tài khoản minh họa chỉ tồn tại ở nền SQLite dùng cho phát triển và kiểm thử.
+      demoAccounts: DATA_BACKEND === "sqlite",
       firebaseProjectId: DATA_BACKEND === "firestore" ? FIREBASE_PROJECT_ID : undefined,
       time: nowIso(),
     });
@@ -768,7 +1171,16 @@ async function handleApi(req, res, url) {
       const owns = businessStore ? await businessStore.parentOwnsStudent(user.id, studentId) : db.prepare("SELECT 1 FROM parent_students WHERE parent_user_id = ? AND student_id = ?").get(user.id, studentId);
       if (!owns) throw httpError(403, "STUDENT_SCOPE", "Bạn không có quyền xem dữ liệu của học sinh này.");
     }
-    return sendJson(res, 200, { clubs: await clubRows(studentId) });
+    const active = await getActivePeriod();
+    // Phụ huynh chỉ thấy lớp thuộc đợt đang mở; quản trị có thể xem theo đợt bất kỳ.
+    const periodId = user.role === "admin" ? url.searchParams.get("periodId") || active?.id || null : active?.id || null;
+    if (user.role === "parent" && !periodId) return sendJson(res, 200, { clubs: [], period: null });
+    return sendJson(res, 200, { clubs: await clubRows(studentId, periodId), period: publicPeriod(active) });
+  }
+
+  if (method === "GET" && url.pathname === "/api/period") {
+    await requireUser(req);
+    return sendJson(res, 200, { period: publicPeriod(await getActivePeriod()), serverTime: nowIso() });
   }
 
   if (method === "GET" && url.pathname === "/api/registrations") {
@@ -794,7 +1206,7 @@ async function handleApi(req, res, url) {
     const timestamp = nowIso();
 
     if (businessStore) {
-      const created = await businessStore.createRegistrations({ actorUserId: user.id, studentId, groupId, clubs: validation.clubs, registrationIds, timestamp });
+      const created = await businessStore.createRegistrations({ actorUserId: user.id, studentId, groupId, periodId: validation.period.id, clubs: validation.clubs, registrationIds, timestamp });
       return sendJson(res, 201, { groupId, registrations: created });
     }
 
@@ -802,14 +1214,14 @@ async function handleApi(req, res, url) {
     try {
       const created = [];
       const insert = db.prepare(`INSERT INTO registrations
-        (id, group_id, student_id, parent_user_id, class_id, status, fee_snapshot, schedule_snapshot, terms_accepted_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        (id, group_id, student_id, parent_user_id, class_id, period_id, status, fee_snapshot, schedule_snapshot, terms_accepted_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       for (let index = 0; index < validation.clubs.length; index += 1) {
         const club = validation.clubs[index];
-        const refreshed = (await clubRows(studentId)).find((item) => item.id === club.id);
+        const refreshed = (await clubRows(studentId, validation.period.id)).find((item) => item.id === club.id);
         const status = refreshed.enrolled >= refreshed.capacity ? "waitlist" : "payment";
         const registrationId = registrationIds[index];
-        insert.run(registrationId, groupId, studentId, user.id, club.id, status, club.fee, club.schedule, timestamp, timestamp, timestamp);
+        insert.run(registrationId, groupId, studentId, user.id, club.id, validation.period.id, status, club.fee, club.schedule, timestamp, timestamp, timestamp);
         db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, created_at)
           VALUES (?, ?, 'CREATE_REGISTRATION', 'registration', ?, ?, ?)`)
           .run(id("audit"), user.id, registrationId, JSON.stringify({ status, clubId: club.id, studentId }), timestamp);
@@ -863,6 +1275,94 @@ async function handleApi(req, res, url) {
     const { confirmation = "" } = await readJson(req);
     if (confirmation !== "SYNC_STUDENT_DIRECTORY") throw httpError(422, "SYNC_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đồng bộ danh bạ học sinh.");
     return sendJson(res, 200, { result: await syncGoogleDirectory(user.id) });
+  }
+
+  if (method === "GET" && url.pathname === "/api/admin/periods") {
+    await requireUser(req, "admin");
+    const periods = await listPeriodRows();
+    const active = await getActivePeriod();
+    return sendJson(res, 200, { periods, activePeriodId: active?.id || null, serverTime: nowIso() });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/periods") {
+    const user = await requireUser(req, "admin");
+    const period = await savePeriodRecord({ actorUserId: user.id, periodId: null, input: await readJson(req) });
+    return sendJson(res, 201, { period });
+  }
+
+  const periodMatch = url.pathname.match(/^\/api\/admin\/periods\/([^/]+)$/);
+  if (method === "PATCH" && periodMatch) {
+    const user = await requireUser(req, "admin");
+    const period = await savePeriodRecord({ actorUserId: user.id, periodId: decodeURIComponent(periodMatch[1]), input: await readJson(req) });
+    return sendJson(res, 200, { period });
+  }
+
+  if (method === "GET" && url.pathname === "/api/admin/catalog") {
+    await requireUser(req, "admin");
+    const [catalog, periods, active] = await Promise.all([adminCatalogData(), listPeriodRows(), getActivePeriod()]);
+    return sendJson(res, 200, { ...catalog, periods, activePeriodId: active?.id || null });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/clubs") {
+    const user = await requireUser(req, "admin");
+    const club = await saveClubRecord({ actorUserId: user.id, clubId: null, input: await readJson(req) });
+    return sendJson(res, 201, { club });
+  }
+
+  const clubMatch = url.pathname.match(/^\/api\/admin\/clubs\/([^/]+)$/);
+  if (method === "PATCH" && clubMatch) {
+    const user = await requireUser(req, "admin");
+    const club = await saveClubRecord({ actorUserId: user.id, clubId: decodeURIComponent(clubMatch[1]), input: await readJson(req) });
+    return sendJson(res, 200, { club });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/classes") {
+    const user = await requireUser(req, "admin");
+    const clubClass = await saveClassRecord({ actorUserId: user.id, classId: null, input: await readJson(req) });
+    return sendJson(res, 201, { class: clubClass });
+  }
+
+  const classMatch = url.pathname.match(/^\/api\/admin\/classes\/([^/]+)$/);
+  if (method === "PATCH" && classMatch) {
+    const user = await requireUser(req, "admin");
+    const clubClass = await saveClassRecord({ actorUserId: user.id, classId: decodeURIComponent(classMatch[1]), input: await readJson(req) });
+    return sendJson(res, 200, { class: clubClass });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/catalog/import/preview") {
+    await requireUser(req, "admin");
+    const payload = await readJson(req, 8_000_000);
+    const { headers, rows } = readCatalogImportPayload(payload);
+    const periodId = String(payload.periodId || "");
+    const { mapping, missing } = detectCatalogMapping(headers);
+    const analysis = missing.length ? null : analyzeCatalogImport(rows, mapping, { periodId });
+    return sendJson(res, 200, {
+      preview: {
+        periodId,
+        mapping: Object.fromEntries(Object.entries(mapping).map(([field, descriptor]) => [field, descriptor.header])),
+        missing,
+        counters: analysis?.counters || null,
+        issues: analysis?.issues.slice(0, 60) || [],
+        clubs: analysis?.clubs.map((club) => ({ code: club.code, name: club.name, category: club.category, grades: club.grades })) || [],
+        classes: analysis?.classes.slice(0, 200) || [],
+        readyToImport: Boolean(analysis?.readyToImport && periodId),
+      },
+    });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/catalog/import/commit") {
+    const user = await requireUser(req, "admin");
+    const payload = await readJson(req, 8_000_000);
+    if (payload.confirmation !== "IMPORT_CLUB_CATALOG") {
+      throw httpError(422, "IMPORT_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi ghi danh mục vào hệ thống.");
+    }
+    const periodId = String(payload.periodId || "");
+    const { headers, rows } = readCatalogImportPayload(payload);
+    const { mapping, missing } = detectCatalogMapping(headers);
+    if (missing.length) throw httpError(422, "IMPORT_MAPPING_INCOMPLETE", `File còn thiếu cột bắt buộc: ${missing.join(", ")}.`);
+    const analysis = analyzeCatalogImport(rows, mapping, { periodId });
+    if (!analysis.readyToImport) throw httpError(422, "IMPORT_NOT_READY", "File còn dòng lỗi, chưa thể ghi vào hệ thống.");
+    return sendJson(res, 200, { result: await commitCatalogImport({ actorUserId: user.id, analysis, periodId }) });
   }
 
   const confirmMatch = url.pathname.match(/^\/api\/admin\/registrations\/([^/]+)\/confirm-payment$/);

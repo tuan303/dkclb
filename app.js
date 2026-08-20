@@ -10,6 +10,11 @@ const state = {
   dashboard: null,
   sheetIntegration: null,
   sheetPreview: null,
+  catalog: null,
+  catalogPeriodId: null,
+  importDraft: null,
+  period: null,
+  demoAccounts: false,
 };
 
 let students = [];
@@ -108,21 +113,35 @@ async function hydrateRole() {
       api("/registrations"),
     ]);
     clubs = clubPayload.clubs;
+    state.period = clubPayload.period || null;
     state.registrations = registrationPayload.registrations;
     state.dashboard = null;
+    state.catalog = null;
     adminApplications = [];
   } else {
     const [clubPayload, registrationPayload, dashboardPayload, sheetPayload] = await Promise.all([
       api("/clubs"), api("/registrations"), api("/admin/dashboard"), api("/admin/integrations/google-sheets"),
+      refreshCatalog(),
     ]);
     clubs = clubPayload.clubs;
     adminApplications = registrationPayload.registrations;
     state.dashboard = dashboardPayload.dashboard;
+    state.period = clubPayload.period || null;
     state.sheetIntegration = sheetPayload.integration;
     state.sheetPreview = null;
+    state.importDraft = null;
     state.registrations = [];
     students = [];
     state.studentId = null;
+  }
+}
+
+function applyDemoVisibility() {
+  $(".role-switcher")?.classList.toggle("hidden", !state.demoAccounts);
+  $("#credential-box")?.classList.toggle("hidden", !state.demoAccounts);
+  if (!state.demoAccounts) {
+    $("#login-account").value = "";
+    $("#login-password").value = "";
   }
 }
 
@@ -134,7 +153,7 @@ function showLogin(message = "") {
   $("#local-login-fields").classList.toggle("hidden", !parent);
   $("#login-submit").classList.toggle("hidden", !parent);
   $("#microsoft-login").classList.toggle("hidden", parent);
-  $("#credential-box").classList.toggle("hidden", !parent);
+  $("#credential-box").classList.toggle("hidden", !parent || !state.demoAccounts);
   $("#login-intro").textContent = parent
     ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường."
     : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
@@ -202,6 +221,13 @@ async function logout() {
 async function boot() {
   bindLoginEvents();
   bindGlobalEvents();
+  // Chỉ nền dữ liệu phát triển mới có tài khoản minh họa; production ẩn hẳn các lối tắt này.
+  try {
+    state.demoAccounts = Boolean((await api("/health")).demoAccounts);
+  } catch {
+    state.demoAccounts = false;
+  }
+  applyDemoVisibility();
   try {
     const payload = await api("/me");
     if (payload.user.mustChangePassword) showInitialPasswordChange(payload.user);
@@ -212,6 +238,7 @@ async function boot() {
 }
 
 function renderApp() {
+  applyDemoVisibility();
   renderNav();
   renderHeader();
   renderPage();
@@ -231,10 +258,22 @@ function renderNav() {
   $$(".role-button").forEach((button) => button.classList.toggle("active", button.dataset.role === state.role));
 }
 
+// Phụ đề trên thanh tiêu đề lấy theo dữ liệu đang có, không ghi cứng theo năm học.
+function pageContext(page, fallback) {
+  const period = state.role === "admin"
+    ? state.catalog?.periods.find((item) => item.id === state.catalog.activePeriodId) || null
+    : state.period;
+  const periodLabel = period ? `${period.term} · ${period.schoolYear}` : "Chưa có đợt đăng ký đang mở";
+  if (["home", "clubs", "registrations", "schedule", "dashboard", "campaigns"].includes(page)) return periodLabel;
+  if (page === "classes") return `${state.catalog?.clubs.length || 0} CLB · ${state.catalog?.classes.length || 0} lớp`;
+  if (page === "applications") return `${adminApplications.length} đơn trong hệ thống`;
+  return fallback;
+}
+
 function renderHeader() {
-  const [title, context] = pageMeta[state.page] || ["NSHM Clubs", "Demo cấu trúc phần mềm"];
+  const [title, context] = pageMeta[state.page] || ["NSHM Clubs", "Cổng đăng ký ngoại khóa"];
   $("#page-title").textContent = title;
-  $("#topbar-context").textContent = context;
+  $("#topbar-context").textContent = pageContext(state.page, context);
   const admin = state.role === "admin";
   $("#profile-name").textContent = state.me?.displayName || (admin ? "Nhà trường" : "Phụ huynh");
   $("#profile-role").textContent = admin ? "Vận hành CLB" : "Phụ huynh";
@@ -256,22 +295,22 @@ function renderPage() {
 
 function renderParentHome() {
   const recommendations = eligibleClubs().slice(0, 3);
+  const open = Boolean(state.period);
   return `
+    ${renderPeriodNotice()}
     <section class="hero">
       <div class="hero-content">
-        <span class="eyebrow">Đợt đăng ký đang mở</span>
+        <span class="eyebrow">${open ? escapeHtml(state.period.name) : "Ngoại khóa NSHM"}</span>
         <h2>Khám phá điều con yêu thích ngoài giờ học.</h2>
-        <p>Chọn học sinh, xem CLB phù hợp và hoàn tất đăng ký trong một quy trình có kiểm tra lịch, sĩ số và điều kiện.</p>
+        <p>${open
+          ? "Chọn học sinh, xem CLB phù hợp và hoàn tất đăng ký trong một quy trình có kiểm tra lịch, sĩ số và điều kiện."
+          : "Đợt đăng ký tiếp theo chưa mở. Bạn vẫn có thể xem lại các đăng ký đã gửi và lịch học hiện tại."}</p>
         <div class="hero-actions">
-          <button class="button button-light" data-go="clubs">Khám phá CLB ${icon("arrow")}</button>
+          ${open ? `<button class="button button-light" data-go="clubs">Khám phá CLB ${icon("arrow")}</button>` : ""}
           <button class="button button-ghost-light" data-go="registrations">Xem đăng ký của tôi</button>
         </div>
       </div>
-      <div class="hero-side">
-        <div class="period-line"><span>Thời gian đăng ký</span><strong>12–24/08/2026</strong></div>
-        <div class="progress-track"><span></span></div>
-        <div class="period-foot"><span>Đã qua 8 ngày</span><strong>Còn 6 ngày</strong></div>
-      </div>
+      ${renderPeriodSide()}
     </section>
 
     <section class="section">
@@ -287,9 +326,11 @@ function renderParentHome() {
     <section class="section">
       <div class="section-head">
         <div><span class="eyebrow">Gợi ý cho ${student().name}</span><h2>CLB phù hợp</h2><p>Dựa trên ${student().grade} và tình trạng còn chỗ.</p></div>
-        <button class="text-button" data-go="clubs">Xem tất cả ${icon("arrow")}</button>
+        ${recommendations.length ? `<button class="text-button" data-go="clubs">Xem tất cả ${icon("arrow")}</button>` : ""}
       </div>
-      <div class="grid grid-3">${recommendations.map(renderClubCard).join("")}</div>
+      ${recommendations.length
+        ? `<div class="grid grid-3">${recommendations.map(renderClubCard).join("")}</div>`
+        : `<div class="panel empty-state"><div class="empty-icon">${icon("grid")}</div><h3>Chưa có CLB nào để hiển thị</h3><p>${open ? "Đợt hiện tại chưa có CLB phù hợp với khối của học sinh." : "Danh mục sẽ hiện khi nhà trường mở đợt đăng ký mới."}</p></div>`}
     </section>`;
 }
 
@@ -327,6 +368,7 @@ function filteredClubs() {
 function renderClubsPage() {
   const list = filteredClubs();
   return `
+    ${renderPeriodNotice()}
     <div class="demo-banner"><span><strong>Học sinh đang chọn: ${student().name}</strong> · ${student().grade}. Hệ thống chỉ hiển thị CLB phù hợp.</span><button class="text-button" data-go="home">Đổi học sinh</button></div>
     <section>${renderSteps(2)}</section>
     <section class="section">
@@ -342,7 +384,11 @@ function renderClubsPage() {
     </section>
     <section class="section">
       <div class="section-head"><div><span class="eyebrow">${list.length} kết quả phù hợp</span><h2>Danh mục CLB</h2></div><button class="button button-secondary" data-open-cart>${icon("cart")} Giỏ đăng ký (${state.cart.length})</button></div>
-      ${list.length ? `<div class="grid grid-3">${list.map(renderClubCard).join("")}</div>` : `<div class="panel empty-state"><div class="empty-icon">${icon("search")}</div><h3>Không tìm thấy CLB</h3><p>Hãy thử thay đổi từ khóa hoặc bộ lọc sĩ số.</p><button class="button button-secondary" data-clear-filters>Xóa bộ lọc</button></div>`}
+      ${list.length
+        ? `<div class="grid grid-3">${list.map(renderClubCard).join("")}</div>`
+        : !state.period
+          ? `<div class="panel empty-state"><div class="empty-icon">${icon("calendar")}</div><h3>Chưa đến kỳ đăng ký</h3><p>Nhà trường chưa mở đợt đăng ký nào. Danh mục CLB sẽ hiển thị ngay khi đợt mới được mở.</p></div>`
+          : `<div class="panel empty-state"><div class="empty-icon">${icon("search")}</div><h3>Không tìm thấy CLB</h3><p>Hãy thử thay đổi từ khóa hoặc bộ lọc sĩ số.</p><button class="button button-secondary" data-clear-filters>Xóa bộ lọc</button></div>`}
     </section>`;
 }
 
@@ -355,7 +401,7 @@ function renderClubCard(club) {
   return `<article class="club-card">
     <div class="club-visual visual-${club.visual}"><span class="club-status ${statusClass}">${statusText}</span><span class="club-symbol">${club.emoji}</span></div>
     <div class="club-body">
-      <span class="category">${club.category}</span><h3>${club.name}</h3>
+      <span class="category">${club.category}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</span><h3>${escapeHtml(club.name)}</h3>
       <div class="club-meta"><span>${icon("clock")}${club.schedule}</span><span>${icon("pin")}${club.room} · ${club.teacher}</span></div>
       <div class="capacity"><div class="capacity-head"><span>Sĩ số</span><strong>${club.enrolled}/${club.capacity}</strong></div><div class="capacity-track ${statusClass}"><span style="width:${ratio}%"></span></div></div>
       <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>/ học kỳ</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${inCart ? "disabled" : ""}>${inCart ? "Đã chọn" : left === 0 ? "Vào DS chờ" : "Chọn"}</button></div></div>
@@ -366,9 +412,16 @@ function renderClubCard(club) {
 function renderRegistrations() {
   const currentRegistrations = state.registrations.filter((registration) => registration.studentId === state.studentId);
   const rows = currentRegistrations.map((registration) => {
-    const club = clubs.find(c => c.id === registration.clubId);
+    // Đơn tham chiếu tới ca học (classId); danh mục cũng được đánh mã theo ca.
+    const club = clubs.find(c => c.id === registration.classId);
     const [label, color] = statusMap[registration.status];
-    return `<div class="application-card"><div class="application-icon">${icon("clipboard")}</div><div class="application-copy"><h3>${club?.name || registration.club}</h3><p>${registration.id} · ${student().name} · ${registration.schedule || club?.schedule}</p></div><div class="application-meta"><span class="badge badge-${color}">${label}</span><strong>${formatMoney(registration.amount || club?.fee || 0)}</strong></div></div>`;
+    const room = registration.room && registration.room !== "—" ? registration.room : club?.room || "";
+    const teacher = registration.teacher && registration.teacher !== "—" ? registration.teacher : club?.teacher || "";
+    return `<div class="application-card"><div class="application-icon">${icon("clipboard")}</div>
+      <div class="application-copy"><h3>${escapeHtml(club?.name || registration.club)}${registration.classLabel ? ` · ${escapeHtml(registration.classLabel)}` : ""}</h3>
+      <p>${registration.id} · ${escapeHtml(student().name)} · ${escapeHtml(registration.schedule || club?.schedule || "")}${room ? ` · ${escapeHtml(room)}` : ""}${teacher ? ` · ${escapeHtml(teacher)}` : ""}</p>
+      <p class="field-hint">${escapeHtml(STATUS_GUIDE[registration.status] || "")}</p></div>
+      <div class="application-meta"><span class="badge badge-${color}">${label}</span><strong>${formatMoney(registration.amount || club?.fee || 0)}</strong></div></div>`;
   }).join("");
   return `
     <div class="kpi-strip"><div class="kpi-item"><span>Tổng đăng ký</span><strong>${currentRegistrations.length}</strong></div><div class="kpi-item"><span>Đã xác nhận</span><strong>${currentRegistrations.filter(r => r.status === "confirmed").length}</strong></div><div class="kpi-item"><span>Chờ thanh toán</span><strong>${currentRegistrations.filter(r => r.status === "payment").length}</strong></div><div class="kpi-item"><span>Danh sách chờ</span><strong>${currentRegistrations.filter(r => r.status === "waitlist").length}</strong></div></div>
@@ -377,11 +430,127 @@ function renderRegistrations() {
     <section class="section"><div class="info-note"><strong>Quy ước trạng thái:</strong> “Đã gửi” chưa đồng nghĩa với có tên trong danh sách chính thức. Đăng ký chỉ được chốt khi đạt điều kiện xác nhận/đối soát theo quy định của nhà trường.</div></section>`;
 }
 
+/* ---------- Cổng phụ huynh: đợt đăng ký, hạn nộp và thời khóa biểu ---------- */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Mọi mốc thời gian lấy từ cấu hình đợt trên máy chủ, không phụ thuộc đồng hồ thiết bị.
+function periodCountdown() {
+  const period = state.period;
+  if (!period) return null;
+  const now = Date.now();
+  const openAt = new Date(period.openAt).getTime();
+  const closeAt = new Date(period.closeAt).getTime();
+  const remaining = closeAt - now;
+  return {
+    period,
+    remainingDays: Math.max(0, Math.ceil(remaining / DAY_MS)),
+    remainingHours: Math.max(0, Math.ceil(remaining / (60 * 60 * 1000))),
+    progress: Math.min(100, Math.max(0, Math.round(((now - openAt) / Math.max(1, closeAt - openAt)) * 100))),
+    closingSoon: remaining <= 3 * DAY_MS,
+  };
+}
+
+function remainingLabel(countdown) {
+  if (countdown.remainingDays > 1) return `Còn ${countdown.remainingDays} ngày`;
+  if (countdown.remainingHours > 1) return `Còn ${countdown.remainingHours} giờ`;
+  return "Sắp hết hạn";
+}
+
+function renderPeriodSide() {
+  const countdown = periodCountdown();
+  if (!countdown) {
+    return `<div class="hero-side">
+      <div class="period-line"><span>Trạng thái</span><strong>Chưa mở đăng ký</strong></div>
+      <div class="progress-track"><span style="width:0%"></span></div>
+      <div class="period-foot"><span>Nhà trường sẽ thông báo</span><strong>Theo dõi tại đây</strong></div></div>`;
+  }
+  return `<div class="hero-side">
+    <div class="period-line"><span>Hạn đăng ký</span><strong>${formatDateTime(countdown.period.closeAt)}</strong></div>
+    <div class="progress-track"><span style="width:${countdown.progress}%"></span></div>
+    <div class="period-foot"><span>${escapeHtml(countdown.period.term)} · ${escapeHtml(countdown.period.schoolYear)}</span><strong>${remainingLabel(countdown)}</strong></div></div>`;
+}
+
+function renderPeriodNotice() {
+  const countdown = periodCountdown();
+  if (!countdown) {
+    return `<div class="demo-banner"><span><strong>Hiện chưa có đợt đăng ký nào đang mở.</strong> Bạn vẫn xem được các đăng ký đã gửi trước đó.</span><button class="text-button" data-go="registrations">Xem đăng ký của tôi</button></div>`;
+  }
+  if (!countdown.closingSoon) return "";
+  return `<div class="inline-alert">${icon("clock")}<span>Đợt <b>${escapeHtml(countdown.period.name)}</b> đóng lúc ${formatDateTime(countdown.period.closeAt)} — ${remainingLabel(countdown).toLowerCase()}. Sau thời điểm này hệ thống ngừng nhận đơn mới.</span></div>`;
+}
+
+const STATUS_GUIDE = {
+  submitted: "Đơn đã được ghi nhận, nhà trường đang xử lý.",
+  payment: "Vui lòng hoàn tất học phí theo hướng dẫn của nhà trường để được xác nhận chính thức.",
+  confirmed: "Đã có tên trong danh sách chính thức của lớp.",
+  waitlist: "Lớp đã đủ sĩ số. Nhà trường sẽ liên hệ nếu có chỗ trống.",
+  conflict: "Lịch học bị trùng. Vui lòng gửi yêu cầu hỗ trợ để chọn ca khác.",
+  cancelled: "Đơn đã hủy.",
+  draft: "Đơn chưa gửi.",
+};
+
 function renderSchedule() {
-  const active = state.registrations.filter(r => r.studentId === state.studentId && r.status !== "cancelled");
-  return `<section class="panel"><div class="panel-head"><div><h3>Lịch ngoại khóa của ${student().name}</h3><p>Tuần minh họa 24–30/08/2026</p></div><button class="button button-secondary">${icon("calendar")} Đồng bộ lịch</button></div><div class="panel-body">
-    ${active.length ? `<div class="grid">${active.map(r => { const c = clubs.find(x => x.id === r.clubId); return `<div class="application-card"><div class="cart-emoji">${c?.emoji || "★"}</div><div class="application-copy"><h3>${c?.name || r.club}</h3><p>${r.schedule || c?.schedule} · ${r.room || c?.room}</p></div><div class="application-meta"><span class="badge badge-${statusMap[r.status][1]}">${statusMap[r.status][0]}</span></div></div>`}).join("")}</div>` : `<div class="empty-state"><div class="empty-icon">${icon("calendar")}</div><h3>Chưa có lịch CLB</h3></div>`}
-  </div></section>`;
+  const active = state.registrations.filter((registration) =>
+    registration.studentId === state.studentId && ["submitted", "payment", "confirmed", "waitlist"].includes(registration.status));
+  const entries = active.map((registration) => {
+    const clubClass = clubs.find((item) => item.id === registration.classId) || null;
+    return {
+      registration,
+      name: registration.club || clubClass?.name || registration.classId,
+      classLabel: registration.classLabel || clubClass?.className || "",
+      emoji: clubClass?.emoji || "★",
+      room: registration.room !== "—" ? registration.room : clubClass?.room || "",
+      teacher: registration.teacher !== "—" ? registration.teacher : clubClass?.teacher || "",
+      dayOfWeek: registration.dayOfWeek ?? clubClass?.dayOfWeek ?? null,
+      startTime: registration.startTime || clubClass?.startTime || "",
+      endTime: registration.endTime || clubClass?.endTime || "",
+      schedule: registration.schedule || clubClass?.schedule || "",
+    };
+  });
+
+  // Tuần bắt đầu từ Thứ 2; Chủ nhật xếp cuối cho đúng thói quen đọc lịch.
+  const dayOrder = [1, 2, 3, 4, 5, 6, 0];
+  const scheduled = entries.filter((entry) => entry.dayOfWeek !== null);
+  const unscheduled = entries.filter((entry) => entry.dayOfWeek === null);
+  const columns = dayOrder.map((day) => ({
+    day,
+    label: DAY_LABELS[day],
+    items: scheduled.filter((entry) => entry.dayOfWeek === day).sort((left, right) => left.startTime.localeCompare(right.startTime)),
+  }));
+
+  const grid = `<div class="week-grid">${columns.map((column) => `
+    <div class="week-day ${column.items.length ? "" : "empty"}">
+      <span class="week-day-label">${column.label}</span>
+      ${column.items.map((entry) => {
+        const [label, color] = statusMap[entry.registration.status];
+        return `<div class="week-slot visual-${clubs.find((item) => item.id === entry.registration.classId)?.visual || "life"}">
+          <strong>${entry.startTime}–${entry.endTime}</strong>
+          <span>${entry.emoji} ${escapeHtml(entry.name)}${entry.classLabel ? ` · ${escapeHtml(entry.classLabel)}` : ""}</span>
+          <small>${escapeHtml(entry.room)}${entry.teacher ? ` · ${escapeHtml(entry.teacher)}` : ""}</small>
+          <span class="badge badge-${color}">${label}</span>
+        </div>`;
+      }).join("") || '<p class="week-empty">—</p>'}
+    </div>`).join("")}</div>`;
+
+  const totalHours = scheduled.reduce((sum, entry) => {
+    const minutes = (Number(entry.endTime.slice(0, 2)) * 60 + Number(entry.endTime.slice(3))) - (Number(entry.startTime.slice(0, 2)) * 60 + Number(entry.startTime.slice(3)));
+    return sum + Math.max(0, minutes);
+  }, 0) / 60;
+
+  return `<div class="kpi-strip">
+      <div class="kpi-item"><span>Buổi mỗi tuần</span><strong>${scheduled.length}</strong></div>
+      <div class="kpi-item"><span>Tổng thời lượng</span><strong>${totalHours ? totalHours.toFixed(1).replace(".0", "") : 0} giờ</strong></div>
+      <div class="kpi-item"><span>Đã xác nhận</span><strong>${active.filter((item) => item.status === "confirmed").length}</strong></div>
+      <div class="kpi-item"><span>Đang chờ</span><strong>${active.filter((item) => item.status !== "confirmed").length}</strong></div>
+    </div>
+    <section class="panel"><div class="panel-head">
+      <div><h3>Lịch ngoại khóa của ${escapeHtml(student().name)}</h3><p>Lịch lặp hàng tuần trong đợt đang tham gia.</p></div></div>
+      <div class="panel-body">
+        ${entries.length ? grid : `<div class="empty-state"><div class="empty-icon">${icon("calendar")}</div><h3>Chưa có lịch CLB</h3><p>Sau khi đăng ký được ghi nhận, lịch học sẽ hiện ở đây.</p><button class="button button-primary" data-go="clubs">Khám phá CLB</button></div>`}
+        ${unscheduled.length ? `<div class="info-note"><strong>${unscheduled.length} đăng ký chưa có lịch cố định:</strong> ${unscheduled.map((entry) => escapeHtml(entry.name)).join(", ")}.</div>` : ""}
+        ${entries.length ? '<p class="field-hint">Buổi học chỉ diễn ra khi đăng ký ở trạng thái “Đã xác nhận”. Các trạng thái khác vẫn hiển thị để phụ huynh sắp xếp trước.</p>' : ""}
+      </div></section>`;
 }
 
 function renderSupport() {
@@ -396,7 +565,7 @@ function renderSupport() {
 function renderAdminDashboard() {
   const dashboard = state.dashboard || { total: 0, students: 0, needAction: 0, pendingPayment: 0, pendingAmount: 0, categories: [] };
   return `
-    <div class="demo-banner"><span><strong>Đợt Học kỳ I đang mở</strong> · 12/08–24/08/2026 · Tự động khóa đăng ký sau 23:59 ngày kết thúc.</span><button class="button button-secondary" data-go="campaigns">Xem cấu hình</button></div>
+    ${renderPeriodBanner()}
     <section class="grid grid-4">
       ${renderStat("clipboard","blue",dashboard.total,"Tổng đơn đăng ký","Dữ liệu trực tiếp")}
       ${renderStat("users","aqua",dashboard.students,"Học sinh tham gia",`${dashboard.total ? Math.round(dashboard.students / dashboard.total * 100) : 0}% đơn duy nhất`)}
@@ -406,13 +575,25 @@ function renderAdminDashboard() {
     <section class="section dashboard-layout">
       <div class="panel"><div class="panel-head"><div><h3>Tỷ lệ lấp đầy theo nhóm CLB</h3><p>Đăng ký giữ chỗ so với tổng quota</p></div><select class="select-field"><option>Theo nhóm môn</option><option>Theo khối</option></select></div><div class="panel-body">${renderBarChart(dashboard.categories)}</div></div>
       <div class="panel"><div class="panel-head"><div><h3>Cần chú ý</h3><p>Các ngoại lệ ưu tiên xử lý</p></div><button class="text-button" data-go="applications">Xem đơn</button></div><div class="panel-body"><div class="attention-list">
-        ${attention("var(--red)","Trùng lịch","Cần phụ huynh chọn lại",4)}
-        ${attention("var(--purple)","Danh sách chờ","3 lớp đã đầy",9)}
-        ${attention("var(--gold)","Chờ thanh toán","Quá 48 giờ",7)}
-        ${attention("var(--blue)","Yêu cầu thay đổi","Đổi lịch / hủy",5)}
+        ${attention("var(--red)","Trùng lịch","Cần phụ huynh chọn lại", countByStatus("conflict"))}
+        ${attention("var(--purple)","Danh sách chờ",`${fullClassCount()} lớp đã đầy`, countByStatus("waitlist"))}
+        ${attention("var(--gold)","Chờ thanh toán","Chưa đối soát", countByStatus("payment"))}
+        ${attention("var(--blue)","Đơn mới","Chờ xử lý", countByStatus("submitted"))}
       </div></div></div>
     </section>
     <section class="section panel"><div class="panel-head"><div><h3>Đơn đăng ký gần đây</h3><p>Dữ liệu cập nhật theo thời gian thực</p></div><button class="button button-secondary" data-go="applications">Xem tất cả ${icon("arrow")}</button></div>${renderApplicationTable(adminApplications.slice(0,5))}</section>`;
+}
+
+const countByStatus = (status) => adminApplications.filter((row) => row.status === status).length;
+const fullClassCount = () => clubs.filter((club) => club.enrolled >= club.capacity).length;
+
+// Băng thông báo tình trạng đợt đăng ký, lấy trực tiếp từ cấu hình đang lưu.
+function renderPeriodBanner() {
+  const period = state.catalog?.periods.find((item) => item.id === state.catalog.activePeriodId) || null;
+  if (!period) {
+    return `<div class="demo-banner"><span><strong>Chưa có đợt đăng ký nào đang mở.</strong> Phụ huynh chưa gửi được đơn mới.</span><button class="button button-secondary" data-go="campaigns">Mở đợt đăng ký</button></div>`;
+  }
+  return `<div class="demo-banner"><span><strong>${escapeHtml(period.name)} đang mở</strong> · ${formatDateTime(period.openAt)} → ${formatDateTime(period.closeAt)} · Hệ thống tự ngừng nhận đơn khi hết hạn.</span><button class="button button-secondary" data-go="campaigns">Xem cấu hình</button></div>`;
 }
 
 function renderStat(iconName, color, value, label, trend) {
@@ -428,34 +609,570 @@ function attention(color, title, sub, value) {
   return `<div class="attention-item"><span class="attention-dot" style="background:${color}"></span><div class="attention-copy"><strong>${title}</strong><span>${sub}</span></div><span class="attention-value">${value}</span></div>`;
 }
 
-function renderCampaigns() {
-  return `<section class="hero"><div class="hero-content"><span class="eyebrow">Đợt đang hoạt động</span><h2>Đăng ký CLB · Học kỳ I</h2><p>12/08/2026 08:00 → 24/08/2026 23:59 · Áp dụng Tiểu học và THCS</p><div class="hero-actions"><button class="button button-light" data-toast="Demo: đã mở biểu mẫu cấu hình đợt đăng ký.">Chỉnh sửa cấu hình</button><button class="button button-ghost-light" data-toast="Demo: xem trước giao diện phụ huynh.">Xem trước</button></div></div><div class="hero-side"><div class="period-line"><span>Trạng thái</span><strong>Đang mở đăng ký</strong></div><div class="progress-track"><span></span></div><div class="period-foot"><span>158 đơn</span><strong>18 CLB · 26 lớp</strong></div></div></section>
-  <section class="section grid grid-3">${renderModuleCard("01","Thời gian & phạm vi","Cấu hình năm học, học kỳ, thời gian mở/đóng và khối áp dụng.",["Lịch mở/đóng tự động","Giới hạn số CLB/học sinh"])}${renderModuleCard("02","Danh mục áp dụng","Chọn CLB/lớp được đưa vào đợt và thứ tự hiển thị.",["18 CLB đang hiển thị","2 CLB đang ẩn"])}${renderModuleCard("03","Quy tắc xác nhận","Chọn luồng phí, cam kết và thông báo sau khi gửi.",["Chờ phí trước xác nhận","Email xác nhận đang bật"])}</section>`;
+// ---- Quản trị danh mục: đợt đăng ký, CLB và lớp ----
+
+const DAY_LABELS = ["Chủ nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
+const PERIOD_STATUS_LABELS = {
+  draft: ["Bản nháp", "blue"], open: ["Đang mở", "green"],
+  closed: ["Đã đóng", "gold"], locked: ["Đã khóa", "red"],
+};
+const CATEGORY_SUGGESTIONS = ["Thể thao", "STEM", "Nghệ thuật", "Âm nhạc", "Ngôn ngữ", "Kỹ năng sống"];
+
+const dateTimeFormatter = new Intl.DateTimeFormat("vi-VN", {
+  timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+});
+const formatDateTime = (value) => (value ? dateTimeFormatter.format(new Date(value)) : "—");
+
+// Ô nhập datetime-local hiển thị giờ Việt Nam; dữ liệu lưu và so sánh luôn ở UTC.
+function toLocalInputValue(value) {
+  if (!value) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(value));
+  const part = (type) => parts.find((item) => item.type === type)?.value || "00";
+  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
 }
+
+function fromLocalInputValue(value) {
+  return value ? new Date(`${value}:00+07:00`).toISOString() : "";
+}
+
+function loadingPanel(message) {
+  return `<section class="section panel"><div class="panel-body"><div class="empty-state"><h3>${escapeHtml(message)}</h3></div></div></section>`;
+}
+
+async function refreshCatalog() {
+  state.catalog = await api("/admin/catalog");
+  const known = state.catalog.periods.some((period) => period.id === state.catalogPeriodId);
+  if (!known) state.catalogPeriodId = state.catalog.activePeriodId || state.catalog.periods[0]?.id || null;
+}
+
+function currentCatalogPeriod() {
+  return state.catalog?.periods.find((period) => period.id === state.catalogPeriodId) || null;
+}
+
+function classesOfPeriod(periodId) {
+  return (state.catalog?.classes || []).filter((row) => row.periodId === periodId);
+}
+
+/* ---------- Trang Đợt đăng ký ---------- */
+
+function renderCampaigns() {
+  if (!state.catalog) return loadingPanel("Đang tải đợt đăng ký…");
+  const { periods, activePeriodId } = state.catalog;
+  const active = periods.find((period) => period.id === activePeriodId) || null;
+  const heroClasses = active ? classesOfPeriod(active.id) : [];
+  const heroClubs = new Set(heroClasses.map((row) => row.clubId));
+  const heroCapacity = heroClasses.reduce((sum, row) => sum + row.capacity, 0);
+  const heroEnrolled = heroClasses.reduce((sum, row) => sum + row.enrolled, 0);
+  const heroFill = heroCapacity ? Math.round((heroEnrolled / heroCapacity) * 100) : 0;
+
+  const hero = active
+    ? `<section class="hero"><div class="hero-content"><span class="eyebrow">Đợt đang nhận đơn</span>
+        <h2>${escapeHtml(active.name)}</h2>
+        <p>${formatDateTime(active.openAt)} → ${formatDateTime(active.closeAt)} · Tối đa ${active.maxClubsPerStudent} CLB mỗi học sinh</p>
+        <div class="hero-actions">
+          <button class="button button-light" data-edit-period="${escapeHtml(active.id)}">Chỉnh sửa cấu hình</button>
+          <button class="button button-ghost-light" data-close-period="${escapeHtml(active.id)}">Đóng đăng ký ngay</button>
+        </div></div>
+        <div class="hero-side"><div class="period-line"><span>Trạng thái</span><strong>Đang mở đăng ký</strong></div>
+        <div class="progress-track"><span style="width:${Math.min(100, heroFill)}%"></span></div>
+        <div class="period-foot"><span>${heroEnrolled}/${heroCapacity} chỗ</span><strong>${heroClubs.size} CLB · ${heroClasses.length} lớp</strong></div></div></section>`
+    : `<div class="demo-banner"><span><strong>Chưa có đợt nào đang mở.</strong> Phụ huynh sẽ không thấy CLB nào cho tới khi một đợt được mở trong khoảng thời gian hợp lệ.</span><button class="button button-secondary" data-new-period>+ Tạo đợt đăng ký</button></div>`;
+
+  const rows = periods.map((period) => {
+    const [label, color] = PERIOD_STATUS_LABELS[period.status] || ["—", "blue"];
+    const classes = classesOfPeriod(period.id);
+    const isActive = period.id === activePeriodId;
+    return `<tr>
+      <td><strong>${escapeHtml(period.name)}</strong><br><span style="color:var(--muted)">${escapeHtml(period.schoolYear)} · ${escapeHtml(period.term)}</span></td>
+      <td>${formatDateTime(period.openAt)}<br>${formatDateTime(period.closeAt)}</td>
+      <td><span class="badge badge-${color}">${label}</span>${isActive ? '<br><span style="color:var(--muted)">đang nhận đơn</span>' : ""}</td>
+      <td>${period.maxClubsPerStudent} CLB</td>
+      <td>${new Set(classes.map((row) => row.clubId)).size} CLB · ${classes.length} lớp</td>
+      <td>
+        <button class="table-action" data-edit-period="${escapeHtml(period.id)}">Sửa</button>
+        ${period.status === "open"
+          ? `<button class="table-action" data-close-period="${escapeHtml(period.id)}">Đóng</button>`
+          : `<button class="table-action" data-open-period="${escapeHtml(period.id)}">Mở đăng ký</button>`}
+      </td></tr>`;
+  }).join("");
+
+  return `${hero}
+    <section class="section" style="margin-top:0"><div class="section-head">
+      <div><span class="eyebrow">Cấu hình vận hành</span><h2>Đợt đăng ký</h2>
+      <p>Thời gian mở/đóng tính theo giờ máy chủ (GMT+7). Hết hạn là hệ thống tự ngừng nhận đơn.</p></div>
+      <button class="button button-primary" data-new-period>+ Tạo đợt đăng ký</button></div>
+      <div class="panel"><div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Đợt</th><th>Mở → Đóng</th><th>Trạng thái</th><th>Giới hạn</th><th>Danh mục</th><th>Thao tác</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6"><div class="empty-state">Chưa có đợt đăng ký nào.</div></td></tr>'}</tbody>
+      </table></div></div>
+    </section>`;
+}
+
+function periodFormMarkup(period) {
+  const isNew = !period;
+  const now = new Date();
+  const defaults = {
+    name: "", schoolYear: `${now.getFullYear()}–${now.getFullYear() + 1}`, term: "Học kỳ I",
+    openAt: "", closeAt: "", status: "draft", maxClubsPerStudent: 3, note: "",
+  };
+  const value = { ...defaults, ...(period || {}) };
+  return `<div class="modal-head"><div><span class="eyebrow">${isNew ? "Tạo mới" : "Chỉnh sửa"}</span><h2>Đợt đăng ký</h2></div>
+    <button class="icon-button" data-close-modal>${icon("x")}</button></div>
+    <div class="modal-body"><form id="period-form" class="form-grid">
+      <label class="form-field form-span-2"><span>Tên đợt</span><input name="name" value="${escapeHtml(value.name)}" placeholder="Đăng ký CLB · Học kỳ I" required /></label>
+      <label class="form-field"><span>Năm học</span><input name="schoolYear" value="${escapeHtml(value.schoolYear)}" required /></label>
+      <label class="form-field"><span>Học kỳ</span><input name="term" value="${escapeHtml(value.term)}" required /></label>
+      <label class="form-field"><span>Mở đăng ký (giờ VN)</span><input type="datetime-local" name="openAt" value="${toLocalInputValue(value.openAt)}" required /></label>
+      <label class="form-field"><span>Đóng đăng ký (giờ VN)</span><input type="datetime-local" name="closeAt" value="${toLocalInputValue(value.closeAt)}" required /></label>
+      <label class="form-field"><span>Số CLB tối đa / học sinh</span><input type="number" name="maxClubsPerStudent" min="1" max="20" value="${value.maxClubsPerStudent}" required /></label>
+      <label class="form-field"><span>Trạng thái</span><select class="select-field" name="status">
+        ${Object.entries(PERIOD_STATUS_LABELS).map(([key, [label]]) => `<option value="${key}" ${value.status === key ? "selected" : ""}>${label}</option>`).join("")}
+      </select></label>
+      <label class="form-field form-span-2"><span>Ghi chú nội bộ</span><input name="note" value="${escapeHtml(value.note || "")}" placeholder="Ví dụ: chỉ áp dụng Tiểu học" /></label>
+      <p class="field-hint form-span-2">Chỉ một đợt được ở trạng thái “Đang mở” tại một thời điểm. Đợt chỉ thực sự nhận đơn khi đang mở và thời gian hiện tại nằm trong khoảng trên.</p>
+    </form><div id="form-error" class="form-error" role="alert"></div></div>
+    <div class="modal-foot"><button class="button button-secondary" data-close-modal>Hủy</button>
+    <button class="button button-primary" data-submit-period="${escapeHtml(period?.id || "")}">${isNew ? "Tạo đợt" : "Lưu thay đổi"}</button></div>`;
+}
+
+function readForm(formId) {
+  const form = $(`#${formId}`);
+  const data = {};
+  for (const element of form.elements) {
+    if (!element.name) continue;
+    if (element.type === "checkbox") {
+      if (element.dataset.group) {
+        data[element.dataset.group] = data[element.dataset.group] || [];
+        if (element.checked) data[element.dataset.group].push(Number(element.value));
+      } else data[element.name] = element.checked;
+    } else data[element.name] = element.value;
+  }
+  return data;
+}
+
+function showFormError(message) {
+  const box = $("#form-error");
+  if (box) box.textContent = message;
+}
+
+async function withBusyButton(button, label, action) {
+  const original = button.innerHTML;
+  button.disabled = true;
+  button.textContent = label;
+  try {
+    await action();
+  } catch (error) {
+    showFormError(error.message);
+    toast(error.message, "error");
+    button.disabled = false;
+    button.innerHTML = original;
+  }
+}
+
+function openPeriodForm(periodId) {
+  const period = state.catalog?.periods.find((item) => item.id === periodId) || null;
+  showModal(periodFormMarkup(period), { wide: true });
+  $("[data-submit-period]").addEventListener("click", (event) => {
+    const button = event.currentTarget;
+    const targetId = button.dataset.submitPeriod;
+    const form = readForm("period-form");
+    const payload = {
+      ...form,
+      openAt: fromLocalInputValue(form.openAt),
+      closeAt: fromLocalInputValue(form.closeAt),
+      maxClubsPerStudent: Number(form.maxClubsPerStudent),
+    };
+    withBusyButton(button, "Đang lưu…", async () => {
+      await api(targetId ? `/admin/periods/${encodeURIComponent(targetId)}` : "/admin/periods", {
+        method: targetId ? "PATCH" : "POST",
+        body: JSON.stringify(payload),
+      });
+      await refreshCatalog();
+      closeModal();
+      renderApp();
+      toast(targetId ? "Đã lưu cấu hình đợt đăng ký." : "Đã tạo đợt đăng ký mới.", "success");
+    });
+  });
+}
+
+async function setPeriodStatus(periodId, status) {
+  const period = state.catalog?.periods.find((item) => item.id === periodId);
+  const question = status === "open"
+    ? `Mở đăng ký cho đợt "${period?.name}"? Phụ huynh sẽ thấy danh mục ngay khi thời gian hợp lệ.`
+    : `Đóng đăng ký đợt "${period?.name}"? Phụ huynh sẽ không gửi được đơn mới.`;
+  if (!window.confirm(question)) return;
+  try {
+    await api(`/admin/periods/${encodeURIComponent(periodId)}`, { method: "PATCH", body: JSON.stringify({ status }) });
+    await refreshCatalog();
+    renderApp();
+    toast(status === "open" ? "Đã mở đăng ký." : "Đã đóng đăng ký.", "success");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+/* ---------- Trang CLB & lịch học ---------- */
 
 function renderClasses() {
-  return `<div class="kpi-strip"><div class="kpi-item"><span>CLB</span><strong>18</strong></div><div class="kpi-item"><span>Lớp/lịch</span><strong>26</strong></div><div class="kpi-item"><span>Đã đầy</span><strong>3</strong></div><div class="kpi-item"><span>Dưới sĩ số tối thiểu</span><strong>4</strong></div></div>
-  <section class="section"><div class="section-head"><div><span class="eyebrow">Danh mục đang mở</span><h2>CLB & lớp học</h2><p>Cấu hình lịch, giáo viên, phòng, phí và sĩ số.</p></div><button class="button button-primary" data-toast="Demo: mở biểu mẫu tạo CLB mới.">+ Tạo CLB</button></div><div class="grid grid-3">${clubs.map(renderAdminClubCard).join("")}</div></section>`;
+  if (!state.catalog) return loadingPanel("Đang tải danh mục CLB…");
+  const period = currentCatalogPeriod();
+  const rows = period ? classesOfPeriod(period.id) : [];
+  const clubIds = new Set(rows.map((row) => row.clubId));
+  const full = rows.filter((row) => row.enrolled >= row.capacity).length;
+  const belowMin = rows.filter((row) => row.minCapacity > 0 && row.enrolled < row.minCapacity).length;
+  const hidden = rows.filter((row) => !row.active).length;
+
+  const periodOptions = state.catalog.periods
+    .map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === state.catalogPeriodId ? "selected" : ""}>${escapeHtml(item.name)}${item.id === state.catalog.activePeriodId ? " · đang mở" : ""}</option>`)
+    .join("");
+
+  const clubBlocks = [...clubIds]
+    .map((clubId) => state.catalog.clubs.find((club) => club.id === clubId))
+    .filter(Boolean)
+    .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, "vi"))
+    .map((club) => renderCatalogClubBlock(club, rows.filter((row) => row.clubId === club.id)))
+    .join("");
+
+  const orphanClubs = state.catalog.clubs.filter((club) => !clubIds.has(club.id));
+
+  return `<div class="kpi-strip">
+      <div class="kpi-item"><span>CLB trong đợt</span><strong>${clubIds.size}</strong></div>
+      <div class="kpi-item"><span>Lớp / ca học</span><strong>${rows.length}</strong></div>
+      <div class="kpi-item"><span>Đã đầy</span><strong>${full}</strong></div>
+      <div class="kpi-item"><span>Dưới sĩ số tối thiểu</span><strong>${belowMin}</strong></div>
+      <div class="kpi-item"><span>Đang ẩn</span><strong>${hidden}</strong></div>
+    </div>
+    <section class="section"><div class="section-head">
+      <div><span class="eyebrow">Danh mục vận hành</span><h2>CLB &amp; lịch học</h2>
+      <p>Mỗi CLB có thể có nhiều ca; mỗi ca là một đơn vị nhận đăng ký riêng với phòng, giáo viên, sĩ số và học phí riêng.</p></div>
+      <div class="club-actions">
+        <select class="select-field" id="catalog-period">${periodOptions || "<option>Chưa có đợt</option>"}</select>
+        <button class="button button-secondary" data-import-catalog>${icon("file")} Nhập từ Excel</button>
+        <button class="button button-primary" data-new-club>+ Tạo CLB</button>
+      </div></div>
+      ${state.importDraft ? renderCatalogImport() : ""}
+      ${period ? "" : '<div class="inline-alert">Hãy tạo một đợt đăng ký trước khi khai báo CLB và lớp.</div>'}
+      ${clubBlocks || (period ? '<div class="empty-state"><h3>Đợt này chưa có lớp nào</h3><p>Tạo CLB rồi thêm ca học, hoặc nhập hàng loạt từ file Excel.</p></div>' : "")}
+      ${orphanClubs.length ? `<div class="info-note"><strong>${orphanClubs.length} CLB chưa có lớp trong đợt này:</strong> ${orphanClubs.map((club) => `<button class="text-button" data-add-class-for="${escapeHtml(club.id)}">${escapeHtml(club.name)}</button>`).join(" · ")}</div>` : ""}
+    </section>`;
 }
 
-function renderAdminClubCard(club) {
-  const left = club.capacity - club.enrolled;
-  const ratio = Math.round(club.enrolled / club.capacity * 100);
-  return `<article class="module-card"><div style="display:flex;align-items:center;justify-content:space-between"><span class="cart-emoji">${club.emoji}</span><span class="badge badge-${left === 0 ? "red" : left <= 3 ? "gold" : "green"}">${left === 0 ? "Đã đầy" : `Còn ${left} chỗ`}</span></div><h3>${club.name}</h3><p>${club.schedule}<br>${club.room} · ${club.teacher}</p><div class="capacity"><div class="capacity-head"><span>Lấp đầy</span><strong>${ratio}%</strong></div><div class="capacity-track ${left===0?"full":left<=3?"warning":""}"><span style="width:${ratio}%"></span></div></div><div style="display:flex;gap:7px;margin-top:13px"><button class="button button-secondary" data-toast="Demo: mở cấu hình lớp ${club.name}.">Cấu hình</button><button class="button button-secondary" data-toast="Demo: xem danh sách học sinh của ${club.name}.">Danh sách</button></div></article>`;
+function renderCatalogClubBlock(club, classes) {
+  const capacity = classes.reduce((sum, row) => sum + row.capacity, 0);
+  const enrolled = classes.reduce((sum, row) => sum + row.enrolled, 0);
+  const ratio = capacity ? Math.round((enrolled / capacity) * 100) : 0;
+  const rows = classes
+    .slice()
+    .sort((left, right) => left.sortOrder - right.sortOrder || left.dayOfWeek - right.dayOfWeek || left.startTime.localeCompare(right.startTime))
+    .map((row) => {
+      const left = row.capacity - row.enrolled;
+      const badge = !row.active ? ["Đang ẩn", "red"]
+        : left <= 0 ? ["Đã đầy", "red"]
+        : left <= 3 ? [`Còn ${left} chỗ`, "gold"]
+        : [`Còn ${left} chỗ`, "green"];
+      const grades = row.grades?.length ? row.grades : club.grades;
+      return `<tr>
+        <td><strong>${escapeHtml(row.name || "Ca chính")}</strong><br><span style="color:var(--muted)">Khối ${grades.join(", ")}</span></td>
+        <td>${escapeHtml(row.scheduleLabel)}</td>
+        <td>${escapeHtml(row.room)}<br><span style="color:var(--muted)">${escapeHtml(row.teacher)}</span></td>
+        <td>${row.enrolled}/${row.capacity}${row.minCapacity ? `<br><span style="color:var(--muted)">tối thiểu ${row.minCapacity}</span>` : ""}</td>
+        <td>${formatMoney(row.fee)}</td>
+        <td><span class="badge badge-${badge[1]}">${badge[0]}</span></td>
+        <td>
+          <button class="table-action" data-edit-class="${escapeHtml(row.id)}">Sửa</button>
+          ${row.active
+            ? `<button class="table-action" data-toggle-class="${escapeHtml(row.id)}">Ngừng mở</button>`
+            : `<button class="table-action" data-toggle-class="${escapeHtml(row.id)}">Mở lại</button>`}
+        </td></tr>`;
+    }).join("");
+
+  return `<div class="panel" style="margin-bottom:16px"><div class="panel-head">
+      <div><h3>${club.emoji} ${escapeHtml(club.name)} ${club.active ? "" : '<span class="badge badge-red">CLB đang ẩn</span>'}</h3>
+      <p>${escapeHtml(club.code)} · ${escapeHtml(club.category)} · Khối ${club.grades.join(", ")} · lấp đầy ${ratio}%</p></div>
+      <div class="club-actions">
+        <button class="button button-secondary" data-edit-club="${escapeHtml(club.id)}">Sửa CLB</button>
+        <button class="button button-secondary" data-add-class-for="${escapeHtml(club.id)}">+ Thêm ca</button>
+      </div></div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Ca học</th><th>Lịch</th><th>Phòng · Giáo viên</th><th>Sĩ số</th><th>Học phí</th><th>Tình trạng</th><th>Thao tác</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+}
+
+function gradeChips(selected = [], groupName = "grades") {
+  return `<div class="chip-row">${Array.from({ length: 12 }, (unused, index) => index + 1).map((grade) => `
+    <label class="chip-toggle"><input type="checkbox" name="${groupName}_${grade}" data-group="${groupName}" value="${grade}" ${selected.includes(grade) ? "checked" : ""} /><span>${grade}</span></label>`).join("")}</div>`;
+}
+
+function clubFormMarkup(club) {
+  const isNew = !club;
+  const value = { code: "", name: "", category: "", description: "", emoji: "🎯", grades: [], sortOrder: 0, active: true, ...(club || {}) };
+  return `<div class="modal-head"><div><span class="eyebrow">${isNew ? "Tạo mới" : "Chỉnh sửa"}</span><h2>Câu lạc bộ</h2></div>
+    <button class="icon-button" data-close-modal>${icon("x")}</button></div>
+    <div class="modal-body"><form id="club-form" class="form-grid">
+      <label class="form-field form-span-2"><span>Tên CLB</span><input name="name" value="${escapeHtml(value.name)}" required /></label>
+      <label class="form-field"><span>Mã CLB</span><input name="code" value="${escapeHtml(value.code)}" placeholder="Bỏ trống để hệ thống tự sinh" /></label>
+      <label class="form-field"><span>Nhóm môn</span><input name="category" list="category-list" value="${escapeHtml(value.category)}" required />
+        <datalist id="category-list">${CATEGORY_SUGGESTIONS.map((item) => `<option value="${item}"></option>`).join("")}</datalist></label>
+      <label class="form-field"><span>Biểu tượng</span><input name="emoji" value="${escapeHtml(value.emoji)}" maxlength="4" /></label>
+      <label class="form-field"><span>Thứ tự hiển thị</span><input type="number" name="sortOrder" min="0" max="9999" value="${value.sortOrder}" /></label>
+      <label class="form-field form-span-2"><span>Mô tả cho phụ huynh</span><input name="description" value="${escapeHtml(value.description)}" /></label>
+      <div class="form-field form-span-2"><span>Khối áp dụng (mặc định cho mọi ca)</span>${gradeChips(value.grades)}</div>
+      <label class="confirm-row form-span-2"><input type="checkbox" name="active" ${value.active ? "checked" : ""} /><span>Hiển thị CLB này cho phụ huynh</span></label>
+    </form><div id="form-error" class="form-error" role="alert"></div></div>
+    <div class="modal-foot"><button class="button button-secondary" data-close-modal>Hủy</button>
+    <button class="button button-primary" data-submit-club="${escapeHtml(club?.id || "")}">${isNew ? "Tạo CLB" : "Lưu thay đổi"}</button></div>`;
+}
+
+function openClubForm(clubId) {
+  const club = state.catalog?.clubs.find((item) => item.id === clubId) || null;
+  showModal(clubFormMarkup(club), { wide: true });
+  $("[data-submit-club]").addEventListener("click", (event) => {
+    const button = event.currentTarget;
+    const targetId = button.dataset.submitClub;
+    const form = readForm("club-form");
+    withBusyButton(button, "Đang lưu…", async () => {
+      const { club: saved } = await api(targetId ? `/admin/clubs/${encodeURIComponent(targetId)}` : "/admin/clubs", {
+        method: targetId ? "PATCH" : "POST",
+        body: JSON.stringify({ ...form, sortOrder: Number(form.sortOrder || 0) }),
+      });
+      await refreshCatalog();
+      closeModal();
+      renderApp();
+      toast(targetId ? "Đã lưu CLB." : `Đã tạo CLB ${saved.name}. Hãy thêm ca học cho CLB này.`, "success");
+      if (!targetId) openClassForm(null, saved.id);
+    });
+  });
+}
+
+function classFormMarkup(clubClass, clubId) {
+  const isNew = !clubClass;
+  const club = state.catalog.clubs.find((item) => item.id === (clubClass?.clubId || clubId));
+  const value = {
+    name: "", dayOfWeek: 2, startTime: "16:15", endTime: "17:30", room: "", teacher: "",
+    capacity: 20, minCapacity: 0, enrolledBase: 0, fee: 0, grades: [], waitlistEnabled: true, sortOrder: 0, active: true,
+    ...(clubClass || {}),
+  };
+  const clubOptions = state.catalog.clubs
+    .map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === (clubClass?.clubId || clubId) ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+  const periodOptions = state.catalog.periods
+    .map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === (clubClass?.periodId || state.catalogPeriodId) ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+  return `<div class="modal-head"><div><span class="eyebrow">${isNew ? "Thêm ca học" : "Chỉnh sửa ca học"}</span><h2>${escapeHtml(club?.name || "Lớp CLB")}</h2></div>
+    <button class="icon-button" data-close-modal>${icon("x")}</button></div>
+    <div class="modal-body"><form id="class-form" class="form-grid">
+      <label class="form-field"><span>Thuộc CLB</span><select class="select-field" name="clubId">${clubOptions}</select></label>
+      <label class="form-field"><span>Đợt đăng ký</span><select class="select-field" name="periodId">${periodOptions}</select></label>
+      <label class="form-field"><span>Tên ca</span><input name="name" value="${escapeHtml(value.name)}" placeholder="Ca 1" /></label>
+      <label class="form-field"><span>Thứ</span><select class="select-field" name="dayOfWeek">
+        ${DAY_LABELS.map((label, index) => `<option value="${index}" ${Number(value.dayOfWeek) === index ? "selected" : ""}>${label}</option>`).join("")}
+      </select></label>
+      <label class="form-field"><span>Giờ bắt đầu</span><input type="time" name="startTime" value="${escapeHtml(value.startTime)}" required /></label>
+      <label class="form-field"><span>Giờ kết thúc</span><input type="time" name="endTime" value="${escapeHtml(value.endTime)}" required /></label>
+      <label class="form-field"><span>Phòng học</span><input name="room" value="${escapeHtml(value.room)}" required /></label>
+      <label class="form-field"><span>Giáo viên</span><input name="teacher" value="${escapeHtml(value.teacher)}" required /></label>
+      <label class="form-field"><span>Sĩ số tối đa</span><input type="number" name="capacity" min="1" max="500" value="${value.capacity}" required /></label>
+      <label class="form-field"><span>Sĩ số tối thiểu</span><input type="number" name="minCapacity" min="0" max="500" value="${value.minCapacity}" /></label>
+      <label class="form-field"><span>Học phí (đồng)</span><input name="fee" value="${value.fee}" required /></label>
+      <label class="form-field"><span>Ghi danh sẵn ngoài hệ thống</span><input type="number" name="enrolledBase" min="0" max="500" value="${value.enrolledBase}" /></label>
+      <div class="form-field form-span-2"><span>Khối riêng cho ca này (bỏ trống = theo CLB: khối ${club?.grades.join(", ") || "—"})</span>${gradeChips(value.grades)}</div>
+      <label class="confirm-row form-span-2"><input type="checkbox" name="waitlistEnabled" ${value.waitlistEnabled ? "checked" : ""} /><span>Nhận danh sách chờ khi hết chỗ</span></label>
+      <label class="confirm-row form-span-2"><input type="checkbox" name="active" ${value.active ? "checked" : ""} /><span>Mở ca này cho phụ huynh đăng ký</span></label>
+    </form><div id="form-error" class="form-error" role="alert"></div></div>
+    <div class="modal-foot"><button class="button button-secondary" data-close-modal>Hủy</button>
+    <button class="button button-primary" data-submit-class="${escapeHtml(clubClass?.id || "")}">${isNew ? "Thêm ca học" : "Lưu thay đổi"}</button></div>`;
+}
+
+function openClassForm(classId, clubId = null) {
+  const clubClass = state.catalog?.classes.find((item) => item.id === classId) || null;
+  if (!state.catalog?.clubs.length) return toast("Hãy tạo ít nhất một CLB trước.", "error");
+  showModal(classFormMarkup(clubClass, clubId || state.catalog.clubs[0].id), { wide: true });
+  $("[data-submit-class]").addEventListener("click", (event) => {
+    const button = event.currentTarget;
+    const targetId = button.dataset.submitClass;
+    const form = readForm("class-form");
+    withBusyButton(button, "Đang lưu…", async () => {
+      await api(targetId ? `/admin/classes/${encodeURIComponent(targetId)}` : "/admin/classes", {
+        method: targetId ? "PATCH" : "POST",
+        body: JSON.stringify({
+          ...form,
+          dayOfWeek: Number(form.dayOfWeek),
+          capacity: Number(form.capacity),
+          minCapacity: Number(form.minCapacity || 0),
+          enrolledBase: Number(form.enrolledBase || 0),
+        }),
+      });
+      await refreshCatalog();
+      closeModal();
+      renderApp();
+      toast(targetId ? "Đã lưu ca học." : "Đã thêm ca học.", "success");
+    });
+  });
+}
+
+async function toggleClassActive(classId) {
+  const clubClass = state.catalog?.classes.find((item) => item.id === classId);
+  if (!clubClass) return;
+  const turningOff = clubClass.active;
+  if (turningOff && !window.confirm(`Ngừng mở ca "${clubClass.name || clubClass.scheduleLabel}"? Phụ huynh sẽ không thấy ca này nữa.`)) return;
+  try {
+    await api(`/admin/classes/${encodeURIComponent(classId)}`, { method: "PATCH", body: JSON.stringify({ active: !turningOff }) });
+    await refreshCatalog();
+    renderApp();
+    toast(turningOff ? "Đã ngừng mở ca học." : "Đã mở lại ca học.", "success");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+/* ---------- Nhập danh mục từ Excel ---------- */
+
+const IMPORT_FIELD_LABELS = {
+  clubCode: "Mã CLB", clubName: "Tên CLB", category: "Nhóm môn", description: "Mô tả", emoji: "Biểu tượng",
+  grades: "Khối", className: "Tên lớp/ca", day: "Thứ", timeRange: "Khung giờ", startTime: "Giờ bắt đầu",
+  endTime: "Giờ kết thúc", room: "Phòng", teacher: "Giáo viên", capacity: "Sĩ số tối đa",
+  minCapacity: "Sĩ số tối thiểu", fee: "Học phí",
+};
+
+function renderCatalogImport() {
+  const draft = state.importDraft;
+  const preview = draft.preview;
+  const head = `<div class="panel-head"><div><span class="eyebrow">Nhập hàng loạt</span><h3>Danh mục CLB từ file</h3>
+    <p>${draft.fileName ? `${escapeHtml(draft.fileName)}${draft.sheetName ? ` · sheet ${escapeHtml(draft.sheetName)}` : ""}` : "Chọn file .xlsx hoặc .csv — mỗi dòng là một ca học."}</p></div>
+    <button class="button button-secondary" data-cancel-import>Đóng</button></div>`;
+
+  if (!preview) {
+    return `<div class="panel" style="margin-bottom:16px">${head}<div class="panel-body">
+      <div class="info-note"><strong>Cách khai file:</strong> mỗi dòng là một ca học. Các dòng cùng tên/mã CLB sẽ được gộp thành một CLB nhiều ca.
+      Cột tối thiểu: <b>Tên CLB, Khối, Thứ, Khung giờ, Phòng, Giáo viên, Sĩ số, Học phí</b>. Có thể thêm Mã CLB, Nhóm môn, Tên lớp, Mô tả, Sĩ số tối thiểu.</div>
+      <label class="form-field"><span>Chọn file danh mục</span><input type="file" id="catalog-file" accept=".xlsx,.csv,.txt" /></label>
+      <p class="field-hint">File được đọc ngay trên máy bạn; hệ thống chỉ ghi dữ liệu sau khi bạn bấm xác nhận ở bước rà soát.</p>
+    </div></div>`;
+  }
+
+  const mappingHtml = `<div class="mapping-list">${Object.entries(preview.mapping)
+    .map(([field, header]) => `<span><b>${escapeHtml(IMPORT_FIELD_LABELS[field] || field)}</b>${escapeHtml(header)}</span>`).join("")}</div>`;
+
+  const issuesHtml = preview.issues.length
+    ? `<div class="info-note"><strong>Cần rà soát:</strong> ${preview.issues.slice(0, 12)
+        .map((issue) => `Dòng ${issue.row} (${issue.severity === "warning" ? "cảnh báo" : "lỗi"}): ${issue.codes.map(escapeHtml).join(", ")}`).join(" · ")}</div>`
+    : "";
+
+  const clubByKey = new Map(preview.clubs.map((club) => [String(club.code).toUpperCase(), club]));
+  const sampleRows = preview.classes.slice(0, 12).map((row) => {
+    const club = clubByKey.get(row.clubKey) || {};
+    return `<tr><td>${escapeHtml(club.name || row.clubKey)}</td><td>${escapeHtml(row.name || "—")}</td><td>${escapeHtml(row.scheduleLabel)}</td>
+      <td>${escapeHtml(row.room)}<br><span style="color:var(--muted)">${escapeHtml(row.teacher)}</span></td>
+      <td>${row.capacity}</td><td>${formatMoney(row.fee)}</td><td>Khối ${(row.grades || club.grades || []).join(", ")}</td></tr>`;
+  }).join("");
+
+  return `<div class="panel" style="margin-bottom:16px">${head}<div class="panel-body">
+    ${preview.missing.length ? `<div class="inline-alert">Thiếu cột bắt buộc: ${preview.missing.map(escapeHtml).join(", ")}. Hãy sửa tiêu đề file rồi chọn lại.</div>` : mappingHtml}
+    ${preview.counters ? `<div class="kpi-strip">
+      <div class="kpi-item"><span>Dòng đã đọc</span><strong>${preview.counters.scannedRows}</strong></div>
+      <div class="kpi-item"><span>Dòng hợp lệ</span><strong>${preview.counters.validRows}</strong></div>
+      <div class="kpi-item"><span>Dòng lỗi</span><strong>${preview.counters.invalidRows}</strong></div>
+      <div class="kpi-item"><span>CLB</span><strong>${preview.counters.clubs}</strong></div>
+      <div class="kpi-item"><span>Ca học</span><strong>${preview.counters.classes}</strong></div>
+    </div>` : ""}
+    ${issuesHtml}
+    ${sampleRows ? `<div class="table-wrap"><table class="data-table">
+      <thead><tr><th>CLB</th><th>Ca</th><th>Lịch</th><th>Phòng · GV</th><th>Sĩ số</th><th>Học phí</th><th>Khối</th></tr></thead>
+      <tbody>${sampleRows}</tbody></table></div>
+      ${preview.classes.length > 12 ? `<p class="field-hint">Hiển thị 12/${preview.counters.classes} ca đầu tiên.</p>` : ""}` : ""}
+    <div class="sync-verdict ${preview.readyToImport ? "ready" : "blocked"}">
+      ${preview.readyToImport
+        ? `✓ Dữ liệu hợp lệ. Ghi vào đợt "${escapeHtml(currentCatalogPeriod()?.name || "")}" sẽ tạo mới hoặc cập nhật theo mã CLB và khung lịch, không xóa dữ liệu cũ.`
+        : "Chưa thể ghi: hãy xử lý các dòng lỗi hoặc cột còn thiếu."}</div>
+    ${preview.readyToImport ? '<div class="sync-actions"><button class="button button-primary" data-commit-import>Ghi danh mục vào hệ thống</button><span>Chỉ thêm/cập nhật, không xóa CLB hay lớp đang có.</span></div>' : ""}
+  </div></div>`;
+}
+
+async function handleCatalogFile(file) {
+  try {
+    if (!currentCatalogPeriod()) throw new Error("Hãy chọn đợt đăng ký trước khi nhập danh mục.");
+    const workbook = await window.NSHMSheet.readFile(file);
+    const sheet = workbook.sheets.find((item) => !item.hidden && item.rows.length) || workbook.sheets[0];
+    if (!sheet || !sheet.rows.length) throw new Error("File không có dòng dữ liệu nào.");
+    const { headers, rows } = window.NSHMSheet.splitHeaderAndRows(sheet.rows);
+    if (!headers.length) throw new Error("Không tìm thấy dòng tiêu đề trong file.");
+    const { preview } = await api("/admin/catalog/import/preview", {
+      method: "POST",
+      body: JSON.stringify({ periodId: state.catalogPeriodId, headers, rows }),
+    });
+    state.importDraft = { fileName: file.name, sheetName: sheet.name, headers, rows, preview };
+    renderPage();
+    toast(preview.readyToImport ? `Đọc được ${preview.counters.classes} ca học. Hãy rà soát trước khi ghi.` : "Đã đọc file; cần xử lý lỗi trước khi ghi.", preview.readyToImport ? "success" : "");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function commitCatalogImport(button) {
+  const draft = state.importDraft;
+  if (!draft?.preview?.readyToImport) return;
+  if (!window.confirm(`Ghi ${draft.preview.counters.clubs} CLB và ${draft.preview.counters.classes} ca học vào đợt "${currentCatalogPeriod()?.name}"?`)) return;
+  button.disabled = true;
+  button.textContent = "Đang ghi dữ liệu…";
+  try {
+    const { result } = await api("/admin/catalog/import/commit", {
+      method: "POST",
+      body: JSON.stringify({
+        periodId: state.catalogPeriodId, headers: draft.headers, rows: draft.rows, confirmation: "IMPORT_CLUB_CATALOG",
+      }),
+    });
+    state.importDraft = null;
+    await refreshCatalog();
+    renderApp();
+    const counters = result.counters;
+    toast(`Đã ghi: ${counters.clubsCreated} CLB mới, ${counters.clubsUpdated} CLB cập nhật, ${counters.classesCreated} ca mới, ${counters.classesUpdated} ca cập nhật.`, "success");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Ghi danh mục vào hệ thống";
+    toast(error.message, "error");
+  }
+}
+
+function bindCatalogEvents() {
+  $("[data-new-period]")?.addEventListener("click", () => openPeriodForm(null));
+  $$("[data-edit-period]").forEach((element) => element.addEventListener("click", () => openPeriodForm(element.dataset.editPeriod)));
+  $$("[data-open-period]").forEach((element) => element.addEventListener("click", () => setPeriodStatus(element.dataset.openPeriod, "open")));
+  $$("[data-close-period]").forEach((element) => element.addEventListener("click", () => setPeriodStatus(element.dataset.closePeriod, "closed")));
+  $("[data-new-club]")?.addEventListener("click", () => openClubForm(null));
+  $$("[data-edit-club]").forEach((element) => element.addEventListener("click", () => openClubForm(element.dataset.editClub)));
+  $$("[data-add-class-for]").forEach((element) => element.addEventListener("click", () => openClassForm(null, element.dataset.addClassFor)));
+  $$("[data-edit-class]").forEach((element) => element.addEventListener("click", () => openClassForm(element.dataset.editClass)));
+  $$("[data-toggle-class]").forEach((element) => element.addEventListener("click", () => toggleClassActive(element.dataset.toggleClass)));
+  $("#catalog-period")?.addEventListener("change", (event) => {
+    state.catalogPeriodId = event.target.value;
+    state.importDraft = null;
+    renderPage();
+  });
+  $("[data-import-catalog]")?.addEventListener("click", () => {
+    state.importDraft = state.importDraft ? null : { fileName: "", sheetName: "", headers: [], rows: [], preview: null };
+    renderPage();
+  });
+  $("[data-cancel-import]")?.addEventListener("click", () => { state.importDraft = null; renderPage(); });
+  $("#catalog-file")?.addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    if (file) handleCatalogFile(file);
+  });
+  $("[data-commit-import]")?.addEventListener("click", (event) => commitCatalogImport(event.currentTarget));
 }
 
 function renderApplications() {
   const filtered = state.adminStatus === "all" ? adminApplications : adminApplications.filter(a => a.status === state.adminStatus);
   const tabs = [["all","Tất cả"],["submitted","Đã gửi"],["payment","Chờ phí"],["confirmed","Đã xác nhận"],["waitlist","DS chờ"],["conflict","Trùng lịch"]];
-  return `<section class="section" style="margin-top:0"><div class="section-head"><div><span class="eyebrow">Quản lý tập trung</span><h2>Danh sách đăng ký</h2><p>Lọc, xử lý ngoại lệ và theo dõi lịch sử trạng thái.</p></div><button class="button button-secondary" data-export>${icon("download")} Xuất CSV demo</button></div>
+  return `<section class="section" style="margin-top:0"><div class="section-head"><div><span class="eyebrow">Quản lý tập trung</span><h2>Danh sách đăng ký</h2><p>Lọc, xử lý ngoại lệ và theo dõi lịch sử trạng thái.</p></div><button class="button button-secondary" data-export>${icon("download")} Xuất CSV</button></div>
   <div class="filters"><label class="search-field">${icon("search")}<input id="admin-search" placeholder="Tìm mã đơn, học sinh, CLB..." /></label><div class="status-tabs">${tabs.map(([id,label]) => `<button class="status-tab ${state.adminStatus === id ? "active" : ""}" data-status-tab="${id}">${label}</button>`).join("")}</div></div></section>
-  <section class="section panel"><div class="panel-head"><div><h3>${filtered.length} đơn hiển thị</h3><p>Đợt Học kỳ I · 2026–2027</p></div></div><div id="applications-table">${renderApplicationTable(filtered)}</div></section>`;
+  <section class="section panel"><div class="panel-head"><div><h3>${filtered.length} đơn hiển thị</h3><p>${escapeHtml(pageContext("applications", ""))}</p></div></div><div id="applications-table">${renderApplicationTable(filtered)}</div></section>`;
 }
 
 function renderApplicationTable(rows) {
   return `<div class="table-wrap"><table class="data-table"><thead><tr><th>Mã đơn</th><th>Học sinh</th><th>CLB</th><th>Thời gian</th><th>Trạng thái</th><th>Phí</th><th>Thao tác</th></tr></thead><tbody>${rows.map(row => {
     const [label,color] = statusMap[row.status];
-    return `<tr data-row-text="${(row.id+row.student+row.club).toLowerCase()}"><td><strong>${row.id}</strong></td><td><div class="student-cell"><span class="mini-avatar">${row.student.split(" ").slice(-2).map(s=>s[0]).join("")}</span><div><strong>${row.student}</strong><span>${row.className}</span></div></div></td><td>${row.club}</td><td>${row.date}</td><td><span class="badge badge-${color}">${label}</span></td><td>${formatMoney(row.amount)}</td><td>${row.status === "payment" ? `<button class="table-action" data-confirm-payment="${row.id}">Xác nhận phí</button>` : `<button class="table-action" data-toast="Demo: mở chi tiết ${row.id}.">Chi tiết</button>`}</td></tr>`;
+    return `<tr data-row-text="${(row.id+row.student+row.club).toLowerCase()}"><td><strong>${row.id}</strong></td><td><div class="student-cell"><span class="mini-avatar">${row.student.split(" ").slice(-2).map(s=>s[0]).join("")}</span><div><strong>${row.student}</strong><span>${row.className}</span></div></div></td><td>${escapeHtml(row.club)}${row.classLabel ? `<br><span style="color:var(--muted)">${escapeHtml(row.classLabel)}</span>` : ""}</td><td>${row.date}</td><td><span class="badge badge-${color}">${label}</span></td><td>${formatMoney(row.amount)}</td><td>${row.status === "payment" ? `<button class="table-action" data-confirm-payment="${row.id}">Xác nhận phí</button>` : `<button class="table-action" data-toast="Demo: mở chi tiết ${row.id}.">Chi tiết</button>`}</td></tr>`;
   }).join("") || `<tr><td colspan="7"><div class="empty-state">Không có dữ liệu phù hợp.</div></td></tr>`}</tbody></table></div>`;
 }
 
@@ -529,12 +1246,21 @@ function addToCart(clubId) {
     toast(`${target.name} trùng lịch với ${conflict.name}. Vui lòng chọn phương án khác.`, "error");
     return;
   }
+  // Đơn đã gửi lưu theo mã lớp; một CLB có thể có nhiều ca nên phải chặn cả trùng CLB lẫn trùng giờ.
   const existing = state.registrations
     .filter((registration) => registration.studentId === state.studentId && ["submitted", "payment", "confirmed"].includes(registration.status))
-    .map((registration) => clubs.find((club) => club.id === registration.clubId))
-    .find((club) => club && (club.id === target.id || overlaps(club, target)));
+    .map((registration) => clubs.find((club) => club.id === registration.classId))
+    .find((club) => club && (club.id === target.id || club.clubId === target.clubId || overlaps(club, target)));
   if (existing) {
-    toast(existing.id === target.id ? `${target.name} đã có trong đăng ký hiện tại.` : `${target.name} trùng lịch với ${existing.name} đã đăng ký.`, "error");
+    const reason = existing.id === target.id ? `${target.name} đã có trong đăng ký hiện tại.`
+      : existing.clubId === target.clubId ? `Học sinh đã đăng ký một ca khác của ${target.name}.`
+      : `${target.name} trùng lịch với ${existing.name} đã đăng ký.`;
+    toast(reason, "error");
+    return;
+  }
+  const sameClubInCart = state.cart.map((id) => clubs.find((club) => club.id === id)).find((club) => club && club.clubId === target.clubId);
+  if (sameClubInCart) {
+    toast(`Bạn đã chọn một ca khác của ${target.name}. Vui lòng chỉ giữ một ca.`, "error");
     return;
   }
   state.cart.push(clubId);
@@ -550,7 +1276,7 @@ function renderCart() {
     $("#cart-body").innerHTML = `<div class="empty-state"><div class="empty-icon">${icon("cart")}</div><h3>Giỏ đăng ký đang trống</h3><p>Chọn một hoặc nhiều CLB phù hợp với ${student().name}.</p><button class="button button-primary" data-drawer-go-clubs>Khám phá CLB</button></div>`;
     $("#cart-footer").innerHTML = "";
   } else {
-    $("#cart-body").innerHTML = `<div class="inline-alert">${icon("spark")}<span>Hệ thống đã kiểm tra khối/lứa tuổi. Trùng lịch và quota sẽ được kiểm tra lại khi gửi.</span></div>${items.map(club => `<div class="cart-item"><span class="cart-emoji">${club.emoji}</span><div class="cart-copy"><h3>${club.name}</h3><p>${club.schedule}<br>${club.room}</p><strong>${club.enrolled >= club.capacity ? "Danh sách chờ" : formatMoney(club.fee)}</strong></div><button class="remove-item" data-remove="${club.id}" aria-label="Xóa">${icon("x")}</button></div>`).join("")}`;
+    $("#cart-body").innerHTML = `<div class="inline-alert">${icon("spark")}<span>Hệ thống đã kiểm tra khối/lứa tuổi. Trùng lịch và quota sẽ được kiểm tra lại khi gửi.</span></div>${items.map(club => `<div class="cart-item"><span class="cart-emoji">${club.emoji}</span><div class="cart-copy"><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.schedule}<br>${club.room}</p><strong>${club.enrolled >= club.capacity ? "Danh sách chờ" : formatMoney(club.fee)}</strong></div><button class="remove-item" data-remove="${club.id}" aria-label="Xóa">${icon("x")}</button></div>`).join("")}`;
     const total = items.filter(c => c.enrolled < c.capacity).reduce((sum,c)=>sum+c.fee,0);
     $("#cart-footer").innerHTML = `<div class="summary-lines"><div class="summary-line"><span>Học sinh</span><strong>${student().name}</strong></div><div class="summary-line"><span>${items.length} lựa chọn</span><strong>${items.some(c=>c.enrolled>=c.capacity)?"Có DS chờ":"Hợp lệ"}</strong></div><div class="summary-line total"><span>Phí dự kiến</span><strong>${formatMoney(total)}</strong></div></div><label class="confirm-row"><input id="terms-check" type="checkbox" /><span>Tôi đã kiểm tra lịch học, mức phí và đồng ý với quy định đổi/hủy của nhà trường.</span></label><button id="submit-cart" class="button button-primary" disabled>${icon("check")} Xác nhận và gửi đăng ký</button>`;
   }
@@ -563,11 +1289,11 @@ function closeCart() { $("#cart-drawer").classList.remove("open"); $("#drawer-ov
 function showDetail(clubId) {
   const club = clubs.find(c => c.id === clubId);
   const left = club.capacity - club.enrolled;
-  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${club.name}</h3><p>${club.description}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${club.schedule}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${club.room}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${club.teacher}</strong></div><div class="detail-cell"><span>Sĩ số</span><strong>${left > 0 ? `Còn ${left}/${club.capacity} chỗ` : "Đã đầy · nhận DS chờ"}</strong></div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)} / học kỳ</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id)?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":left===0?"Vào DS chờ":"Chọn CLB"}</button></div>`);
+  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.description}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${club.schedule}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${club.room}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${club.teacher}</strong></div><div class="detail-cell"><span>Sĩ số</span><strong>${left > 0 ? `Còn ${left}/${club.capacity} chỗ` : "Đã đầy · nhận DS chờ"}</strong></div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)} / học kỳ</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id)?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":left===0?"Vào DS chờ":"Chọn CLB"}</button></div>`);
 }
 
-function showModal(content) {
-  $("#modal-root").innerHTML = `<div class="modal-backdrop"><div class="modal">${content}</div></div>`;
+function showModal(content, { wide = false } = {}) {
+  $("#modal-root").innerHTML = `<div class="modal-backdrop"><div class="modal${wide ? " modal-wide" : ""}">${content}</div></div>`;
   $$('[data-close-modal]').forEach(el => el.addEventListener("click", closeModal));
   $(".modal-backdrop")?.addEventListener("click", e => { if (e.target.classList.contains("modal-backdrop")) closeModal(); });
   $("[data-modal-add]")?.addEventListener("click", e => { closeModal(); addToCart(e.currentTarget.dataset.modalAdd); });
@@ -650,7 +1376,7 @@ function bindLoginEvents() {
     $("#local-login-fields").classList.toggle("hidden", !parent);
     $("#login-submit").classList.toggle("hidden", !parent);
     $("#microsoft-login").classList.toggle("hidden", parent);
-    $("#credential-box").classList.toggle("hidden", !parent);
+    $("#credential-box").classList.toggle("hidden", !parent || !state.demoAccounts);
     $("#login-intro").textContent = parent
       ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường."
       : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
@@ -762,6 +1488,7 @@ function bindPageEvents() {
       toast(error.message, "error");
     }
   });
+  bindCatalogEvents();
   $("[data-export]")?.addEventListener("click", exportCsv);
   $("[data-send-support]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;

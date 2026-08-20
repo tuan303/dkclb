@@ -9,3 +9,6 @@ coverage/
 *.log
 .DS_Store
 Thumbs.db
+
+# Máy này dùng npm để chạy thử; repo giữ pnpm-lock.yaml làm nguồn duy nhất
+package-lock.json

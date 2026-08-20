@@ -26,6 +26,8 @@ flowchart LR
 | `index.html` | Khung ứng dụng, màn hình đăng nhập và thư viện icon SVG |
 | `styles.css` | Design tokens, layout desktop/mobile, component states |
 | `app.js` | API client, phiên UI, routing nội bộ và tương tác người dùng |
+| `sheet-reader.js` | Đọc `.xlsx`/`.csv` ngay trong trình duyệt để file danh mục không phải rời máy người dùng |
+| `catalog-schema.mjs` | Module thuần: chuẩn hóa và kiểm tra đợt/CLB/lớp, nhận diện cột và phân tích file nhập |
 | `server.mjs` | Static server, JSON API, session auth, validation, báo cáo CSV |
 | SQLite | Dữ liệu dự phòng chỉ cho phát triển và kiểm thử local |
 | `api/index.mjs` | Adapter Vercel Function và định tuyến toàn bộ API |
@@ -34,6 +36,8 @@ flowchart LR
 | Cloud Firestore | Lưu tài khoản, liên kết học sinh, session, OAuth state, đăng ký, hỗ trợ, audit, quota và catalog khi `DATA_BACKEND=firestore` |
 | `sheets-directory.mjs` | Đọc metadata/range giới hạn bằng Sheets API, nhận diện cột và kiểm tra chất lượng dữ liệu |
 | `tests/api.test.mjs` | Kiểm thử tích hợp trên CSDL tạm độc lập |
+| `tests/catalog-api.test.mjs` | Kiểm thử tích hợp quản trị danh mục và nhập hàng loạt |
+| `tests/catalog-schema.test.mjs` | Kiểm thử chuẩn hóa dữ liệu danh mục, độc lập với CSDL |
 
 ## 3. Bảo mật đang có
 
@@ -44,21 +48,23 @@ flowchart LR
 - Không cho tải trực tiếp thư mục `data` qua static server; không đưa credential vào repository.
 - Firestore Rules mặc định từ chối mọi truy cập client; backend được cấp quyền qua IAM.
 - Web config chỉ khởi tạo Firebase/Analytics và không mang quyền Admin.
-- Có security headers cơ bản và giới hạn body JSON 1 MB.
+- Có security headers cơ bản và giới hạn body JSON 1 MB (riêng hai endpoint nhập danh mục là 8 MB).
 - Chuyển trạng thái phí tạo audit log trước/sau.
+- Mọi thay đổi đợt, CLB và lớp đều ghi audit log kèm giá trị trước/sau; nhập hàng loạt ghi log số bản ghi tạo mới và cập nhật.
 
 ## 4. Quy tắc đăng ký
 
 API không tin kết quả kiểm tra từ trình duyệt. Khi tạo đơn, server dùng transaction của backend đang chọn (`BEGIN IMMEDIATE` với SQLite hoặc Firestore transaction) rồi kiểm tra lại:
 
-1. Học sinh có liên kết với phụ huynh hiện tại.
-2. Tất cả CLB còn hoạt động và áp dụng cho khối.
-3. Không vượt quá ba CLB trong một lần gửi.
-4. Không đăng ký trùng lớp.
-5. Không giao nhau với lịch trong giỏ hoặc đăng ký hiện có.
-6. Tính lại quota ngay trong transaction.
-7. Lớp còn chỗ tạo trạng thái `payment`; lớp đầy tạo `waitlist`.
-8. Lưu snapshot lịch, phí và thời điểm chấp nhận điều khoản.
+1. Có đợt đăng ký ở trạng thái `open` và giờ máy chủ nằm trong khoảng mở–đóng của đợt. Không có thì trả `409 REGISTRATION_CLOSED`.
+2. Học sinh có liên kết với phụ huynh hiện tại.
+3. Tất cả lớp còn hoạt động, thuộc đợt đang mở và áp dụng cho khối của học sinh (khối lấy theo cấu hình riêng của ca, nếu ca không khai thì lấy theo CLB).
+4. Không vượt quá số CLB tối đa mà đợt cấu hình, tính trên tổng số CLB học sinh đã có trong đợt cộng với lựa chọn mới.
+5. Không đăng ký trùng lớp, và không đăng ký hai ca khác nhau của cùng một CLB.
+6. Không giao nhau với lịch trong giỏ hoặc đăng ký hiện có.
+7. Tính lại quota ngay trong transaction.
+8. Lớp còn chỗ tạo trạng thái `payment`; lớp đầy tạo `waitlist`. Lớp đã tắt danh sách chờ thì báo lỗi thay vì tạo đơn chờ.
+9. Lưu snapshot lịch, phí, mã đợt và thời điểm chấp nhận điều khoản.
 
 ## 5. API hiện có
 
@@ -69,7 +75,8 @@ API không tin kết quả kiểm tra từ trình duyệt. Khi tạo đơn, serv
 | `POST` | `/api/auth/logout` | Đã đăng nhập |
 | `GET` | `/api/me` | Đã đăng nhập |
 | `GET` | `/api/students` | Phụ huynh |
-| `GET` | `/api/clubs?studentId=...` | Đã đăng nhập |
+| `GET` | `/api/clubs?studentId=...` | Đã đăng nhập, chỉ trả lớp thuộc đợt đang mở |
+| `GET` | `/api/period` | Đã đăng nhập, trả đợt đang mở và giờ máy chủ |
 | `GET` | `/api/registrations` | Theo phạm vi vai trò |
 | `POST` | `/api/registrations/validate` | Phụ huynh |
 | `POST` | `/api/registrations` | Phụ huynh |
@@ -84,6 +91,16 @@ API không tin kết quả kiểm tra từ trình duyệt. Khi tạo đơn, serv
 | `POST` | `/api/auth/change-initial-password` | Phụ huynh, phiên đã xác thực |
 | `PATCH` | `/api/admin/registrations/:id/confirm-payment` | Nhà trường |
 | `GET` | `/api/admin/reports/registrations.csv` | Nhà trường |
+| `GET` | `/api/admin/periods` | Nhà trường |
+| `POST` | `/api/admin/periods` | Nhà trường |
+| `PATCH` | `/api/admin/periods/:id` | Nhà trường |
+| `GET` | `/api/admin/catalog` | Nhà trường |
+| `POST` | `/api/admin/clubs` | Nhà trường |
+| `PATCH` | `/api/admin/clubs/:id` | Nhà trường |
+| `POST` | `/api/admin/classes` | Nhà trường |
+| `PATCH` | `/api/admin/classes/:id` | Nhà trường |
+| `POST` | `/api/admin/catalog/import/preview` | Nhà trường, chỉ đọc và phân tích |
+| `POST` | `/api/admin/catalog/import/commit` | Nhà trường, xác nhận bắt buộc |
 
 ## 6. Nâng cấp production
 
@@ -94,6 +111,6 @@ Trước khi dùng dữ liệu thật nên thực hiện:
 3. Thay mật khẩu khởi tạo PH bằng OTP; áp dụng MFA Conditional Access và Entra group/app role cho nhân sự.
 4. Thêm CSRF protection nếu mở rộng các kiểu xác thực/cross-origin.
 5. Áp dụng rate limit, reverse proxy HTTPS, WAF và centralized logging.
-6. Bổ sung CRUD quản trị, maker-checker cho hoàn/chuyển phí và quyền theo scope.
+6. CRUD đợt/CLB/lớp đã có; còn thiếu CRUD tài khoản, maker-checker cho hoàn/chuyển phí và quyền theo scope.
 7. Bổ sung queue cho thông báo và retry đồng bộ có idempotency/checksum theo từng hàng.
 8. Kiểm thử tải cao điểm, backup/restore và giám sát SLA.
