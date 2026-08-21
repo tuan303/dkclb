@@ -247,6 +247,10 @@ Cổng Nhà trường → **Cấu hình & phân quyền → Tra cứu tài kho�
 
 Khi phụ huynh quên mật khẩu, bấm **Đặt lại về mật khẩu khởi tạo**: mật khẩu trở lại chính là số điện thoại, khóa tạm được gỡ, và phụ huynh bắt buộc đổi mật khẩu ngay lần đăng nhập kế tiếp. Quản trị không tự đặt mật khẩu và hệ thống không bao giờ hiển thị mật khẩu hiện tại. Thao tác ghi audit log kèm người thực hiện.
 
+## Khi sửa tệp trong `public/`
+
+`index.html` được máy chủ đặt `max-age=0, must-revalidate` nên luôn tải bản mới, nhưng `app.js`, `styles.css` và `sheet-reader.js` được cache 4 giờ trong trình duyệt. **Mỗi lần sửa các tệp này phải nâng số phiên bản `?v=` trong `index.html`**, nếu không người dùng vẫn chạy mã cũ tới 4 giờ sau khi deploy. Quy ước hiện dùng là `?v=YYYYMMDD-n`.
+
 ## Ranh giới tệp công khai
 
 Chỉ thư mục `public/` được phục vụ ra Internet. `vercel.json` khai báo `"outputDirectory": "public"`, và server local cũng chỉ đọc tệp trong thư mục đó theo một danh sách trắng.
