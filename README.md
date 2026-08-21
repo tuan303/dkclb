@@ -142,6 +142,8 @@ Trong cổng Nhà trường, mở **Cấu hình & phân quyền → Google Sheet
 
 Tài khoản PH mới được tạo theo quy tắc `912345678` → `0912345678`; mật khẩu khởi tạo cũng là `0912345678` và phải đổi ngay lần đầu. Các lần đồng bộ sau không đặt lại mật khẩu đã đổi.
 
+Tài khoản vừa đồng bộ **không lưu mật khẩu**: mật khẩu khởi tạo đúng bằng số điện thoại, mà số này chính là tên tài khoản nên không phải bí mật. Băm nó không bảo vệ thêm được gì trong khi băm vài nghìn tài khoản đủ làm một lần đồng bộ vượt trần thời gian chạy hàm. Ngay khi phụ huynh đặt mật khẩu riêng, hệ thống lưu hash `scrypt` và lối đăng nhập bằng số điện thoại tắt hẳn cho tài khoản đó.
+
 Biến môi trường có thể thay đổi nguồn mà không sửa code:
 
 ```text

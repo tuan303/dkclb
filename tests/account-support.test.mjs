@@ -133,6 +133,38 @@ test("đặt lại mật khẩu khởi tạo mở khóa tài khoản và bắt �
   assert.equal(lookup.account.lockedUntil, null);
 });
 
+test("đặt mật khẩu riêng là số điện thoại hết hiệu lực làm mật khẩu", async () => {
+  // Đưa tài khoản về đúng trạng thái sau đồng bộ: không lưu mật khẩu, đăng nhập bằng chính SĐT.
+  await request("/api/admin/accounts/reset-initial-password", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({ account: "0901234567", confirmation: "RESET_INITIAL_PASSWORD" }),
+  });
+  const initial = await login("0901234567", "0901234567");
+  assert.equal(initial.status, 200);
+  const cookie = initial.headers.get("set-cookie").split(";")[0];
+
+  const changed = await request("/api/auth/change-initial-password", cookie, {
+    method: "POST",
+    body: JSON.stringify({ newPassword: "Nshm@2026clb" }),
+  });
+  assert.equal(changed.status, 200);
+
+  // Đây là điểm bảo mật quan trọng nhất: nhánh mật khẩu khởi tạo phải tắt hẳn
+  // ngay khi tài khoản đã có mật khẩu riêng.
+  const phoneAsPassword = await login("0901234567", "0901234567");
+  assert.equal(phoneAsPassword.status, 401, "số điện thoại không còn dùng làm mật khẩu được nữa");
+
+  const withNewPassword = await login("0901234567", "Nshm@2026clb");
+  assert.equal(withNewPassword.status, 200);
+  const meCookie = withNewPassword.headers.get("set-cookie").split(";")[0];
+  const me = await (await request("/api/me", meCookie)).json();
+  assert.equal(me.user.mustChangePassword, false);
+
+  const { lookup } = await (await request("/api/admin/accounts/lookup?account=0901234567", adminCookie)).json();
+  assert.equal(lookup.account.mustChangePassword, false);
+  assert.match(lookup.diagnosis, /đã đổi sang mật khẩu riêng/);
+});
+
 test("không đặt lại được mật khẩu của tài khoản nhà trường", async () => {
   const response = await request("/api/admin/accounts/reset-initial-password", adminCookie, {
     method: "POST",

@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
-import { createHash, randomBytes, scrypt, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createGoogleSheetsDirectorySource, toVietnameseLocalPhone } from "./sheets-directory.mjs";
 import { createMicrosoftAuth } from "./microsoft-auth.mjs";
@@ -85,33 +85,28 @@ function hashPassword(password, salt = randomBytes(16).toString("hex")) {
   return { salt, hash: scryptSync(password, salt, 64).toString("hex") };
 }
 
-function hashPasswordAsync(password, salt = randomBytes(16).toString("hex")) {
-  return new Promise((resolve, reject) => {
-    scrypt(password, salt, 64, (error, derivedKey) => {
-      if (error) reject(error);
-      else resolve({ salt, hash: derivedKey.toString("hex") });
-    });
-  });
-}
-
-async function mapWithConcurrency(items, concurrency, worker) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  async function run() {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await worker(items[index], index);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, run));
-  return results;
-}
 
 function verifyPassword(password, salt, expectedHex) {
+  if (!salt || !expectedHex) return false;
   const actual = scryptSync(password, salt, 64);
   const expected = Buffer.from(expectedHex, "hex");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function timingSafeEqualText(left, right) {
+  const a = Buffer.from(String(left), "utf8");
+  const b = Buffer.from(String(right), "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+// Tài khoản vừa đồng bộ chưa có mật khẩu riêng: mật khẩu khởi tạo đúng bằng số
+// điện thoại, vốn chính là tên tài khoản nên không phải bí mật. Không băm chuỗi
+// này để việc đồng bộ hàng nghìn phụ huynh không vượt trần thời gian chạy hàm.
+// Ngay khi phụ huynh đặt mật khẩu riêng, hệ thống lưu hash scrypt và nhánh này
+// không còn được dùng nữa.
+function usesInitialPassword(user) {
+  return Boolean(user?.must_change_password) && !user?.password_hash;
 }
 
 function ensureColumn(table, column, definition) {
@@ -665,14 +660,9 @@ async function syncGoogleDirectory(actorUserId) {
   const timestamp = nowIso();
   const counters = { studentsCreated: 0, studentsUpdated: 0, parentsCreated: 0, parentsExisting: 0, linksCreated: 0, linksUpdated: 0 };
   const studentIdsByCode = new Map();
-  const existingAccountRoles = businessStore ? await businessStore.getExistingAccountRoles() : null;
-  const newGuardians = snapshot.guardians.filter((guardian) => businessStore
-    ? !existingAccountRoles.has(guardian.account.toLowerCase())
-    : !db.prepare("SELECT 1 FROM users WHERE lower(account) = lower(?)").get(guardian.account));
-  const preparedHashes = new Map(await mapWithConcurrency(newGuardians, 8, async (guardian) => [guardian.account, await hashPasswordAsync(guardian.initialPassword)]));
 
   if (businessStore) {
-    return businessStore.syncDirectory({ snapshot, preparedHashes, actorUserId, timestamp, idFactory: id, source, analysis });
+    return businessStore.syncDirectory({ snapshot, actorUserId, timestamp, idFactory: id, source, analysis });
   }
 
   db.exec("BEGIN IMMEDIATE");
@@ -698,12 +688,12 @@ async function syncGoogleDirectory(actorUserId) {
       let user = db.prepare("SELECT * FROM users WHERE lower(account) = lower(?)").get(guardian.account);
       if (user && user.role !== "parent") throw httpError(409, "ACCOUNT_ROLE_CONFLICT", "Có SĐT phụ huynh trùng với một tài khoản vai trò khác; cần IT xử lý thủ công.");
       if (!user) {
-        const initial = preparedHashes.get(guardian.account) || hashPassword(guardian.initialPassword);
         const userId = id("u_parent");
+        // Chưa có mật khẩu riêng: để trống salt/hash, mật khẩu khởi tạo là chính số điện thoại.
         db.prepare(`INSERT INTO users
           (id, account, display_name, role, password_salt, password_hash, auth_provider, must_change_password, active, created_at)
-          VALUES (?, ?, ?, 'parent', ?, ?, 'local', 1, 1, ?)`)
-          .run(userId, guardian.account, guardian.displayName || "Phụ huynh học sinh", initial.salt, initial.hash, timestamp);
+          VALUES (?, ?, ?, 'parent', '', '', 'local', 1, 1, ?)`)
+          .run(userId, guardian.account, guardian.displayName || "Phụ huynh học sinh", timestamp);
         user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
         counters.parentsCreated += 1;
       } else {
@@ -1114,11 +1104,11 @@ async function resetInitialPassword({ actorUserId, rawAccount }) {
   if (user.role !== "parent") throw httpError(409, "ACCOUNT_NOT_PARENT", "Chỉ đặt lại được mật khẩu của tài khoản phụ huynh.");
   if (user.auth_provider !== "local") throw httpError(409, "ACCOUNT_NOT_LOCAL", "Tài khoản này đăng nhập bằng Microsoft 365.");
 
-  const secured = await hashPasswordAsync(normalized);
-  if (businessStore) await businessStore.resetToInitialPassword(user.id, secured);
+  // Đưa về đúng trạng thái sau đồng bộ: không lưu mật khẩu, đăng nhập bằng chính số điện thoại.
+  if (businessStore) await businessStore.resetToInitialPassword(user.id);
   else {
-    db.prepare(`UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 1,
-      login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`).run(secured.salt, secured.hash, user.id);
+    db.prepare(`UPDATE users SET password_salt = '', password_hash = '', must_change_password = 1,
+      login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`).run(user.id);
   }
   await writeAudit({
     actorUserId,
@@ -1163,7 +1153,9 @@ async function handleApi(req, res, url) {
     if (user?.locked_until && user.locked_until > nowIso()) {
       throw httpError(429, "ACCOUNT_TEMPORARILY_LOCKED", "Tài khoản tạm khóa do đăng nhập sai nhiều lần. Vui lòng thử lại sau 15 phút.");
     }
-    const passwordValid = user?.auth_provider === "local" && verifyPassword(String(password), user.password_salt, user.password_hash);
+    const passwordValid = user?.auth_provider === "local" && (usesInitialPassword(user)
+      ? timingSafeEqualText(String(password), user.account)
+      : verifyPassword(String(password), user.password_salt, user.password_hash));
     if (!user || !passwordValid) {
       if (user) {
         const failures = Number(user.login_failures || 0) + 1;
@@ -1370,7 +1362,10 @@ async function handleApi(req, res, url) {
     const user = await requireUser(req, "admin");
     const { confirmation = "" } = await readJson(req);
     if (confirmation !== "SYNC_STUDENT_DIRECTORY") throw httpError(422, "SYNC_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đồng bộ danh bạ học sinh.");
-    return sendJson(res, 200, { result: await syncGoogleDirectory(user.id) });
+    // Báo lại thời gian chạy để còn biết lần đồng bộ có đang tiến sát trần thời gian của hàm hay không.
+    const startedAt = Date.now();
+    const result = await syncGoogleDirectory(user.id);
+    return sendJson(res, 200, { result: { ...result, elapsedMs: Date.now() - startedAt } });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/accounts/lookup") {

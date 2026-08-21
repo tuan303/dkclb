@@ -43,7 +43,8 @@ flowchart LR
 
 ## 3. Bảo mật đang có
 
-- Mật khẩu demo được băm bằng `scrypt` với salt riêng.
+- Mật khẩu do người dùng đặt được băm bằng `scrypt` với salt riêng.
+- Tài khoản phụ huynh vừa đồng bộ không lưu salt/hash: mật khẩu khởi tạo đúng bằng số điện thoại, vốn chính là tên tài khoản nên không phải bí mật, và được so sánh bằng `timingSafeEqual`. Nhánh này chỉ áp dụng khi tài khoản chưa có hash; đặt mật khẩu riêng là nhánh đó tắt hẳn, có kiểm thử chặn hồi quy.
 - Phiên dùng token ngẫu nhiên 256 bit; Production chỉ lưu SHA-256 của token trong Firestore.
 - Cookie phiên có `HttpOnly`, `Secure`, `SameSite=Lax` và thời hạn 8 giờ ở Production.
 - Kiểm tra vai trò và phạm vi học sinh được thực hiện ở API.
@@ -121,3 +122,4 @@ Trước khi dùng dữ liệu thật nên thực hiện:
 6. CRUD đợt/CLB/lớp đã có; còn thiếu CRUD tài khoản, maker-checker cho hoàn/chuyển phí và quyền theo scope.
 7. Bổ sung queue cho thông báo và retry đồng bộ có idempotency/checksum theo từng hàng.
 8. Kiểm thử tải cao điểm, backup/restore và giám sát SLA.
+9. Đồng bộ danh bạ hiện chạy trọn trong một request. Nếu danh sách vượt quá quy mô hiện tại và chạm trần thời gian của hàm, cần chuyển sang đồng bộ theo lô có con trỏ và báo tiến độ. Phản hồi của API đã trả `elapsedMs` để theo dõi mức tiệm cận trần này.

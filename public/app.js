@@ -33,7 +33,13 @@ async function api(path, options = {}) {
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json") ? await response.json() : null;
   if (!response.ok) {
-    const error = new Error(payload?.error?.message || "Không thể kết nối tới hệ thống.");
+    // Máy chủ bị cắt giữa chừng sẽ trả HTML chứ không phải JSON; nêu rõ mã lỗi để còn lần ra nguyên nhân.
+    const fallback = [504, 502, 408].includes(response.status)
+      ? `Máy chủ xử lý quá lâu và bị ngắt (lỗi ${response.status}). Hãy thử lại; nếu vẫn vậy thì dữ liệu nguồn quá lớn cho một lần chạy.`
+      : response.status >= 500
+        ? `Máy chủ gặp sự cố (lỗi ${response.status}). Vui lòng thử lại sau ít phút.`
+        : `Yêu cầu không được chấp nhận (lỗi ${response.status}).`;
+    const error = new Error(payload?.error?.message || fallback);
     error.status = response.status;
     error.code = payload?.error?.code;
     error.details = payload?.error?.details;
@@ -1573,14 +1579,15 @@ function bindPageEvents() {
     if (!window.confirm("Đồng bộ toàn bộ học sinh và tài khoản phụ huynh hợp lệ từ tab dshs26-27? Thao tác không sửa Google Sheet.")) return;
     const button = event.currentTarget;
     button.disabled = true;
-    button.textContent = "Đang đồng bộ...";
+    button.textContent = "Đang đồng bộ, vui lòng đợi…";
     try {
       const { result } = await api("/admin/integrations/google-sheets/sync", {
         method: "POST",
         body: JSON.stringify({ confirmation: "SYNC_STUDENT_DIRECTORY" }),
       });
-      toast(`Đồng bộ hoàn tất: ${result.counters.parentsCreated} tài khoản PH mới, ${result.counters.parentsExisting} tài khoản đã có.`, "success");
+      toast(`Đồng bộ hoàn tất trong ${(result.elapsedMs / 1000).toFixed(0)} giây: ${result.counters.studentsCreated} học sinh mới, ${result.counters.parentsCreated} tài khoản PH mới, ${result.counters.linksCreated} liên kết.`, "success");
       state.sheetPreview = null;
+      state.accountLookup = null;
       renderPage();
     } catch (error) {
       button.disabled = false;

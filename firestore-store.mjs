@@ -109,6 +109,26 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
       }
     }
 
+    // Ghi song song, có tự thử lại: dùng cho đồng bộ hàng nghìn bản ghi trong một lần chạy.
+    // Lỗi được gom lại và ném ra để không bao giờ báo đồng bộ thành công khi ghi thiếu.
+    async function bulkCommitDocuments(documents) {
+      const failures = [];
+      const writer = firestore.bulkWriter();
+      writer.onWriteError((error) => {
+        if (error.failedAttempts < 3) return true;
+        failures.push(`${error.documentRef.path}: ${error.message}`);
+        return false;
+      });
+      for (const item of documents) {
+        writer.set(firestore.doc(item.path), item.data, item.options || { merge: false }).catch(() => {});
+      }
+      await writer.close();
+      if (failures.length) {
+        throw createHttpError(502, "SYNC_WRITE_FAILED",
+          `Không ghi được ${failures.length} bản ghi khi đồng bộ. Ví dụ: ${failures[0]}`);
+      }
+    }
+
     // Bộ đếm chỗ = số ghi danh sẵn + số đơn đang giữ chỗ. Phải tính lại mỗi khi
     // quản trị sửa lớp để giao dịch đăng ký không dựa trên số cũ.
     async function recomputeClassCounter(classId, enrolledBase) {
@@ -234,11 +254,6 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         return asServerUser(await users.doc(userId).get());
       },
 
-      async getExistingAccountRoles() {
-        const snapshot = await users.get();
-        return new Map(snapshotRows(snapshot).map((user) => [String(user.accountLower || user.account || "").toLowerCase(), user.role]));
-      },
-
       async listStudentsByParent(parentUserId) {
         const links = snapshotRows(await parentStudents.where("parentUserId", "==", parentUserId).get());
         if (!links.length) return [];
@@ -300,10 +315,10 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         return { parents: parentCount.data().count, students: studentCount.data().count, lastSyncAt };
       },
 
-      async resetToInitialPassword(userId, password) {
+      async resetToInitialPassword(userId) {
         await users.doc(userId).update({
-          passwordSalt: password.salt,
-          passwordHash: password.hash,
+          passwordSalt: null,
+          passwordHash: null,
           mustChangePassword: true,
           loginFailures: 0,
           lockedUntil: null,
@@ -449,7 +464,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         });
       },
 
-      async syncDirectory({ snapshot, preparedHashes, actorUserId, timestamp, idFactory, source, analysis }) {
+      async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis }) {
         const [studentSnapshot, userSnapshot, linkSnapshot] = await Promise.all([students.get(), users.get(), parentStudents.get()]);
         const studentsByCode = new Map(snapshotRows(studentSnapshot).map((student) => [student.code, student]));
         const usersByAccount = new Map(snapshotRows(userSnapshot).map((user) => [String(user.accountLower || user.account || "").toLowerCase(), user]));
@@ -473,13 +488,13 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           let user = usersByAccount.get(accountLower);
           if (user && user.role !== "parent") throw createHttpError(409, "ACCOUNT_ROLE_CONFLICT", "Có SĐT phụ huynh trùng với một tài khoản vai trò khác; cần IT xử lý thủ công.");
           if (!user) {
-            const initial = preparedHashes.get(guardian.account);
             const userId = idFactory("u_parent");
             user = { id: userId, account: guardian.account, accountLower, role: "parent" };
             usersByAccount.set(accountLower, user);
+            // Chưa có mật khẩu riêng: mật khẩu khởi tạo là chính số điện thoại nên không lưu hash.
             writes.push({ path: `users/${userId}`, options: { merge: true }, data: {
               account: guardian.account, accountLower, displayName: guardian.displayName || "Phụ huynh học sinh", role: "parent",
-              passwordSalt: initial.salt, passwordHash: initial.hash, authProvider: "local", mustChangePassword: true,
+              passwordSalt: null, passwordHash: null, authProvider: "local", mustChangePassword: true,
               loginFailures: 0, lockedUntil: null, active: true, createdAt: timestamp,
             } });
             counters.parentsCreated += 1;
@@ -501,7 +516,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
             }
           }
         }
-        await commitDocuments(writes);
+        await bulkCommitDocuments(writes);
         const syncId = idFactory("sync");
         await auditLogs.doc(`audit_${randomBytes(8).toString("hex")}`).set({
           actorUserId, action: "SYNC_STUDENT_DIRECTORY", entityType: "google_sheet", entityId: syncId,
