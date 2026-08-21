@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { createConnection } from "mysql2/promise";
 import { createMysqlStore } from "./mysql-store.mjs";
+import { decryptBackup, isEncryptedBackup } from "./public/backup-crypto.mjs";
 
 const SUPPORTED_SCHEMA_VERSIONS = [1];
 
@@ -45,6 +46,20 @@ function reportError(message) {
   const error = new Error(message);
   error.code = "BACKUP_IMPORT_ERROR";
   return error;
+}
+
+/**
+ * Đọc tệp sao lưu, tự nhận biết tệp đã mã hóa và giải mã bằng mật khẩu người dùng đặt.
+ * Mật khẩu nên truyền qua biến môi trường BACKUP_PASSPHRASE: tham số dòng lệnh hiện
+ * ra trong danh sách tiến trình của máy chủ.
+ */
+export async function readBackupFile(raw, passphrase = "") {
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!isEncryptedBackup(parsed)) return parsed;
+  if (!passphrase) {
+    throw reportError("Tệp sao lưu đã mã hóa. Đặt biến BACKUP_PASSPHRASE hoặc truyền --passphrase để mở.");
+  }
+  return decryptBackup(parsed, passphrase);
 }
 
 export function validateBackup(backup) {
@@ -207,7 +222,10 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     process.exit(1);
   }
 
-  const backup = JSON.parse(await readFile(file, "utf8"));
+  const passIndex = args.indexOf("--passphrase");
+  const passphrase = process.env.BACKUP_PASSPHRASE || (passIndex >= 0 ? args[passIndex + 1] : "");
+  const raw = await readFile(file, "utf8");
+  const backup = await readBackupFile(raw, passphrase);
   console.log(`Nạp bản sao lưu xuất lúc ${backup.exportedAt} (nguồn: ${backup.source?.dataBackend || "không rõ"}).`);
   const { counters, skipped } = await importBackup({ url, backup, replace, log: (line) => console.log(`  ${line}`) });
   const total = Object.values(counters).reduce((sum, count) => sum + count, 0);

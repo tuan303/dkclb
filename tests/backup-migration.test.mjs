@@ -7,7 +7,8 @@ import test, { after, before, skip } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { startTestServer } from "./helpers/test-server.mjs";
-import { importBackup, validateBackup } from "../backup-import.mjs";
+import { importBackup, readBackupFile, validateBackup } from "../backup-import.mjs";
+import { encryptBackup } from "../public/backup-crypto.mjs";
 
 const MYSQL_BASE_URL = process.env.TEST_MYSQL_URL || "";
 const COLLECTIONS = [
@@ -123,6 +124,30 @@ test("nạp bản sao lưu vào MySQL giữ nguyên từng bản ghi", { skip: !
   } finally {
     await migrated.stop();
   }
+});
+
+test("nạp được đúng tệp sao lưu đã mã hóa mà giao diện tải về", { skip: !MYSQL_BASE_URL }, async () => {
+  const cookie = await source.loginCookie("admin@nshm.edu.vn", "Admin@123");
+  const backup = await exportEverything(source, cookie);
+
+  // Đúng thứ giao diện ghi ra đĩa: một phong bì đã mã hóa, không phải bản rõ.
+  const envelope = await encryptBackup(backup, "mat-khau-sao-luu-2026");
+  const fileContent = JSON.stringify(envelope);
+  assert.ok(!fileContent.includes("Nguyễn Minh An"), "tệp trên đĩa không được chứa tên học sinh");
+
+  await assert.rejects(
+    () => readBackupFile(fileContent, ""),
+    (error) => error.code === "BACKUP_IMPORT_ERROR" && /đã mã hóa/.test(error.message),
+  );
+  await assert.rejects(
+    () => readBackupFile(fileContent, "sai-mat-khau-2026"),
+    (error) => error.code === "BACKUP_CRYPTO_ERROR",
+  );
+
+  const decrypted = await readBackupFile(fileContent, "mat-khau-sao-luu-2026");
+  assert.deepEqual(decrypted, backup);
+  const { counters } = await importBackup({ url: targetUrl, backup: decrypted, replace: true });
+  assert.equal(counters.students, backup.counts.students);
 });
 
 test("không nạp đè lên cơ sở dữ liệu đang có dữ liệu nếu không yêu cầu rõ", { skip: !MYSQL_BASE_URL }, async () => {

@@ -39,7 +39,7 @@ const SESSION_MAX_AGE = 8 * 60 * 60;
 // Toàn bộ tệp giao diện nằm trong thư mục `public`. Vercel chỉ phục vụ tĩnh thư mục này,
 // nhờ đó mã nguồn backend và tài liệu nội bộ ở thư mục gốc không bị lộ ra ngoài.
 const PUBLIC_DIR = join(ROOT, "public");
-const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-client.js", "sheet-reader.js"]);
+const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-client.js", "sheet-reader.js", "backup-crypto.mjs"]);
 
 const MYSQL_URL = process.env.MYSQL_URL || "";
 // Dữ liệu mẫu chỉ được tạo khi bật rõ ràng, để môi trường thật không dính CLB minh họa.
@@ -1732,7 +1732,7 @@ async function handleApi(req, res, url) {
   throw httpError(404, "NOT_FOUND", "Không tìm thấy API được yêu cầu.");
 }
 
-const mimeTypes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml" };
+const mimeTypes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml" };
 
 async function serveStatic(req, res, url) {
   const requested = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));

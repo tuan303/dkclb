@@ -274,6 +274,42 @@ TEST_MYSQL_URL="mysql://root@127.0.0.1:3306/" npm run test:mysql
 
 Không đặt biến này thì `npm test` chạy trên SQLite và bỏ qua nhóm kiểm thử chuyển đổi dữ liệu.
 
+## Mã hóa dữ liệu
+
+Không có cấu hình nào là tuyệt đối an toàn. Mục tiêu cụ thể và kiểm chứng được của phần này là: **một bản sao cơ sở dữ liệu hoặc một file sao lưu rơi ra ngoài thì không đọc được nếu không có khóa**. Việc kẻ xấu chiếm được toàn quyền máy chủ vẫn là rủi ro còn lại, vì ứng dụng phải có khóa mới chạy được; rủi ro đó chỉ giảm bằng kỷ luật vận hành.
+
+### File sao lưu
+
+File sao lưu **luôn** được mã hóa. Người xuất đặt một mật khẩu tối thiểu 12 ký tự; dữ liệu được mã hóa **ngay trong trình duyệt** bằng AES-256-GCM với khóa dẫn xuất từ mật khẩu qua PBKDF2-SHA256 310.000 vòng, rồi mới ghi ra đĩa. Bản rõ không bao giờ nằm trên máy người dùng dưới dạng file.
+
+Mất mật khẩu là mất luôn file sao lưu, không có đường khôi phục.
+
+Khi nạp lại, script tự nhận biết tệp đã mã hóa:
+
+```bash
+BACKUP_PASSPHRASE="mat-khau-cua-ban" node backup-import.mjs ban-sao-luu.enc.json --url mysql://...
+```
+
+Nên dùng biến môi trường thay vì `--passphrase`, vì tham số dòng lệnh hiện ra trong danh sách tiến trình của máy chủ.
+
+Cùng một module (`public/backup-crypto.mjs`) chạy ở cả trình duyệt lẫn Node, nên phần mã hóa lúc tải về và phần giải mã lúc nạp vào không thể lệch nhau, và kiểm thử chạy trong Node là kiểm thử đúng đoạn mã mà trình duyệt chạy.
+
+### Khóa mã hóa dữ liệu
+
+Sinh khóa mới:
+
+```bash
+node field-crypto.mjs --generate
+```
+
+Khóa dài 32 byte dạng base64, đặt vào `ENCRYPTION_KEY` hoặc lưu ở tệp riêng ngoài thư mục mã nguồn và trỏ tới bằng `ENCRYPTION_KEY_FILE`, với quyền NTFS chỉ cho tài khoản chạy dịch vụ đọc.
+
+Từ khóa gốc, hệ thống dẫn xuất hai khóa con bằng HKDF: một khóa để mã hóa AES-256-GCM, và một khóa để sinh **chỉ mục mù** HMAC-SHA256. Chỉ mục mù là thứ cho phép vẫn tra cứu được theo số điện thoại mà không phải giải mã cả bảng, đồng thời không suy ngược ra bản rõ nếu không có khóa.
+
+Mỗi lần mã hóa dùng IV ngẫu nhiên, nên cùng một cái tên ghi hai lần cho ra hai chuỗi khác nhau — nhìn vào cơ sở dữ liệu không biết được hai học sinh có trùng tên hay không.
+
+**Đánh đổi cần biết:** khi mở MySQL Workbench, các cột đã mã hóa hiện ra chuỗi vô nghĩa. Muốn đọc dữ liệu thì phải qua ứng dụng.
+
 ## Sao lưu và xuất toàn bộ dữ liệu
 
 Cổng Nhà trường → **Báo cáo & xuất file → Xuất toàn bộ dữ liệu**. Hệ thống tải về một file JSON chứa đủ mười nhóm dữ liệu: tài khoản, học sinh, liên kết phụ huynh–học sinh, đợt đăng ký, CLB, lớp, đơn đăng ký, yêu cầu hỗ trợ, nhật ký thao tác và bộ đếm chỗ.

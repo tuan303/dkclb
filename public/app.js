@@ -1256,13 +1256,23 @@ function renderBackupPanel() {
       <p>Xuất một file JSON chứa đầy đủ dữ liệu hệ thống, dùng để sao lưu hoặc chuyển sang nền lưu trữ khác.</p></div>
       <button class="button button-primary" data-export-backup>${icon("download")} Xuất toàn bộ dữ liệu</button></div>
     <div class="panel-body">
-      <div class="info-note"><strong>Lưu ý bảo mật:</strong> file này chứa thông tin cá nhân của học sinh và phụ huynh.
-      Chỉ lưu ở nơi an toàn của nhà trường, không gửi qua kênh công khai. Mỗi lần xuất đều được ghi vào nhật ký thao tác.</div>
+      <div class="info-note"><strong>File luôn được mã hóa:</strong> bạn đặt một mật khẩu mở file, dữ liệu được mã hóa
+      ngay trong trình duyệt bằng AES-256-GCM trước khi ghi ra đĩa, nên bản rõ không bao giờ nằm trên máy dưới dạng file.
+      <b>Mất mật khẩu là mất luôn file sao lưu</b> — không có đường khôi phục. Mỗi lần xuất đều được ghi vào nhật ký thao tác.</div>
       ${summary ? `<div class="kpi-strip">${Object.entries(summary.counts)
         .map(([name, count]) => `<div class="kpi-item"><span>${escapeHtml(BACKUP_COLLECTION_LABELS[name] || name)}</span><strong>${count}</strong></div>`)
         .join("")}</div>
         <div class="sync-verdict ready">✓ Đã xuất ${summary.total} bản ghi lúc ${formatDateTime(summary.exportedAt)}${summary.auditLogged ? "" : " (chưa ghi được nhật ký vì cơ sở dữ liệu đang không ghi được)"}.</div>` : ""}
     </div></section>`;
+}
+
+// Nạp module mã hóa khi thật sự cần. Không dùng script nội tuyến vì Content Security
+// Policy của trang chỉ cho phép mã nguồn cùng miền, và cũng không nên tải phần này
+// cho mọi người dùng khi chỉ quản trị mới xuất dữ liệu.
+let backupCryptoModule = null;
+async function loadBackupCrypto() {
+  if (!backupCryptoModule) backupCryptoModule = await import("./backup-crypto.mjs?v=20260821-4");
+  return backupCryptoModule;
 }
 
 function saveJsonFile(filename, payload) {
@@ -1277,11 +1287,37 @@ function saveJsonFile(filename, payload) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
+// Hỏi mật khẩu TRƯỚC khi lấy dữ liệu: không tải gì về nếu chưa có cách bảo vệ nó.
+function askBackupPassphrase() {
+  return new Promise((resolve) => {
+    showModal(`<div class="modal-head"><div><span class="eyebrow">Bảo vệ file sao lưu</span><h2>Đặt mật khẩu mở file</h2></div>
+      <button class="icon-button" data-close-modal>${icon("x")}</button></div>
+      <div class="modal-body">
+        <div class="info-note">File sao lưu chứa thông tin cá nhân của học sinh và phụ huynh nên luôn được mã hóa.
+        Hãy đặt mật khẩu tối thiểu 12 ký tự và lưu ở nơi an toàn: <b>mất mật khẩu là không mở lại được file</b>.</div>
+        <label class="form-field"><span>Mật khẩu mở file</span><input id="backup-passphrase" type="password" minlength="12" autocomplete="new-password" /></label>
+        <label class="form-field"><span>Nhập lại mật khẩu</span><input id="backup-passphrase-confirm" type="password" minlength="12" autocomplete="new-password" /></label>
+        <div id="form-error" class="form-error" role="alert"></div>
+      </div>
+      <div class="modal-foot"><button class="button button-secondary" data-close-modal>Hủy</button>
+      <button class="button button-primary" data-confirm-passphrase>Xuất dữ liệu</button></div>`, { wide: true });
+
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    $("[data-confirm-passphrase]").addEventListener("click", () => {
+      const passphrase = $("#backup-passphrase").value;
+      if (passphrase.length < 12) return showFormError("Mật khẩu phải dài ít nhất 12 ký tự.");
+      if (passphrase !== $("#backup-passphrase-confirm").value) return showFormError("Hai lần nhập mật khẩu chưa khớp.");
+      closeModal();
+      finish(passphrase);
+    });
+    $$("[data-close-modal]").forEach((element) => element.addEventListener("click", () => finish(null)));
+  });
+}
+
 async function downloadFullBackup(button) {
-  const confirmed = window.confirm(
-    "Xuất toàn bộ dữ liệu hệ thống ra một file JSON?\n\nFile chứa thông tin cá nhân của học sinh và phụ huynh. Hãy lưu ở nơi an toàn.",
-  );
-  if (!confirmed) return;
+  const passphrase = await askBackupPassphrase();
+  if (!passphrase) return;
   const original = button.innerHTML;
   button.disabled = true;
   try {
@@ -1310,13 +1346,16 @@ async function downloadFullBackup(button) {
       counts[collection] = rows.length;
     }
     const exportedAt = new Date().toISOString();
-    saveJsonFile(
-      `NSHM_Clubs_backup_${exportedAt.slice(0, 19).replaceAll(":", "").replace("T", "-")}.json`,
+    button.textContent = "Đang mã hóa file…";
+    const { encryptBackup } = await loadBackupCrypto();
+    const envelope = await encryptBackup(
       { schemaVersion, exportedAt, source, counts, data },
+      passphrase,
     );
+    saveJsonFile(`NSHM_Clubs_backup_${exportedAt.slice(0, 19).replaceAll(":", "").replace("T", "-")}.enc.json`, envelope);
     state.lastBackup = { counts, exportedAt, auditLogged, total: Object.values(counts).reduce((sum, count) => sum + count, 0) };
     renderPage();
-    toast(`Đã xuất ${state.lastBackup.total} bản ghi ra file JSON.`, "success");
+    toast(`Đã xuất ${state.lastBackup.total} bản ghi ra file đã mã hóa.`, "success");
   } catch (error) {
     toast(error.message, "error");
   } finally {
