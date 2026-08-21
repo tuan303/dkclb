@@ -41,8 +41,12 @@ const SESSION_MAX_AGE = 8 * 60 * 60;
 const PUBLIC_DIR = join(ROOT, "public");
 const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-client.js", "sheet-reader.js"]);
 
-if (!["sqlite", "firestore"].includes(DATA_BACKEND)) {
-  throw new Error("DATA_BACKEND chỉ chấp nhận 'sqlite' hoặc 'firestore'.");
+const MYSQL_URL = process.env.MYSQL_URL || "";
+// Dữ liệu mẫu chỉ được tạo khi bật rõ ràng, để môi trường thật không dính CLB minh họa.
+const SEED_DEMO_DATA = process.env.NSHM_SEED_DEMO === "1";
+
+if (!["sqlite", "firestore", "mysql"].includes(DATA_BACKEND)) {
+  throw new Error("DATA_BACKEND chỉ chấp nhận 'sqlite', 'mysql' hoặc 'firestore'.");
 }
 
 const googleCloudAuth = createGoogleCloudAuth({
@@ -281,6 +285,77 @@ function seedPeriodWindow(now = Date.now()) {
   };
 }
 
+const STUDENT_SEED_ROWS = [
+  ["hs01", "NSHM260301", "Nguyễn Minh An", 3, "3A2", "Tiểu học"],
+  ["hs02", "NSHM260601", "Nguyễn Gia Hân", 6, "6A1", "THCS"],
+  ["hs03", "NSHM260311", "Lê Minh Khang", 3, "3A1", "Tiểu học"],
+  ["hs04", "NSHM260203", "Trần Bảo Ngọc", 2, "2A3", "Tiểu học"],
+  ["hs05", "NSHM260622", "Phạm Anh Tú", 6, "6A2", "THCS"],
+  ["hs06", "NSHM260411", "Nguyễn Hà My", 4, "4A1", "Tiểu học"],
+  ["hs07", "NSHM260344", "Đỗ Gia Linh", 3, "3A4", "Tiểu học"],
+  ["hs08", "NSHM260522", "Vũ Minh Quân", 5, "5A2", "Tiểu học"],
+];
+
+const REGISTRATION_SEED_ROWS = [
+  ["DK-260812-0142", "GR-260812-01", "hs01", "u_parent", "piano", "payment", 1900000, "Thứ 3 · 16:15–17:30", "2026-08-12T08:42:00.000Z"],
+  ["DK-260818-0158", "GR-260818-58", "hs03", "u_seed", "robotics", "payment", 1650000, "Thứ 5 · 16:15–17:45", "2026-08-18T08:42:00.000Z"],
+  ["DK-260818-0157", "GR-260818-57", "hs04", "u_seed", "painting", "waitlist", 1100000, "Thứ 4 · 16:15–17:30", "2026-08-18T08:38:00.000Z"],
+  ["DK-260818-0156", "GR-260818-56", "hs05", "u_seed", "debate", "confirmed", 1450000, "Thứ 6 · 16:15–17:45", "2026-08-18T08:31:00.000Z"],
+  ["DK-260818-0155", "GR-260818-55", "hs06", "u_seed", "basketball", "conflict", 1200000, "Thứ 3 · 16:15–17:30", "2026-08-18T08:22:00.000Z"],
+  ["DK-260818-0154", "GR-260818-54", "hs07", "u_seed", "piano", "submitted", 1900000, "Thứ 3 · 16:15–17:30", "2026-08-18T08:17:00.000Z"],
+  ["DK-260818-0153", "GR-260818-53", "hs08", "u_seed", "dance", "confirmed", 1250000, "Thứ 7 · 08:30–10:00", "2026-08-18T08:03:00.000Z"],
+];
+
+// Dữ liệu mẫu ở dạng trung tính, dùng chung cho mọi nền lưu trữ.
+// `includeAccounts` chỉ bật cho môi trường phát triển và kiểm thử: nền thật nhận
+// dữ liệu từ đồng bộ danh bạ hoặc từ bản sao lưu nạp vào, không cần tài khoản minh họa.
+function demoSeedData({ includeAccounts = false } = {}) {
+  const createdAt = nowIso();
+  const seedWindow = seedPeriodWindow();
+  const clubs = CLUB_SEED_ROWS.map(([clubId, code, name, category, description, emoji, visual, grades], index) => ({
+    id: clubId, code, name, category, description, emoji, visual, grades, sortOrder: index, active: true,
+  }));
+  const classes = CLUB_SEED_ROWS.map(([clubId, , , , , , , grades, dayOfWeek, startTime, endTime, scheduleLabel, room, teacher, capacity, enrolledBase, fee], index) => ({
+    id: clubId, clubId, periodId: "period_2026_hk1", name: "Ca chính", dayOfWeek, startTime, endTime, scheduleLabel,
+    grades: [], room, teacher, capacity, minCapacity: 0, enrolledBase, fee, waitlistEnabled: true, sortOrder: index, active: true,
+  }));
+  const periods = [{
+    id: "period_2026_hk1", name: "Đăng ký CLB · Học kỳ I", schoolYear: "2026–2027", term: "Học kỳ I",
+    ...seedWindow, status: "open", maxClubsPerStudent: 3, note: "", updatedAt: createdAt,
+  }];
+
+  if (!includeAccounts) {
+    return { users: [], students: [], parentStudents: [], registrations: [], supportRequests: [], auditLogs: [], clubs, classes, periods };
+  }
+
+  const parentPassword = hashPassword("123456");
+  const adminPassword = hashPassword("Admin@123");
+  const seedPassword = hashPassword(randomBytes(18).toString("hex"));
+  return {
+    users: [
+      { id: "u_parent", account: "0901234567", displayName: "Mai Lan", role: "parent", passwordSalt: parentPassword.salt, passwordHash: parentPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
+      { id: "u_admin", account: "admin@nshm.edu.vn", displayName: "Nguyễn Thu Hà", role: "admin", passwordSalt: adminPassword.salt, passwordHash: adminPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
+      { id: "u_seed", account: "seed@nshm.local", displayName: "Dữ liệu hệ thống", role: "parent", passwordSalt: seedPassword.salt, passwordHash: seedPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
+    ],
+    students: STUDENT_SEED_ROWS.map(([id, code, name, grade, homeroom, level]) => ({
+      id, code, name, dateOfBirth: null, grade, homeroom, level, status: "active",
+    })),
+    parentStudents: [
+      { parentUserId: "u_parent", studentId: "hs01", relationship: "Mẹ" },
+      { parentUserId: "u_parent", studentId: "hs02", relationship: "Mẹ" },
+    ],
+    registrations: REGISTRATION_SEED_ROWS.map(([id, groupId, studentId, parentUserId, classId, status, feeSnapshot, scheduleSnapshot, at]) => ({
+      id, groupId, studentId, parentUserId, classId, periodId: "period_2026_hk1", status,
+      feeSnapshot, scheduleSnapshot, termsAcceptedAt: at, createdAt: at, updatedAt: at,
+    })),
+    supportRequests: [],
+    auditLogs: [],
+    clubs,
+    classes,
+    periods,
+  };
+}
+
 function seedDatabase() {
   const createdAt = nowIso();
   const parentPassword = hashPassword("123456");
@@ -295,17 +370,7 @@ function seedDatabase() {
   insertUser.run("u_seed", "seed@nshm.local", "Dữ liệu hệ thống", "parent", seedPassword.salt, seedPassword.hash, createdAt);
 
   const insertStudent = db.prepare("INSERT INTO students (id, code, name, grade, homeroom, level) VALUES (?, ?, ?, ?, ?, ?)");
-  const studentRows = [
-    ["hs01", "NSHM260301", "Nguyễn Minh An", 3, "3A2", "Tiểu học"],
-    ["hs02", "NSHM260601", "Nguyễn Gia Hân", 6, "6A1", "THCS"],
-    ["hs03", "NSHM260311", "Lê Minh Khang", 3, "3A1", "Tiểu học"],
-    ["hs04", "NSHM260203", "Trần Bảo Ngọc", 2, "2A3", "Tiểu học"],
-    ["hs05", "NSHM260622", "Phạm Anh Tú", 6, "6A2", "THCS"],
-    ["hs06", "NSHM260411", "Nguyễn Hà My", 4, "4A1", "Tiểu học"],
-    ["hs07", "NSHM260344", "Đỗ Gia Linh", 3, "3A4", "Tiểu học"],
-    ["hs08", "NSHM260522", "Vũ Minh Quân", 5, "5A2", "Tiểu học"],
-  ];
-  studentRows.forEach((row) => insertStudent.run(...row));
+  STUDENT_SEED_ROWS.forEach((row) => insertStudent.run(...row));
   db.prepare("INSERT INTO parent_students VALUES (?, ?, ?)").run("u_parent", "hs01", "Mẹ");
   db.prepare("INSERT INTO parent_students VALUES (?, ?, ?)").run("u_parent", "hs02", "Mẹ");
 
@@ -327,16 +392,7 @@ function seedDatabase() {
   const insertReg = db.prepare(`INSERT INTO registrations
     (id, group_id, student_id, parent_user_id, class_id, status, fee_snapshot, schedule_snapshot, terms_accepted_at, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  const seedRegistrations = [
-    ["DK-260812-0142", "GR-260812-01", "hs01", "u_parent", "piano", "payment", 1900000, "Thứ 3 · 16:15–17:30", "2026-08-12T08:42:00.000Z"],
-    ["DK-260818-0158", "GR-260818-58", "hs03", "u_seed", "robotics", "payment", 1650000, "Thứ 5 · 16:15–17:45", "2026-08-18T08:42:00.000Z"],
-    ["DK-260818-0157", "GR-260818-57", "hs04", "u_seed", "painting", "waitlist", 1100000, "Thứ 4 · 16:15–17:30", "2026-08-18T08:38:00.000Z"],
-    ["DK-260818-0156", "GR-260818-56", "hs05", "u_seed", "debate", "confirmed", 1450000, "Thứ 6 · 16:15–17:45", "2026-08-18T08:31:00.000Z"],
-    ["DK-260818-0155", "GR-260818-55", "hs06", "u_seed", "basketball", "conflict", 1200000, "Thứ 3 · 16:15–17:30", "2026-08-18T08:22:00.000Z"],
-    ["DK-260818-0154", "GR-260818-54", "hs07", "u_seed", "piano", "submitted", 1900000, "Thứ 3 · 16:15–17:30", "2026-08-18T08:17:00.000Z"],
-    ["DK-260818-0153", "GR-260818-53", "hs08", "u_seed", "dance", "confirmed", 1250000, "Thứ 7 · 08:30–10:00", "2026-08-18T08:03:00.000Z"],
-  ];
-  for (const row of seedRegistrations) insertReg.run(...row, row[8], row[8]);
+  for (const row of REGISTRATION_SEED_ROWS) insertReg.run(...row, row[8], row[8]);
 }
 
 if (DATA_BACKEND === "sqlite") {
@@ -346,35 +402,23 @@ if (DATA_BACKEND === "sqlite") {
   initializeDatabase();
 }
 
-function firestoreSeedData() {
-  const clubs = CLUB_SEED_ROWS.map(([clubId, code, name, category, description, emoji, visual, grades], index) => ({
-    id: clubId, code, name, category, description, emoji, visual, grades, sortOrder: index, active: true,
-  }));
-  const classes = CLUB_SEED_ROWS.map(([clubId, , , , , , , , dayOfWeek, startTime, endTime, scheduleLabel, room, teacher, capacity, enrolledBase, fee], index) => ({
-    id: clubId, clubId, periodId: "period_2026_hk1", name: "Ca chính", dayOfWeek, startTime, endTime, scheduleLabel,
-    room, teacher, capacity, minCapacity: 0, enrolledBase, fee, waitlistEnabled: true, sortOrder: index, active: true,
-  }));
-  return {
-    users: [], students: [], parentStudents: [], registrations: [], supportRequests: [], auditLogs: [], clubs, classes,
-    periods: [{
-      id: "period_2026_hk1", name: "Đăng ký CLB · Học kỳ I", schoolYear: "2026–2027", term: "Học kỳ I",
-      ...seedPeriodWindow(), status: "open", maxClubsPerStudent: 3, note: "",
-    }],
-  };
-}
-
 let businessStore = null;
 let businessStorePromise = null;
 
 async function ensureBusinessStore() {
-  if (DATA_BACKEND !== "firestore") return null;
+  if (DATA_BACKEND === "sqlite") return null;
   if (businessStore) return businessStore;
   if (!businessStorePromise) {
     businessStorePromise = (async () => {
+      if (DATA_BACKEND === "mysql") {
+        if (!MYSQL_URL) throw new Error("Thiếu MYSQL_URL khi DATA_BACKEND=mysql.");
+        const { createMysqlStore } = await import("./mysql-store.mjs");
+        return createMysqlStore({ url: MYSQL_URL, seed: SEED_DEMO_DATA ? demoSeedData({ includeAccounts: true }) : null });
+      }
       const { createFirestoreStore } = await import("./firestore-store.mjs");
       return createFirestoreStore({
         projectId: FIREBASE_PROJECT_ID,
-        seed: firestoreSeedData(),
+        seed: demoSeedData(),
         authClient: googleCloudAuth.workloadIdentityConfigured ? await googleCloudAuth.getClient() : undefined,
       });
     })();
@@ -1301,8 +1345,9 @@ async function handleApi(req, res, url) {
       ok: true,
       service: "nshm-clubs",
       dataBackend: DATA_BACKEND,
-      // Tài khoản minh họa chỉ tồn tại ở nền SQLite dùng cho phát triển và kiểm thử.
-      demoAccounts: DATA_BACKEND === "sqlite",
+      // Cờ này phải phản ánh việc dữ liệu mẫu có thật sự được tạo hay không, chứ không
+      // suy từ tên nền lưu trữ: nền thật không bao giờ bật NSHM_SEED_DEMO.
+      demoAccounts: DATA_BACKEND === "sqlite" || SEED_DEMO_DATA,
       firebaseProjectId: DATA_BACKEND === "firestore" ? FIREBASE_PROJECT_ID : undefined,
       time: nowIso(),
     });

@@ -237,6 +237,43 @@ docker compose up --build
 - [Kiến trúc kỹ thuật](./docs/TECHNICAL_ARCHITECTURE.md)
 - [Thiết kế đồng bộ Google Sheets an toàn](./docs/GOOGLE_SHEETS_SYNC_SECURITY.md)
 
+## Chạy trên MySQL (máy chủ riêng)
+
+Ngoài Firestore và SQLite, hệ thống chạy được trên MySQL 8.0 trở lên. Đây là nền dùng khi tự vận hành trên máy chủ của trường: không có hạn ngạch đọc/ghi theo ngày, dữ liệu nằm tại chỗ, sao lưu bằng `mysqldump`.
+
+```powershell
+$env:DATA_BACKEND="mysql"
+$env:MYSQL_URL="mysql://nshm:mat-khau@127.0.0.1:3306/dkclb"
+npm start
+```
+
+Bảng được tạo tự động theo `mysql-schema.sql` ngay lần chạy đầu. Dữ liệu mẫu **không** được tạo trừ khi đặt `NSHM_SEED_DEMO=1`, nên môi trường thật không bao giờ dính CLB minh họa.
+
+MySQL còn chặt hơn Firestore ở khâu giữ chỗ: khi nhiều phụ huynh cùng giành chỗ cuối, giao dịch khóa dòng lớp bằng `SELECT ... FOR UPDATE` rồi mới đếm, nên số chỗ luôn tính từ dữ liệu thật và không cần bảng đếm riêng.
+
+### Chuyển dữ liệu từ Firestore sang MySQL
+
+1. Trên bản đang chạy, vào **Báo cáo & xuất file → Xuất toàn bộ dữ liệu** để tải file JSON.
+2. Trên máy chủ mới, nạp file đó vào MySQL:
+
+```bash
+node backup-import.mjs NSHM_Clubs_backup_2026-08-21.json --url mysql://nshm:mat-khau@127.0.0.1:3306/dkclb
+```
+
+Script tự tạo bảng, nạp theo đúng thứ tự khóa ngoại, và **từ chối ghi đè** nếu cơ sở dữ liệu đích đã có dữ liệu (thêm `--replace` nếu thực sự muốn xóa sạch rồi nạp lại). Bản ghi trỏ tới dữ liệu không tồn tại — ví dụ đơn đăng ký của một lớp đã xóa — được bỏ qua và liệt kê ở cuối, thay vì làm hỏng cả lần nạp.
+
+Số chỗ của từng lớp không được nạp vì MySQL tính trực tiếp từ đơn đăng ký; bộ kiểm thử có đối chiếu để chắc con số sau khi chuyển khớp với trước khi chuyển.
+
+### Kiểm thử trên MySQL
+
+Cùng một bộ kiểm thử nghiệp vụ chạy được trên cả hai nền. Trỏ `TEST_MYSQL_URL` vào một MySQL trống, mỗi file kiểm thử sẽ tự tạo và xóa database riêng:
+
+```bash
+TEST_MYSQL_URL="mysql://root@127.0.0.1:3306/" npm run test:mysql
+```
+
+Không đặt biến này thì `npm test` chạy trên SQLite và bỏ qua nhóm kiểm thử chuyển đổi dữ liệu.
+
 ## Sao lưu và xuất toàn bộ dữ liệu
 
 Cổng Nhà trường → **Báo cáo & xuất file → Xuất toàn bộ dữ liệu**. Hệ thống tải về một file JSON chứa đủ mười nhóm dữ liệu: tài khoản, học sinh, liên kết phụ huynh–học sinh, đợt đăng ký, CLB, lớp, đơn đăng ký, yêu cầu hỗ trợ, nhật ký thao tác và bộ đếm chỗ.

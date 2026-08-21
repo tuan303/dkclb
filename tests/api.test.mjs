@@ -20,9 +20,9 @@ test("health endpoint is available", async () => {
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.ok, true);
-  // Nền sqlite là môi trường phát triển nên có tài khoản minh họa; production Firestore thì không.
-  assert.equal(body.dataBackend, "sqlite");
-  assert.equal(body.demoAccounts, true);
+  // Bộ kiểm thử chạy được trên cả sqlite lẫn mysql; cả hai đều bật dữ liệu mẫu.
+  assert.equal(body.dataBackend, server.backend);
+  assert.equal(body.demoAccounts, true, "môi trường kiểm thử phải có tài khoản minh họa");
 });
 
 test("parent phone login accepts the Sheet format without a leading zero", async () => {
