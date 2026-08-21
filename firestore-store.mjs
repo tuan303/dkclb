@@ -74,7 +74,7 @@ function normalizeCatalogRow(club, clubClass) {
 
 function createHttpError(status, code, message, details) {
   const error = new Error(message);
-  Object.assign(error, { status, code, details });
+  Object.assign(error, { status, code, details, expose: true });
   return error;
 }
 

@@ -10,6 +10,7 @@ import { createGoogleSheetsDirectorySource, toVietnameseLocalPhone } from "./she
 import { createMicrosoftAuth } from "./microsoft-auth.mjs";
 import { createGoogleCloudAuth } from "./google-cloud-auth.mjs";
 import { validatePasswordPolicy } from "./password-policy.mjs";
+import { toErrorResponse } from "./error-reporting.mjs";
 import {
   MAX_IMPORT_ROWS,
   analyzeCatalogImport,
@@ -410,9 +411,11 @@ async function requireUser(req, role, allowInitialPassword = false) {
   return user;
 }
 
+// `expose` đánh dấu đây là lỗi nghiệp vụ do hệ thống này tự tạo, được phép
+// hiển thị nguyên văn cho người dùng.
 function httpError(status, code, message, details) {
   const error = new Error(message);
-  Object.assign(error, { status, code, details });
+  Object.assign(error, { status, code, details, expose: true });
   return error;
 }
 
@@ -1165,8 +1168,12 @@ async function handleApi(req, res, url) {
       }
       throw httpError(401, "INVALID_CREDENTIALS", "Tài khoản hoặc mật khẩu không đúng.");
     }
-    if (businessStore) await businessStore.resetLoginFailures(user.id);
-    else db.prepare("UPDATE users SET login_failures = 0, locked_until = NULL WHERE id = ?").run(user.id);
+    // Chỉ ghi khi thực sự có gì để xóa: đăng nhập đúng ngay lần đầu là trường hợp
+    // phổ biến nhất, không nên tốn một lượt ghi cơ sở dữ liệu cho mỗi lần như vậy.
+    if (asInt(user.login_failures) > 0 || user.locked_until) {
+      if (businessStore) await businessStore.resetLoginFailures(user.id);
+      else db.prepare("UPDATE users SET login_failures = 0, locked_until = NULL WHERE id = ?").run(user.id);
+    }
     return sendJson(res, 200, { user: publicUser(user) }, { "Set-Cookie": await createSession(user) });
   }
 
@@ -1527,8 +1534,9 @@ export async function handleRequest(req, res) {
       else await serveStatic(req, res, url);
     } catch (error) {
       if (res.headersSent) return res.end();
-      sendJson(res, error.status || 500, { error: { code: error.code || "INTERNAL_ERROR", message: error.status ? error.message : "Hệ thống gặp lỗi không mong muốn.", details: error.details } });
-      if (!error.status) console.error(error);
+      const { status, body, logWorthy } = toErrorResponse(error);
+      sendJson(res, status, body);
+      if (logWorthy) console.error(error);
     }
 }
 

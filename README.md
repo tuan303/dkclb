@@ -237,6 +237,14 @@ docker compose up --build
 - [Kiến trúc kỹ thuật](./docs/TECHNICAL_ARCHITECTURE.md)
 - [Thiết kế đồng bộ Google Sheets an toàn](./docs/GOOGLE_SHEETS_SYNC_SECURITY.md)
 
+## Hạn ngạch Cloud Firestore
+
+Gói Firebase miễn phí (Spark) giới hạn khoảng **20.000 lượt ghi và 50.000 lượt đọc mỗi ngày**. Một lần đồng bộ danh bạ ghi mỗi học sinh, mỗi tài khoản phụ huynh và mỗi liên kết phụ huynh–học sinh, nên vài nghìn học sinh là đã dùng gần hết hạn mức ghi trong ngày. Khi hết hạn ngạch, các thao tác **ghi** bị từ chối trong khi **đọc** vẫn chạy — biểu hiện dễ gây hiểu nhầm nhất là phụ huynh nhập đúng mật khẩu nhưng không đăng nhập được, vì bước tạo phiên đăng nhập cần ghi.
+
+Lúc đó hệ thống trả về thông báo *"Cơ sở dữ liệu đã dùng hết hạn ngạch trong ngày..."*. Hạn ngạch được đặt lại hằng ngày theo giờ Thái Bình Dương. Trước đợt đăng ký thật, nên chuyển dự án Firebase sang gói **Blaze (trả theo dùng)**: gói này giữ nguyên phần miễn phí và chỉ tính tiền phần vượt, vốn rất nhỏ ở quy mô một trường.
+
+Mẹo tiết kiệm hạn ngạch: chỉ bấm Đồng bộ khi danh sách trong Google Sheets thực sự thay đổi, vì mỗi lần chạy đều đọc và ghi lại toàn bộ danh bạ.
+
 ## Phụ huynh không đăng nhập được
 
 Cổng Nhà trường → **Cấu hình & phân quyền → Tra cứu tài khoản phụ huynh**. Nhập số điện thoại rồi bấm Tra cứu. Màn hình trả lời ba câu hỏi cùng lúc:

@@ -49,6 +49,21 @@ test("tra cứu chuẩn hóa số thiếu số 0 ở đầu và không trả v�
   assert.ok(!/passwordHash|password_hash|passwordSalt|password_salt/.test(serialized), "không được trả về salt hay hash");
 });
 
+test("đăng nhập đúng sau vài lần sai vẫn xóa được bộ đếm sai", async () => {
+  // Bộ đếm chỉ được ghi lại khi thực sự khác 0, nên phải chắc là nhánh đó không bị bỏ sót.
+  await login("0901234567", "sai-mat-khau");
+  await login("0901234567", "sai-mat-khau");
+  const before = await (await request("/api/admin/accounts/lookup?account=0901234567", adminCookie)).json();
+  assert.equal(before.lookup.account.loginFailures, 2);
+
+  const success = await login("0901234567", "123456");
+  assert.equal(success.status, 200);
+
+  const after = await (await request("/api/admin/accounts/lookup?account=0901234567", adminCookie)).json();
+  assert.equal(after.lookup.account.loginFailures, 0);
+  assert.equal(after.lookup.account.lockedUntil, null);
+});
+
 test("tài khoản bị khóa do sai nhiều lần được nêu rõ trong kết quả tra cứu", async () => {
   for (let attempt = 0; attempt < 5; attempt += 1) await login("0901234567", "sai-mat-khau");
   const locked = await login("0901234567", "123456");

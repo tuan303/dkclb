@@ -17,7 +17,7 @@ const VISUAL_BY_CATEGORY = [
 
 function invalid(code, message, field) {
   const error = new Error(message);
-  Object.assign(error, { status: 422, code, field });
+  Object.assign(error, { status: 422, code, field, expose: true });
   return error;
 }
 
