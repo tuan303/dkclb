@@ -11,12 +11,17 @@ const crypto = createFieldCrypto(KEY);
 /* ---------- Mã hóa từng trường ---------- */
 
 test("dữ liệu mã hóa không còn dấu vết của bản rõ", () => {
-  const cipher = crypto.encrypt("Nguyễn Minh An");
+  const plain = "Nguyễn Minh An";
+  const cipher = crypto.encrypt(plain);
   assert.ok(cipher.startsWith("v1."));
+  // Chuỗi so sánh phải đủ dài: phần mã hóa là base64 nên một hai ký tự trùng nhau
+  // là chuyện ngẫu nhiên bình thường, lấy làm điều kiện sẽ ra test lúc xanh lúc đỏ.
+  assert.ok(!cipher.includes(plain));
   assert.ok(!cipher.includes("Nguyễn"));
   assert.ok(!cipher.includes("Minh"));
-  assert.ok(!cipher.toLowerCase().includes("an"));
-  assert.equal(crypto.decrypt(cipher), "Nguyễn Minh An");
+  // Bản mã phải dài hơn hẳn bản rõ vì mang thêm IV và thẻ xác thực.
+  assert.ok(cipher.length > plain.length + 40);
+  assert.equal(crypto.decrypt(cipher), plain);
 });
 
 test("cùng một giá trị mã hóa hai lần cho ra hai chuỗi khác nhau", () => {
@@ -103,9 +108,14 @@ test("file sao lưu đã mã hóa không lộ tên học sinh", async () => {
   const envelope = await encryptBackup(SAMPLE_BACKUP, "mat-khau-rat-dai-2026");
   const serialized = JSON.stringify(envelope);
   assert.equal(envelope.format, BACKUP_FORMAT);
+  // Chỉ đối chiếu những chuỗi đủ dài để không thể trùng ngẫu nhiên: phần mã hóa là
+  // base64 nên một chuỗi ba ký tự như "3A2" xuất hiện tình cờ là chuyện bình thường,
+  // lấy nó làm điều kiện sẽ tạo ra test lúc xanh lúc đỏ.
   assert.ok(!serialized.includes("Nguyễn Minh An"));
+  assert.ok(!serialized.includes("Nguyễn Gia Hân"));
   assert.ok(!serialized.includes("NSHM260301"));
-  assert.ok(!serialized.includes("3A2"));
+  assert.ok(!serialized.includes("NSHM260601"));
+  assert.ok(!serialized.includes(JSON.stringify(SAMPLE_BACKUP.data.students[0])));
   // Phần mô tả để bản rõ cho dễ nhận ra file, nhưng không chứa thông tin cá nhân.
   assert.equal(envelope.exportedAt, "2026-08-21T08:00:00.000Z");
   assert.deepEqual(envelope.counts, { students: 2 });
@@ -126,7 +136,10 @@ test("sai mật khẩu thì không mở được", async () => {
 
 test("file bị sửa nội dung thì bị từ chối", async () => {
   const envelope = await encryptBackup(SAMPLE_BACKUP, "mat-khau-rat-dai-2026");
-  const tampered = { ...envelope, ciphertext: `A${envelope.ciphertext.slice(1)}` };
+  // Phải đổi chắc chắn: gán cứng một ký tự có thể trùng đúng ký tự đang có,
+  // khi đó tệp không hề bị sửa và test sẽ đỏ sai.
+  const first = envelope.ciphertext[0] === "A" ? "B" : "A";
+  const tampered = { ...envelope, ciphertext: `${first}${envelope.ciphertext.slice(1)}` };
   await assert.rejects(
     () => decryptBackup(tampered, "mat-khau-rat-dai-2026"),
     (error) => error.code === "BACKUP_CRYPTO_ERROR",
