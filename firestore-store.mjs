@@ -1,4 +1,4 @@
-import { Firestore } from "@google-cloud/firestore";
+import { FieldPath, Firestore } from "@google-cloud/firestore";
 import { randomBytes } from "node:crypto";
 import { planDirectoryWrites } from "./directory-plan.mjs";
 
@@ -375,6 +375,14 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           ...classWrites.map((item) => ({ path: `clubClasses/${item.id}`, options: { merge: true }, data: item.data })),
         ]);
         for (const item of classWrites) await recomputeClassCounter(item.id, item.data.enrolledBase);
+      },
+
+      // Xuất theo trang, sắp xếp theo mã tài liệu để phân trang ổn định.
+      async exportCollection(name, { after = null, limit = 500 } = {}) {
+        let query = firestore.collection(name).orderBy(FieldPath.documentId()).limit(limit);
+        if (after) query = query.startAfter(after);
+        const rows = snapshotRows(await query.get());
+        return { rows, nextAfter: rows.length === limit ? rows[rows.length - 1].id : null };
       },
 
       async appendAudit(entry) {

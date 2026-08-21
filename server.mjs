@@ -1149,6 +1149,144 @@ async function resetInitialPassword({ actorUserId, rawAccount }) {
   return { account: normalized, mustChangePassword: true };
 }
 
+// ---- Xuất toàn bộ dữ liệu ----
+//
+// Một định dạng duy nhất, không phụ thuộc nền lưu trữ, dùng cho ba việc: chuyển
+// dữ liệu sang nền khác, sao lưu định kỳ, và phương án xuất dữ liệu khẩn cấp.
+// Tên trường theo kiểu camelCase để nạp vào nền nào cũng như nhau.
+//
+// Xuất theo từng trang vì phản hồi của serverless function có giới hạn kích thước;
+// gộp cả nghìn học sinh, đơn đăng ký và audit log vào một phản hồi là chạm trần.
+const BACKUP_SCHEMA_VERSION = 1;
+const BACKUP_COLLECTIONS = [
+  "users", "students", "parentStudents", "registrationPeriods", "clubs",
+  "clubClasses", "registrations", "supportRequests", "auditLogs", "classCounters",
+];
+const BACKUP_PAGE_SIZE = 500;
+
+const asBool = (value) => value === true || value === 1;
+const parseJsonField = (value, fallback) => {
+  if (value === null || value === undefined || value === "") return fallback;
+  try { return JSON.parse(value); } catch { return fallback; }
+};
+
+function sqliteBackupData() {
+  const all = (sql) => db.prepare(sql).all();
+  return {
+    users: all(`SELECT id, account, display_name, role, password_salt, password_hash, auth_provider,
+      microsoft_object_id, must_change_password, login_failures, locked_until, active, created_at FROM users`)
+      .map((row) => ({
+        id: row.id, account: row.account, accountLower: String(row.account || "").toLowerCase(),
+        displayName: row.display_name, role: row.role,
+        passwordSalt: row.password_salt || null, passwordHash: row.password_hash || null,
+        authProvider: row.auth_provider, microsoftObjectId: row.microsoft_object_id || null,
+        mustChangePassword: asBool(row.must_change_password), loginFailures: asInt(row.login_failures),
+        lockedUntil: row.locked_until || null, active: asBool(row.active), createdAt: row.created_at,
+      })),
+    students: all("SELECT id, code, name, date_of_birth, grade, homeroom, level, status FROM students")
+      .map((row) => ({
+        id: row.id, code: row.code, name: row.name, dateOfBirth: row.date_of_birth || null,
+        grade: asInt(row.grade), homeroom: row.homeroom, level: row.level, status: row.status,
+      })),
+    parentStudents: all("SELECT parent_user_id, student_id, relationship FROM parent_students")
+      .map((row) => ({
+        id: `${row.parent_user_id}_${row.student_id}`,
+        parentUserId: row.parent_user_id, studentId: row.student_id, relationship: row.relationship,
+      })),
+    registrationPeriods: all(`SELECT id, name, school_year, term, open_at, close_at, status,
+      max_clubs_per_student, note, updated_at FROM registration_periods`)
+      .map((row) => ({
+        id: row.id, name: row.name, schoolYear: row.school_year, term: row.term,
+        openAt: row.open_at, closeAt: row.close_at, status: row.status,
+        maxClubsPerStudent: asInt(row.max_clubs_per_student) || 3, note: row.note || "", updatedAt: row.updated_at || null,
+      })),
+    clubs: all("SELECT id, code, name, category, description, emoji, visual, grades_json, sort_order, active FROM clubs")
+      .map((row) => ({
+        id: row.id, code: row.code, name: row.name, category: row.category, description: row.description,
+        emoji: row.emoji, visual: row.visual, grades: parseJsonField(row.grades_json, []),
+        sortOrder: asInt(row.sort_order), active: asBool(row.active),
+      })),
+    clubClasses: all(`SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
+      grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active
+      FROM club_classes`)
+      .map((row) => ({
+        id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "",
+        dayOfWeek: asInt(row.day_of_week), startTime: row.start_time, endTime: row.end_time,
+        scheduleLabel: row.schedule_label, grades: parseJsonField(row.grades_json, []),
+        room: row.room, teacher: row.teacher, capacity: asInt(row.capacity), minCapacity: asInt(row.min_capacity),
+        enrolledBase: asInt(row.enrolled_base), fee: asInt(row.fee),
+        waitlistEnabled: asBool(row.waitlist_enabled), sortOrder: asInt(row.sort_order), active: asBool(row.active),
+      })),
+    registrations: all(`SELECT r.id, r.group_id, r.student_id, r.parent_user_id, r.class_id, r.period_id, r.status,
+      r.fee_snapshot, r.schedule_snapshot, r.terms_accepted_at, r.created_at, r.updated_at,
+      cc.club_id, cc.day_of_week, cc.start_time, cc.end_time
+      FROM registrations r LEFT JOIN club_classes cc ON cc.id = r.class_id`)
+      .map((row) => ({
+        id: row.id, groupId: row.group_id, studentId: row.student_id, parentUserId: row.parent_user_id,
+        classId: row.class_id, clubId: row.club_id || null, periodId: row.period_id || null, status: row.status,
+        feeSnapshot: asInt(row.fee_snapshot), scheduleSnapshot: row.schedule_snapshot,
+        termsAcceptedAt: row.terms_accepted_at || null, createdAt: row.created_at, updatedAt: row.updated_at,
+        dayOfWeek: row.day_of_week ?? null, startTime: row.start_time || null, endTime: row.end_time || null,
+      })),
+    supportRequests: all("SELECT id, parent_user_id, registration_id, topic, message, status, created_at FROM support_requests")
+      .map((row) => ({
+        id: row.id, parentUserId: row.parent_user_id, registrationId: row.registration_id || null,
+        topic: row.topic, message: row.message, status: row.status, createdAt: row.created_at,
+      })),
+    auditLogs: all(`SELECT id, actor_user_id, action, entity_type, entity_id, before_json, after_json, reason, created_at
+      FROM audit_logs`)
+      .map((row) => ({
+        id: row.id, actorUserId: row.actor_user_id, action: row.action, entityType: row.entity_type,
+        entityId: row.entity_id, before: parseJsonField(row.before_json, null), after: parseJsonField(row.after_json, null),
+        reason: row.reason || null, createdAt: row.created_at,
+      })),
+    classCounters: all(`SELECT cc.id, cc.enrolled_base + COALESCE(SUM(
+      CASE WHEN r.status IN ('submitted','payment','confirmed') THEN 1 ELSE 0 END), 0) AS enrolled
+      FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`)
+      .map((row) => ({ id: row.id, classId: row.id, enrolledCount: asInt(row.enrolled), updatedAt: nowIso() })),
+  };
+}
+
+async function exportCollectionPage({ actorUserId, collection, after = null, limit = BACKUP_PAGE_SIZE }) {
+  if (!BACKUP_COLLECTIONS.includes(collection)) {
+    throw httpError(400, "UNKNOWN_COLLECTION", `Không có nhóm dữ liệu "${collection}".`);
+  }
+  let auditLogged = false;
+  if (!after && collection === BACKUP_COLLECTIONS[0]) {
+    // Xuất dữ liệu là thao tác chỉ đọc và phải chạy được cả khi cơ sở dữ liệu đang
+    // không ghi được. Ghi log là việc nên làm, không phải điều kiện để xuất.
+    try {
+      await writeAudit({
+        actorUserId, action: "EXPORT_FULL_BACKUP", entityType: "backup",
+        entityId: `backup_${nowIso()}`, after: { dataBackend: DATA_BACKEND }, reason: "Xuất toàn bộ dữ liệu",
+      });
+      auditLogged = true;
+    } catch (error) {
+      console.error("Không ghi được audit log cho lần xuất dữ liệu:", error?.message);
+    }
+  }
+
+  const page = businessStore
+    ? await businessStore.exportCollection(collection, { after, limit })
+    : (() => {
+      const rows = sqliteBackupData()[collection].slice()
+        .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+      const start = after ? rows.findIndex((row) => String(row.id) > String(after)) : 0;
+      const slice = start < 0 ? [] : rows.slice(start, start + limit);
+      return { rows: slice, nextAfter: slice.length === limit ? slice[slice.length - 1].id : null };
+    })();
+
+  return {
+    schemaVersion: BACKUP_SCHEMA_VERSION,
+    collection,
+    rows: page.rows,
+    count: page.rows.length,
+    nextAfter: page.nextAfter,
+    auditLogged,
+    source: { dataBackend: DATA_BACKEND, projectId: DATA_BACKEND === "firestore" ? FIREBASE_PROJECT_ID : null },
+  };
+}
+
 async function handleApi(req, res, url) {
   const method = req.method || "GET";
 
@@ -1397,6 +1535,21 @@ async function handleApi(req, res, url) {
     const startedAt = Date.now();
     const result = await syncGoogleDirectory(user.id);
     return sendJson(res, 200, { result: { ...result, elapsedMs: Date.now() - startedAt } });
+  }
+
+  if (method === "GET" && url.pathname === "/api/admin/export/collections") {
+    await requireUser(req, "admin");
+    return sendJson(res, 200, { collections: BACKUP_COLLECTIONS, pageSize: BACKUP_PAGE_SIZE, schemaVersion: BACKUP_SCHEMA_VERSION });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/export/backup") {
+    const user = await requireUser(req, "admin");
+    const { confirmation = "", collection = "", after = null } = await readJson(req);
+    if (confirmation !== "EXPORT_FULL_BACKUP") {
+      throw httpError(422, "EXPORT_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi xuất toàn bộ dữ liệu.");
+    }
+    const page = await exportCollectionPage({ actorUserId: user.id, collection: String(collection), after: after || null });
+    return sendJson(res, 200, { page });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/accounts/lookup") {

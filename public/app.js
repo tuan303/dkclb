@@ -17,6 +17,7 @@ const state = {
   demoAccounts: false,
   accountLookup: null,
   accountLookupInput: "",
+  lastBackup: null,
 };
 
 let students = [];
@@ -1239,6 +1240,95 @@ function bindAccountSupportEvents() {
   $("[data-reset-password]")?.addEventListener("click", (event) => runPasswordReset(event.currentTarget.dataset.resetPassword, event.currentTarget));
 }
 
+/* ---------- Sao lưu và xuất toàn bộ dữ liệu ---------- */
+
+const BACKUP_COLLECTION_LABELS = {
+  users: "Tài khoản", students: "Học sinh", parentStudents: "Liên kết phụ huynh–học sinh",
+  registrationPeriods: "Đợt đăng ký", clubs: "Câu lạc bộ", clubClasses: "Lớp / ca học",
+  registrations: "Đơn đăng ký", supportRequests: "Yêu cầu hỗ trợ", auditLogs: "Nhật ký thao tác",
+  classCounters: "Bộ đếm chỗ",
+};
+
+function renderBackupPanel() {
+  const summary = state.lastBackup;
+  return `<section class="section panel"><div class="panel-head">
+      <div><span class="eyebrow">Toàn quyền dữ liệu</span><h3>Sao lưu toàn bộ dữ liệu</h3>
+      <p>Xuất một file JSON chứa đầy đủ dữ liệu hệ thống, dùng để sao lưu hoặc chuyển sang nền lưu trữ khác.</p></div>
+      <button class="button button-primary" data-export-backup>${icon("download")} Xuất toàn bộ dữ liệu</button></div>
+    <div class="panel-body">
+      <div class="info-note"><strong>Lưu ý bảo mật:</strong> file này chứa thông tin cá nhân của học sinh và phụ huynh.
+      Chỉ lưu ở nơi an toàn của nhà trường, không gửi qua kênh công khai. Mỗi lần xuất đều được ghi vào nhật ký thao tác.</div>
+      ${summary ? `<div class="kpi-strip">${Object.entries(summary.counts)
+        .map(([name, count]) => `<div class="kpi-item"><span>${escapeHtml(BACKUP_COLLECTION_LABELS[name] || name)}</span><strong>${count}</strong></div>`)
+        .join("")}</div>
+        <div class="sync-verdict ready">✓ Đã xuất ${summary.total} bản ghi lúc ${formatDateTime(summary.exportedAt)}${summary.auditLogged ? "" : " (chưa ghi được nhật ký vì cơ sở dữ liệu đang không ghi được)"}.</div>` : ""}
+    </div></section>`;
+}
+
+function saveJsonFile(filename, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function downloadFullBackup(button) {
+  const confirmed = window.confirm(
+    "Xuất toàn bộ dữ liệu hệ thống ra một file JSON?\n\nFile chứa thông tin cá nhân của học sinh và phụ huynh. Hãy lưu ở nơi an toàn.",
+  );
+  if (!confirmed) return;
+  const original = button.innerHTML;
+  button.disabled = true;
+  try {
+    const { collections } = await api("/admin/export/collections");
+    const data = {};
+    const counts = {};
+    let source = null;
+    let schemaVersion = 1;
+    let auditLogged = false;
+    for (const [index, collection] of collections.entries()) {
+      const rows = [];
+      let after = null;
+      do {
+        button.textContent = `Đang xuất ${index + 1}/${collections.length}: ${BACKUP_COLLECTION_LABELS[collection] || collection} (${rows.length})…`;
+        const { page } = await api("/admin/export/backup", {
+          method: "POST",
+          body: JSON.stringify({ confirmation: "EXPORT_FULL_BACKUP", collection, after }),
+        });
+        rows.push(...page.rows);
+        after = page.nextAfter;
+        source = page.source;
+        schemaVersion = page.schemaVersion;
+        auditLogged = auditLogged || page.auditLogged;
+      } while (after);
+      data[collection] = rows;
+      counts[collection] = rows.length;
+    }
+    const exportedAt = new Date().toISOString();
+    saveJsonFile(
+      `NSHM_Clubs_backup_${exportedAt.slice(0, 19).replaceAll(":", "").replace("T", "-")}.json`,
+      { schemaVersion, exportedAt, source, counts, data },
+    );
+    state.lastBackup = { counts, exportedAt, auditLogged, total: Object.values(counts).reduce((sum, count) => sum + count, 0) };
+    renderPage();
+    toast(`Đã xuất ${state.lastBackup.total} bản ghi ra file JSON.`, "success");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = original;
+  }
+}
+
+function bindBackupEvents() {
+  $("[data-export-backup]")?.addEventListener("click", (event) => downloadFullBackup(event.currentTarget));
+}
+
 function bindCatalogEvents() {
   $("[data-new-period]")?.addEventListener("click", () => openPeriodForm(null));
   $$("[data-edit-period]").forEach((element) => element.addEventListener("click", () => openPeriodForm(element.dataset.editPeriod)));
@@ -1289,7 +1379,10 @@ function renderReports() {
   const reports = [
     ["Tổng quan đợt đăng ký","KPI, tỷ lệ lấp đầy, lớp đầy/thiếu sĩ số"],["Danh sách theo CLB/lớp","Học sinh, lớp hành chính, lịch, phí, ghi chú"],["Danh sách chờ & gọi lại","Thứ tự chờ, lý do, phương án thay thế, người phụ trách"],["Tài chính & công nợ","Phải thu, đã thu, chờ thu, hoàn/chuyển phí"],["Vận hành lớp","Phòng, giáo viên, min/max, lớp cần mở/gộp/hủy"],["Lịch sử thay đổi","Đổi lớp, hủy, chuyển lịch, người xử lý và lý do"],
   ];
-  return `<div class="demo-banner"><span><strong>Nguyên tắc bảo mật:</strong> Chỉ xuất các trường dữ liệu nằm trong phạm vi vai trò được cấp.</span><button class="button button-secondary" data-toast="Demo: mở cấu hình quyền xuất dữ liệu.">Phân quyền xuất</button></div><section class="grid grid-3">${reports.map((r,i)=>renderModuleCard(String(i+1).padStart(2,"0"),r[0],r[1],["Excel (.xlsx)","Bộ lọc theo đợt/trạng thái"])).join("")}</section>`;
+  return `<div class="demo-banner"><span><strong>Nguyên tắc bảo mật:</strong> Chỉ xuất các trường dữ liệu nằm trong phạm vi vai trò được cấp.</span><button class="button button-secondary" data-export>${icon("download")} Xuất danh sách đăng ký (CSV)</button></div>
+  ${renderBackupPanel()}
+  <section class="section"><div class="section-head"><div><span class="eyebrow">Đang thiết kế</span><h2>Bộ báo cáo theo vai trò</h2><p>Các mẫu báo cáo dưới đây chưa nối dữ liệu, hiện mới có xuất CSV danh sách đăng ký và sao lưu toàn bộ dữ liệu ở trên.</p></div></div>
+  <div class="grid grid-3">${reports.map((r,i)=>renderModuleCard(String(i+1).padStart(2,"0"),r[0],r[1],["Excel (.xlsx)","Bộ lọc theo đợt/trạng thái"])).join("")}</div></section>`;
 }
 
 function renderStructure() {
@@ -1599,6 +1692,7 @@ function bindPageEvents() {
   });
   bindCatalogEvents();
   bindAccountSupportEvents();
+  bindBackupEvents();
   $("[data-export]")?.addEventListener("click", exportCsv);
   $("[data-send-support]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;

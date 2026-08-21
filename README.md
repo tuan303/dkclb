@@ -237,6 +237,19 @@ docker compose up --build
 - [Kiến trúc kỹ thuật](./docs/TECHNICAL_ARCHITECTURE.md)
 - [Thiết kế đồng bộ Google Sheets an toàn](./docs/GOOGLE_SHEETS_SYNC_SECURITY.md)
 
+## Sao lưu và xuất toàn bộ dữ liệu
+
+Cổng Nhà trường → **Báo cáo & xuất file → Xuất toàn bộ dữ liệu**. Hệ thống tải về một file JSON chứa đủ mười nhóm dữ liệu: tài khoản, học sinh, liên kết phụ huynh–học sinh, đợt đăng ký, CLB, lớp, đơn đăng ký, yêu cầu hỗ trợ, nhật ký thao tác và bộ đếm chỗ.
+
+Định dạng file **không phụ thuộc nền lưu trữ** (tên trường thống nhất kiểu camelCase), nên dùng được cho cả ba việc: sao lưu định kỳ, phương án xuất dữ liệu khẩn cấp, và chuyển hệ thống sang nền lưu trữ khác.
+
+Hai điểm đáng lưu ý về cách làm:
+
+- Xuất **theo từng trang** rồi ghép lại ngay trong trình duyệt, vì phản hồi của serverless function có giới hạn kích thước mà một trường vài nghìn học sinh thì thừa sức chạm trần.
+- Việc ghi nhật ký thao tác là **không bắt buộc thành công**: xuất dữ liệu là thao tác chỉ đọc và phải chạy được cả khi cơ sở dữ liệu đang hết hạn ngạch ghi. Nếu không ghi được nhật ký, giao diện nói rõ điều đó thay vì im lặng.
+
+File chứa thông tin cá nhân của học sinh và phụ huynh; chỉ lưu ở nơi an toàn của nhà trường.
+
 ## Hạn ngạch Cloud Firestore
 
 Gói Firebase miễn phí (Spark) giới hạn khoảng **20.000 lượt ghi và 50.000 lượt đọc mỗi ngày**. Một lần đồng bộ danh bạ ghi mỗi học sinh, mỗi tài khoản phụ huynh và mỗi liên kết phụ huynh–học sinh, nên vài nghìn học sinh là đã dùng gần hết hạn mức ghi trong ngày. Khi hết hạn ngạch, các thao tác **ghi** bị từ chối trong khi **đọc** vẫn chạy — biểu hiện dễ gây hiểu nhầm nhất là phụ huynh nhập đúng mật khẩu nhưng không đăng nhập được, vì bước tạo phiên đăng nhập cần ghi.
