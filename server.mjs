@@ -1538,5 +1538,6 @@ export function createAppServer() {
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const server = createAppServer();
-  server.listen(PORT, HOST, () => console.log(`NSHM Clubs running at http://${HOST}:${PORT}`));
+  // PORT=0 để hệ điều hành cấp cổng trống; in ra cổng thật để bộ kiểm thử bám vào.
+  server.listen(PORT, HOST, () => console.log(`NSHM Clubs running at http://${HOST}:${server.address().port}`));
 }

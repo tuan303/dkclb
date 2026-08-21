@@ -1,65 +1,22 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { startTestServer } from "./helpers/test-server.mjs";
 
-const port = 4201;
-const baseUrl = `http://127.0.0.1:${port}`;
-let processHandle;
-let tempDir;
+let server;
 let adminCookie;
 let parentCookie;
 
-async function waitForServer() {
-  for (let index = 0; index < 60; index += 1) {
-    try {
-      const response = await fetch(`${baseUrl}/api/health`);
-      if (response.ok) return;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error("Test server did not start");
-}
-
-async function login(account, password) {
-  const response = await fetch(`${baseUrl}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ account, password }),
-  });
-  assert.equal(response.status, 200);
-  return response.headers.get("set-cookie").split(";")[0];
-}
-
-async function request(path, cookie, options = {}) {
-  return fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: { "Content-Type": "application/json", Cookie: cookie, ...(options.headers || {}) },
-  });
-}
+const request = (path, cookie, options = {}) => server.request(path, cookie, options);
 
 const IMPORT_HEADERS = ["Mã CLB", "Tên CLB", "Nhóm môn", "Khối", "Tên lớp", "Thứ", "Khung giờ", "Phòng", "Giáo viên", "Sĩ số", "Học phí"];
 
 before(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), "nshm-catalog-"));
-  processHandle = spawn(process.execPath, ["server.mjs"], {
-    cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: String(port), DATA_FILE: join(tempDir, "catalog.sqlite") },
-    stdio: "ignore",
-  });
-  await waitForServer();
-  adminCookie = await login("admin@nshm.edu.vn", "Admin@123");
-  parentCookie = await login("0901234567", "123456");
+  server = await startTestServer({ prefix: "nshm-catalog-" });
+  adminCookie = await server.loginCookie("admin@nshm.edu.vn", "Admin@123");
+  parentCookie = await server.loginCookie("0901234567", "123456");
 });
 
-after(async () => {
-  processHandle.kill();
-  await once(processHandle, "exit");
-  await rm(tempDir, { recursive: true, force: true });
-});
+after(async () => server.stop());
 
 test("phụ huynh không đọc được danh mục quản trị", async () => {
   const response = await request("/api/admin/catalog", parentCookie);

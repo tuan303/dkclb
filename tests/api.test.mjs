@@ -1,48 +1,19 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { startTestServer } from "./helpers/test-server.mjs";
 
-const port = 4199;
-const baseUrl = `http://127.0.0.1:${port}`;
-let processHandle;
-let tempDir;
+let server;
+let baseUrl;
 
-async function waitForServer() {
-  for (let i = 0; i < 40; i += 1) {
-    try {
-      const response = await fetch(`${baseUrl}/api/health`);
-      if (response.ok) return;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error("Test server did not start");
-}
-
-async function login(account, password) {
-  const response = await fetch(`${baseUrl}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account, password }) });
-  assert.equal(response.status, 200);
-  return response.headers.get("set-cookie").split(";")[0];
-}
-
-async function request(path, cookie, options = {}) {
-  return fetch(`${baseUrl}${path}`, { ...options, headers: { "Content-Type": "application/json", Cookie: cookie, ...(options.headers || {}) } });
-}
+const login = (account, password) => server.loginCookie(account, password);
+const request = (path, cookie, options = {}) => server.request(path, cookie, options);
 
 before(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), "nshm-clubs-"));
-  processHandle = spawn(process.execPath, ["server.mjs"], { cwd: new URL("..", import.meta.url), env: { ...process.env, PORT: String(port), DATA_FILE: join(tempDir, "test.sqlite") }, stdio: "ignore" });
-  await waitForServer();
+  server = await startTestServer({ prefix: "nshm-clubs-" });
+  baseUrl = server.baseUrl;
 });
 
-after(async () => {
-  processHandle.kill();
-  await once(processHandle, "exit");
-  await rm(tempDir, { recursive: true, force: true });
-});
+after(async () => server.stop());
 
 test("health endpoint is available", async () => {
   const response = await fetch(`${baseUrl}/api/health`);

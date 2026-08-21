@@ -1,60 +1,21 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { startTestServer } from "./helpers/test-server.mjs";
 
-const port = 4203;
-const baseUrl = `http://127.0.0.1:${port}`;
-let processHandle;
-let tempDir;
+let server;
+let baseUrl;
 let adminCookie;
 
-async function waitForServer() {
-  for (let index = 0; index < 60; index += 1) {
-    try {
-      const response = await fetch(`${baseUrl}/api/health`);
-      if (response.ok) return;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error("Test server did not start");
-}
-
-async function login(account, password) {
-  return fetch(`${baseUrl}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ account, password }),
-  });
-}
-
-async function request(path, cookie, options = {}) {
-  return fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: { "Content-Type": "application/json", Cookie: cookie, ...(options.headers || {}) },
-  });
-}
+const login = (account, password) => server.login(account, password);
+const request = (path, cookie, options = {}) => server.request(path, cookie, options);
 
 before(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), "nshm-support-"));
-  processHandle = spawn(process.execPath, ["server.mjs"], {
-    cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: String(port), DATA_FILE: join(tempDir, "support.sqlite") },
-    stdio: "ignore",
-  });
-  await waitForServer();
-  const response = await login("admin@nshm.edu.vn", "Admin@123");
-  adminCookie = response.headers.get("set-cookie").split(";")[0];
+  server = await startTestServer({ prefix: "nshm-support-" });
+  baseUrl = server.baseUrl;
+  adminCookie = await server.loginCookie("admin@nshm.edu.vn", "Admin@123");
 });
 
-after(async () => {
-  processHandle.kill();
-  await once(processHandle, "exit");
-  await rm(tempDir, { recursive: true, force: true });
-});
+after(async () => server.stop());
 
 test("chỉ quản trị mới tra cứu được tài khoản", async () => {
   const anonymous = await fetch(`${baseUrl}/api/admin/accounts/lookup?account=0901234567`);
