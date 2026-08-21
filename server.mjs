@@ -11,6 +11,7 @@ import { createMicrosoftAuth } from "./microsoft-auth.mjs";
 import { createGoogleCloudAuth } from "./google-cloud-auth.mjs";
 import { validatePasswordPolicy } from "./password-policy.mjs";
 import { toErrorResponse } from "./error-reporting.mjs";
+import { loadMasterKey } from "./field-crypto.mjs";
 import { isUnchanged } from "./record-diff.mjs";
 import {
   MAX_IMPORT_ROWS,
@@ -413,7 +414,11 @@ async function ensureBusinessStore() {
       if (DATA_BACKEND === "mysql") {
         if (!MYSQL_URL) throw new Error("Thiếu MYSQL_URL khi DATA_BACKEND=mysql.");
         const { createMysqlStore } = await import("./mysql-store.mjs");
-        return createMysqlStore({ url: MYSQL_URL, seed: SEED_DEMO_DATA ? demoSeedData({ includeAccounts: true }) : null });
+        return createMysqlStore({
+          url: MYSQL_URL,
+          encryptionKey: await loadMasterKey(),
+          seed: SEED_DEMO_DATA ? demoSeedData({ includeAccounts: true }) : null,
+        });
       }
       const { createFirestoreStore } = await import("./firestore-store.mjs");
       return createFirestoreStore({

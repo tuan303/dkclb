@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
+import { generateMasterKey } from "../../field-crypto.mjs";
 
 const READY_PATTERN = /running at (http:\/\/\S+)/;
 const START_TIMEOUT_MS = 30_000;
@@ -37,7 +38,9 @@ async function dropMysqlDatabase(baseUrl, name) {
   await admin.end();
 }
 
-export async function startTestServer({ prefix = "nshm-test-", env = {}, mysqlUrl = null, seedDemo = true } = {}) {
+export async function startTestServer({
+  prefix = "nshm-test-", env = {}, mysqlUrl = null, seedDemo = true, encryptionKey = generateMasterKey(),
+} = {}) {
   const mysqlBaseUrl = process.env.TEST_MYSQL_URL || "";
   let dataDir = null;
   let database = null;
@@ -45,13 +48,13 @@ export async function startTestServer({ prefix = "nshm-test-", env = {}, mysqlUr
 
   if (mysqlUrl) {
     // Chạy trên một cơ sở dữ liệu do người gọi tự quản lý, không tạo và không xóa.
-    storageEnv = { DATA_BACKEND: "mysql", MYSQL_URL: mysqlUrl, NSHM_SEED_DEMO: seedDemo ? "1" : "0", DATA_FILE: "" };
+    storageEnv = { DATA_BACKEND: "mysql", MYSQL_URL: mysqlUrl, NSHM_SEED_DEMO: seedDemo ? "1" : "0", DATA_FILE: "", ENCRYPTION_KEY: encryptionKey };
   } else if (mysqlBaseUrl) {
     database = await createMysqlDatabase(mysqlBaseUrl);
-    storageEnv = { DATA_BACKEND: "mysql", MYSQL_URL: database.url, NSHM_SEED_DEMO: seedDemo ? "1" : "0", DATA_FILE: "" };
+    storageEnv = { DATA_BACKEND: "mysql", MYSQL_URL: database.url, NSHM_SEED_DEMO: seedDemo ? "1" : "0", DATA_FILE: "", ENCRYPTION_KEY: encryptionKey };
   } else {
     dataDir = await mkdtemp(join(tmpdir(), prefix));
-    storageEnv = { DATA_BACKEND: "sqlite", DATA_FILE: join(dataDir, "test.sqlite"), MYSQL_URL: "" };
+    storageEnv = { DATA_BACKEND: "sqlite", DATA_FILE: join(dataDir, "test.sqlite"), MYSQL_URL: "", ENCRYPTION_KEY: encryptionKey };
   }
 
   const child = spawn(process.execPath, ["server.mjs"], {
@@ -118,5 +121,9 @@ export async function startTestServer({ prefix = "nshm-test-", env = {}, mysqlUr
     return response.headers.get("set-cookie").split(";")[0];
   };
 
-  return { baseUrl, backend: mysqlUrl || mysqlBaseUrl ? "mysql" : "sqlite", stop, request, login, loginCookie };
+  return {
+    baseUrl, backend: mysqlUrl || mysqlBaseUrl ? "mysql" : "sqlite",
+    databaseUrl: mysqlUrl || database?.url || null, encryptionKey,
+    stop, request, login, loginCookie,
+  };
 }

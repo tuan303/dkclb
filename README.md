@@ -310,6 +310,24 @@ Mỗi lần mã hóa dùng IV ngẫu nhiên, nên cùng một cái tên ghi hai 
 
 **Đánh đổi cần biết:** khi mở MySQL Workbench, các cột đã mã hóa hiện ra chuỗi vô nghĩa. Muốn đọc dữ liệu thì phải qua ứng dụng.
 
+### Những gì được mã hóa trong MySQL
+
+Nền MySQL **bắt buộc** có khóa; không có trạng thái nửa vời kiểu "tưởng là đã mã hóa". Thiếu `ENCRYPTION_KEY` thì máy chủ dừng ngay khi khởi động kèm hướng dẫn sinh khóa.
+
+| Dữ liệu | Trong cơ sở dữ liệu |
+|---|---|
+| Tên học sinh, ngày sinh, mã học sinh | Mã hóa |
+| Số điện thoại / email tài khoản, tên hiển thị | Mã hóa |
+| Cột tra cứu `account_index`, `code_index` | Chỉ mục mù HMAC, không suy ngược được |
+| Khối, lớp hành chính | Để bản rõ |
+| Danh mục CLB, lớp, đợt, đơn đăng ký, học phí | Để bản rõ |
+
+Khối và lớp hành chính để bản rõ vì cần cho lọc theo khối và sắp xếp danh sách, và tự chúng không định danh được học sinh nào. Đây là đánh đổi có chủ ý, được ghi trong kiểm thử để người sau không nhầm là bỏ sót.
+
+Vì bản mã thay đổi mỗi lần ghi, việc sắp xếp theo tên được làm sau khi giải mã chứ không dùng `ORDER BY`, và việc đồng bộ danh bạ so sánh trên bản rõ — nếu so trên bản mã thì lần đồng bộ nào cũng thấy "mọi bản ghi đều đổi" và ghi lại toàn bộ.
+
+Cam kết này được kiểm chứng bằng `tests/mysql-encryption.test.mjs`: test truy vấn thẳng MySQL, quét toàn bộ nội dung mọi bảng và khẳng định không còn một mẩu thông tin cá nhân nào ở dạng đọc được — đúng góc nhìn của người cầm được tệp `mysqldump`.
+
 ## Sao lưu và xuất toàn bộ dữ liệu
 
 Cổng Nhà trường → **Báo cáo & xuất file → Xuất toàn bộ dữ liệu**. Hệ thống tải về một file JSON chứa đủ mười nhóm dữ liệu: tài khoản, học sinh, liên kết phụ huynh–học sinh, đợt đăng ký, CLB, lớp, đơn đăng ký, yêu cầu hỗ trợ, nhật ký thao tác và bộ đếm chỗ.

@@ -16,6 +16,7 @@ import { resolve } from "node:path";
 import { createConnection } from "mysql2/promise";
 import { createMysqlStore } from "./mysql-store.mjs";
 import { decryptBackup, isEncryptedBackup } from "./public/backup-crypto.mjs";
+import { createFieldCrypto, loadMasterKey } from "./field-crypto.mjs";
 
 const SUPPORTED_SCHEMA_VERSIONS = [1];
 
@@ -75,20 +76,22 @@ export function validateBackup(backup) {
 
 const INSERTS = {
   users: {
-    sql: `INSERT INTO users (id, account, account_lower, display_name, role, password_salt, password_hash,
+    sql: `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
       auth_provider, microsoft_object_id, must_change_password, login_failures, locked_until, active, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    values: (row) => [
-      row.id, row.account, String(row.accountLower || row.account || "").toLowerCase(),
-      text(row.displayName, 190) || "Người dùng", row.role || "parent",
+    values: (row, crypto) => [
+      row.id, crypto.encrypt(row.account), crypto.blindIndex(row.accountLower || row.account),
+      crypto.encrypt(text(row.displayName, 190) || "Người dùng"), row.role || "parent",
       text(row.passwordSalt, 64), text(row.passwordHash, 191), row.authProvider || "local",
       text(row.microsoftObjectId, 64), bit(row.mustChangePassword), int(row.loginFailures),
       text(row.lockedUntil, 32), row.active === false ? 0 : 1, row.createdAt || new Date().toISOString(),
     ],
   },
   students: {
-    sql: "INSERT INTO students (id, code, name, date_of_birth, grade, homeroom, level, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    values: (row) => [row.id, row.code, text(row.name, 190), text(row.dateOfBirth, 32), int(row.grade),
+    sql: `INSERT INTO students (id, code, code_index, name, date_of_birth, grade, homeroom, level, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    values: (row, crypto) => [row.id, crypto.encrypt(row.code), crypto.blindIndex(row.code),
+      crypto.encrypt(text(row.name, 190)), crypto.encrypt(text(row.dateOfBirth, 32)), int(row.grade),
       text(row.homeroom, 64) || "", text(row.level, 64) || "", row.status || "active"],
   },
   registrationPeriods: {
@@ -147,11 +150,14 @@ const INSERTS = {
   },
 };
 
-export async function importBackup({ url, backup, replace = false, log = () => {} }) {
+export async function importBackup({ url, backup, replace = false, encryptionKey, log = () => {} }) {
   validateBackup(backup);
+  // Dữ liệu cá nhân được mã hóa lại bằng khóa của hệ thống đích, nên chuyển sang
+  // máy chủ dùng khóa khác vẫn được, và bản rõ chỉ tồn tại trong bộ nhớ lúc nạp.
+  const crypto = createFieldCrypto(encryptionKey);
 
   // Tạo bảng nếu chưa có, đúng schema mà ứng dụng đang dùng.
-  const store = await createMysqlStore({ url, seed: null });
+  const store = await createMysqlStore({ url, seed: null, encryptionKey });
   await store.close();
 
   const connection = await createConnection({ uri: url, multipleStatements: false });
@@ -185,7 +191,7 @@ export async function importBackup({ url, backup, replace = false, log = () => {
           skipped.push(`${name}/${row.id}: thiếu ${missingReference[0]} = ${row[missingReference[0]]}`);
           continue;
         }
-        await connection.query(definition.sql, definition.values(row));
+        await connection.query(definition.sql, definition.values(row, crypto));
         known[name].add(row.id);
         inserted += 1;
       }
@@ -226,8 +232,9 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const passphrase = process.env.BACKUP_PASSPHRASE || (passIndex >= 0 ? args[passIndex + 1] : "");
   const raw = await readFile(file, "utf8");
   const backup = await readBackupFile(raw, passphrase);
+  const encryptionKey = await loadMasterKey();
   console.log(`Nạp bản sao lưu xuất lúc ${backup.exportedAt} (nguồn: ${backup.source?.dataBackend || "không rõ"}).`);
-  const { counters, skipped } = await importBackup({ url, backup, replace, log: (line) => console.log(`  ${line}`) });
+  const { counters, skipped } = await importBackup({ url, backup, replace, encryptionKey, log: (line) => console.log(`  ${line}`) });
   const total = Object.values(counters).reduce((sum, count) => sum + count, 0);
   console.log(`Hoàn tất: nạp ${total} bản ghi.`);
   if (skipped.length) {

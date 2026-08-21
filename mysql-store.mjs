@@ -9,6 +9,7 @@ import { createPool } from "mysql2/promise";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { planDirectoryWrites } from "./directory-plan.mjs";
+import { createFieldCrypto } from "./field-crypto.mjs";
 
 const ACTIVE_STATUSES = ["submitted", "payment", "confirmed"];
 
@@ -30,11 +31,13 @@ const jsonArray = (value) => (Array.isArray(value) ? value : typeof value === "s
 const jsonOrNull = (value) => (value === null || value === undefined ? null : typeof value === "string" ? JSON.parse(value) : value);
 
 // server.mjs đọc tài khoản theo tên cột snake_case, giống hệt hàng trả về của MySQL,
-// nên chỉ cần chuẩn hóa vài trường có thể null.
-function asServerUser(row) {
+// nên chỉ cần chuẩn hóa vài trường có thể null và giải mã phần thông tin cá nhân.
+function asServerUser(row, crypto) {
   if (!row) return null;
   return {
     ...row,
+    account: crypto.decrypt(row.account),
+    display_name: crypto.decrypt(row.display_name),
     password_salt: row.password_salt || null,
     password_hash: row.password_hash || null,
     microsoft_object_id: row.microsoft_object_id || null,
@@ -82,10 +85,14 @@ const CATALOG_SELECT = `SELECT cc.id, cc.club_id, c.code, c.name, cc.name AS cla
 // Mỗi nhóm dữ liệu xuất ra đúng hình dạng chung của bản sao lưu, không phụ thuộc nền lưu trữ.
 const EXPORT_QUERIES = {
   users: {
-    sql: `SELECT id, account, account_lower, display_name, role, password_salt, password_hash, auth_provider,
+    sql: `SELECT id, account, display_name, role, password_salt, password_hash, auth_provider,
       microsoft_object_id, must_change_password, login_failures, locked_until, active, created_at FROM users`,
-    map: (row) => ({
-      id: row.id, account: row.account, accountLower: row.account_lower, displayName: row.display_name,
+    // Bản sao lưu chứa dữ liệu đã giải mã, để nạp được sang hệ thống dùng khóa khác.
+    // Bản thân tệp sao lưu được bảo vệ bằng mật khẩu riêng khi tải về.
+    map: (row, crypto) => ({
+      id: row.id, account: crypto.decrypt(row.account),
+      accountLower: String(crypto.decrypt(row.account) || "").toLowerCase(),
+      displayName: crypto.decrypt(row.display_name),
       role: row.role, passwordSalt: row.password_salt || null, passwordHash: row.password_hash || null,
       authProvider: row.auth_provider, microsoftObjectId: row.microsoft_object_id || null,
       mustChangePassword: toBool(row.must_change_password), loginFailures: toInt(row.login_failures),
@@ -94,8 +101,9 @@ const EXPORT_QUERIES = {
   },
   students: {
     sql: "SELECT id, code, name, date_of_birth, grade, homeroom, level, status FROM students",
-    map: (row) => ({
-      id: row.id, code: row.code, name: row.name, dateOfBirth: row.date_of_birth || null,
+    map: (row, crypto) => ({
+      id: row.id, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name),
+      dateOfBirth: crypto.decrypt(row.date_of_birth) || null,
       grade: toInt(row.grade), homeroom: row.homeroom, level: row.level, status: row.status,
     }),
   },
@@ -174,7 +182,9 @@ const EXPORT_QUERIES = {
   },
 };
 
-export async function createMysqlStore({ url, seed = null, schemaPath = new URL("./mysql-schema.sql", import.meta.url) }) {
+export async function createMysqlStore({ url, seed = null, encryptionKey, schemaPath = new URL("./mysql-schema.sql", import.meta.url) }) {
+  // Khóa là bắt buộc: không có trạng thái nửa vời "tưởng là đã mã hóa".
+  const crypto = createFieldCrypto(encryptionKey);
   let pool;
   try {
     pool = createPool({
@@ -256,18 +266,22 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
       }
       for (const user of seed.users || []) {
         await connection.query(
-          `INSERT INTO users (id, account, account_lower, display_name, role, password_salt, password_hash,
+          `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
             auth_provider, must_change_password, login_failures, active, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)`,
-          [user.id, user.account, user.account.toLowerCase(), user.displayName, user.role,
+          [user.id, crypto.encrypt(user.account), crypto.blindIndex(user.account),
+            crypto.encrypt(user.displayName), user.role,
             user.passwordSalt || null, user.passwordHash || null, user.authProvider || "local",
             user.mustChangePassword ? 1 : 0, user.createdAt],
         );
       }
       for (const student of seed.students || []) {
         await connection.query(
-          "INSERT INTO students (id, code, name, date_of_birth, grade, homeroom, level, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'active')",
-          [student.id, student.code, student.name, student.dateOfBirth || null, student.grade, student.homeroom, student.level],
+          `INSERT INTO students (id, code, code_index, name, date_of_birth, grade, homeroom, level, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+          [student.id, crypto.encrypt(student.code), crypto.blindIndex(student.code),
+            crypto.encrypt(student.name), crypto.encrypt(student.dateOfBirth),
+            student.grade, student.homeroom, student.level],
         );
       }
       for (const link of seed.parentStudents || []) {
@@ -318,13 +332,13 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
     /* ---------- Danh tính và phiên làm việc ---------- */
 
     async getUserByAccount(account) {
-      const row = await first("SELECT * FROM users WHERE account_lower = ? AND active = 1 LIMIT 1", [String(account || "").trim().toLowerCase()]);
-      return asServerUser(row);
+      const row = await first("SELECT * FROM users WHERE account_index = ? AND active = 1 LIMIT 1", [crypto.blindIndex(account)]);
+      return asServerUser(row, crypto);
     },
 
     async findAccount(account) {
-      const row = await first("SELECT * FROM users WHERE account_lower = ? LIMIT 1", [String(account || "").trim().toLowerCase()]);
-      return asServerUser(row);
+      const row = await first("SELECT * FROM users WHERE account_index = ? LIMIT 1", [crypto.blindIndex(account)]);
+      return asServerUser(row, crypto);
     },
 
     async recordLoginFailure(userId, failures, lockedUntil) {
@@ -346,7 +360,7 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
          WHERE s.token = ? AND s.expires_at > ? AND u.active = 1 LIMIT 1`,
         [token, now],
       );
-      return asServerUser(row);
+      return asServerUser(row, crypto);
     },
 
     async deleteSession(token) {
@@ -373,25 +387,26 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
 
     async upsertMicrosoftUser({ identity, userId, password, timestamp }) {
       const existing = await first(
-        "SELECT * FROM users WHERE microsoft_object_id = ? OR account_lower = ? LIMIT 1",
-        [identity.objectId, identity.email.toLowerCase()],
+        "SELECT * FROM users WHERE microsoft_object_id = ? OR account_index = ? LIMIT 1",
+        [identity.objectId, crypto.blindIndex(identity.email)],
       );
       if (existing) {
         await query(
-          `UPDATE users SET account = ?, account_lower = ?, display_name = ?, role = 'admin', auth_provider = 'microsoft',
+          `UPDATE users SET account = ?, account_index = ?, display_name = ?, role = 'admin', auth_provider = 'microsoft',
             microsoft_object_id = ?, must_change_password = 0, login_failures = 0, locked_until = NULL, active = 1
            WHERE id = ?`,
-          [identity.email, identity.email.toLowerCase(), identity.name, identity.objectId, existing.id],
+          [crypto.encrypt(identity.email), crypto.blindIndex(identity.email), crypto.encrypt(identity.name), identity.objectId, existing.id],
         );
-        return asServerUser(await first("SELECT * FROM users WHERE id = ?", [existing.id]));
+        return asServerUser(await first("SELECT * FROM users WHERE id = ?", [existing.id]), crypto);
       }
       await query(
-        `INSERT INTO users (id, account, account_lower, display_name, role, password_salt, password_hash,
+        `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
           auth_provider, microsoft_object_id, must_change_password, login_failures, active, created_at)
          VALUES (?, ?, ?, ?, 'admin', ?, ?, 'microsoft', ?, 0, 0, 1, ?)`,
-        [userId, identity.email, identity.email.toLowerCase(), identity.name, password.salt, password.hash, identity.objectId, timestamp],
+        [userId, crypto.encrypt(identity.email), crypto.blindIndex(identity.email), crypto.encrypt(identity.name),
+          password.salt, password.hash, identity.objectId, timestamp],
       );
-      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]));
+      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
     },
 
     async updatePassword(userId, password) {
@@ -400,7 +415,7 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
           login_failures = 0, locked_until = NULL WHERE id = ?`,
         [password.salt, password.hash, userId],
       );
-      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]));
+      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
     },
 
     async resetToInitialPassword(userId) {
@@ -422,25 +437,36 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
     /* ---------- Học sinh ---------- */
 
     async listStudentsByParent(parentUserId) {
-      return query(
-        `SELECT s.id, s.code, s.name, s.date_of_birth AS dateOfBirth, s.grade, s.homeroom, s.level, ps.relationship
+      const rows = await query(
+        `SELECT s.id, s.code, s.name, s.date_of_birth, s.grade, s.homeroom, s.level, ps.relationship
          FROM students s JOIN parent_students ps ON ps.student_id = s.id
-         WHERE ps.parent_user_id = ? AND s.status = 'active' ORDER BY s.grade, s.name`,
+         WHERE ps.parent_user_id = ? AND s.status = 'active'`,
         [parentUserId],
       );
+      // Sắp xếp sau khi giải mã: cột tên trong cơ sở dữ liệu là chuỗi mã hóa nên
+      // ORDER BY trên nó không cho ra thứ tự theo tên thật.
+      return rows
+        .map((row) => ({
+          id: row.id, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name),
+          dateOfBirth: crypto.decrypt(row.date_of_birth), grade: toInt(row.grade),
+          homeroom: row.homeroom, level: row.level, relationship: row.relationship,
+        }))
+        .sort((left, right) => left.grade - right.grade || String(left.name).localeCompare(String(right.name), "vi"));
     },
 
     async parentOwnsStudent(parentUserId, studentId) {
-      return first(
+      const row = await first(
         `SELECT s.id, s.code, s.name, s.grade, s.homeroom, s.level, s.status FROM students s
          JOIN parent_students ps ON ps.student_id = s.id
          WHERE ps.parent_user_id = ? AND s.id = ? AND s.status = 'active' LIMIT 1`,
         [parentUserId, studentId],
       );
+      return row ? { ...row, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name), grade: toInt(row.grade) } : null;
     },
 
     async getStudent(studentId) {
-      return first("SELECT id, code, name, grade, homeroom, level, status FROM students WHERE id = ? LIMIT 1", [studentId]);
+      const row = await first("SELECT id, code, name, grade, homeroom, level, status FROM students WHERE id = ? LIMIT 1", [studentId]);
+      return row ? { ...row, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name), grade: toInt(row.grade) } : null;
     },
 
     /* ---------- Danh mục ---------- */
@@ -579,13 +605,14 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
       if (!rows.length) return [];
       const studentIds = [...new Set(rows.map((row) => row.studentId).filter(Boolean))];
       const classIds = [...new Set(rows.map((row) => row.classId).filter(Boolean))];
-      const [students, classes] = await Promise.all([
+      const [studentRows, classes] = await Promise.all([
         studentIds.length ? query("SELECT id, name, homeroom FROM students WHERE id IN (?)", [studentIds]) : [],
         classIds.length
           ? query(`SELECT cc.id, cc.room, cc.teacher, cc.name AS className, cc.club_id AS clubId, c.name AS clubName
               FROM club_classes cc JOIN clubs c ON c.id = cc.club_id WHERE cc.id IN (?)`, [classIds])
           : [],
       ]);
+      const students = studentRows.map((row) => ({ ...row, name: crypto.decrypt(row.name) }));
       const studentMap = new Map(students.map((row) => [row.id, row]));
       const classMap = new Map(classes.map((row) => [row.id, row]));
       return rows.map((registration) => {
@@ -696,15 +723,24 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
     /* ---------- Đồng bộ danh bạ và xuất dữ liệu ---------- */
 
     async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis }) {
-      const [students, users, links] = await Promise.all([
-        query("SELECT id, code, name, date_of_birth AS dateOfBirth, grade, homeroom, level, status FROM students"),
-        query("SELECT id, account, account_lower AS accountLower, role, active FROM users"),
+      const [studentRows, userRows, links] = await Promise.all([
+        query("SELECT id, code, name, date_of_birth, grade, homeroom, level, status FROM students"),
+        query("SELECT id, account, role, active FROM users"),
         query("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students"),
       ]);
+      // So sánh phải làm trên bản rõ, nếu không thì mỗi lần mã hóa ra chuỗi khác nhau
+      // sẽ khiến mọi bản ghi đều bị coi là đã thay đổi và lần đồng bộ nào cũng ghi lại tất cả.
       const plan = planDirectoryWrites({
         snapshot,
-        students,
-        users: users.map((row) => ({ ...row, active: toBool(row.active) })),
+        students: studentRows.map((row) => ({
+          id: row.id, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name),
+          dateOfBirth: crypto.decrypt(row.date_of_birth), grade: toInt(row.grade),
+          homeroom: row.homeroom, level: row.level, status: row.status,
+        })),
+        users: userRows.map((row) => {
+          const account = crypto.decrypt(row.account);
+          return { id: row.id, account, accountLower: String(account || "").toLowerCase(), role: row.role, active: toBool(row.active) };
+        }),
         links,
         timestamp,
         idFactory,
@@ -714,27 +750,30 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
         for (const write of plan.writes) {
           if (write.collection === "students") {
             await connection.query(
-              `INSERT INTO students (id, code, name, date_of_birth, grade, homeroom, level, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON DUPLICATE KEY UPDATE code = VALUES(code), name = VALUES(name), date_of_birth = VALUES(date_of_birth),
-                grade = VALUES(grade), homeroom = VALUES(homeroom), level = VALUES(level), status = VALUES(status)`,
-              [write.id, write.data.code, write.data.name, write.data.dateOfBirth || null, write.data.grade,
-                write.data.homeroom, write.data.level, write.data.status],
+              `INSERT INTO students (id, code, code_index, name, date_of_birth, grade, homeroom, level, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE code = VALUES(code), code_index = VALUES(code_index), name = VALUES(name),
+                date_of_birth = VALUES(date_of_birth), grade = VALUES(grade), homeroom = VALUES(homeroom),
+                level = VALUES(level), status = VALUES(status)`,
+              [write.id, crypto.encrypt(write.data.code), crypto.blindIndex(write.data.code),
+                crypto.encrypt(write.data.name), crypto.encrypt(write.data.dateOfBirth),
+                write.data.grade, write.data.homeroom, write.data.level, write.data.status],
             );
           } else if (write.collection === "users") {
             const data = write.data;
             if (data.account) {
               await connection.query(
-                `INSERT INTO users (id, account, account_lower, display_name, role, password_salt, password_hash,
+                `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
                   auth_provider, must_change_password, login_failures, locked_until, active, created_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 1, ?)
-                 ON DUPLICATE KEY UPDATE account_lower = VALUES(account_lower), active = 1`,
-                [write.id, data.account, data.accountLower, data.displayName, data.role,
+                 ON DUPLICATE KEY UPDATE active = 1`,
+                [write.id, crypto.encrypt(data.account), crypto.blindIndex(data.account),
+                  crypto.encrypt(data.displayName), data.role,
                   data.passwordSalt || null, data.passwordHash || null, data.authProvider || "local",
                   data.mustChangePassword ? 1 : 0, data.createdAt],
               );
             } else {
-              await connection.query("UPDATE users SET account_lower = ?, active = 1 WHERE id = ?", [data.accountLower, write.id]);
+              await connection.query("UPDATE users SET active = 1 WHERE id = ?", [write.id]);
             }
           } else if (write.collection === "parentStudents") {
             await connection.query(
@@ -762,7 +801,7 @@ export async function createMysqlStore({ url, seed = null, schemaPath = new URL(
     async exportCollection(name, { after = null, limit = 500 } = {}) {
       const definition = EXPORT_QUERIES[name];
       if (!definition) return { rows: [], nextAfter: null };
-      const rows = (await query(definition.sql)).map(definition.map)
+      const rows = (await query(definition.sql)).map((row) => definition.map(row, crypto))
         .sort((left, right) => String(left.id).localeCompare(String(right.id)));
       const start = after ? rows.findIndex((row) => String(row.id) > String(after)) : 0;
       const page = start < 0 ? [] : rows.slice(start, start + limit);

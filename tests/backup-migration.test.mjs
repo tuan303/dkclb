@@ -9,6 +9,7 @@ import { randomBytes } from "node:crypto";
 import { startTestServer } from "./helpers/test-server.mjs";
 import { importBackup, readBackupFile, validateBackup } from "../backup-import.mjs";
 import { encryptBackup } from "../public/backup-crypto.mjs";
+import { generateMasterKey } from "../field-crypto.mjs";
 
 const MYSQL_BASE_URL = process.env.TEST_MYSQL_URL || "";
 const COLLECTIONS = [
@@ -19,6 +20,9 @@ const COLLECTIONS = [
 let source;
 let targetName;
 let targetUrl;
+// Khóa của hệ thống đích khác hẳn khóa của nguồn: chuyển sang máy chủ dùng khóa
+// riêng vẫn phải ra đúng dữ liệu.
+const targetKey = generateMasterKey();
 
 async function exportEverything(server, cookie) {
   const data = {};
@@ -84,7 +88,7 @@ test("nạp bản sao lưu vào MySQL giữ nguyên từng bản ghi", { skip: !
   const backup = await exportEverything(source, cookie);
   assert.ok(backup.counts.students > 0, "nguồn phải có dữ liệu để chuyển");
 
-  const { counters, skipped } = await importBackup({ url: targetUrl, backup });
+  const { counters, skipped } = await importBackup({ url: targetUrl, backup, encryptionKey: targetKey });
   assert.deepEqual(skipped, [], "không được bỏ sót bản ghi nào");
   assert.equal(counters.students, backup.counts.students);
   assert.equal(counters.users, backup.counts.users);
@@ -94,7 +98,9 @@ test("nạp bản sao lưu vào MySQL giữ nguyên từng bản ghi", { skip: !
   assert.equal(counters.registrations, backup.counts.registrations);
 
   // Mở ứng dụng trên chính cơ sở dữ liệu vừa nạp rồi xuất lại để đối chiếu.
-  const migrated = await startTestServer({ prefix: "nshm-migrate-dst-", mysqlUrl: targetUrl, seedDemo: false });
+  const migrated = await startTestServer({
+    prefix: "nshm-migrate-dst-", mysqlUrl: targetUrl, seedDemo: false, encryptionKey: targetKey,
+  });
   try {
     const migratedCookie = await migrated.loginCookie("admin@nshm.edu.vn", "Admin@123");
     const roundTrip = await exportEverything(migrated, migratedCookie);
@@ -146,7 +152,7 @@ test("nạp được đúng tệp sao lưu đã mã hóa mà giao diện tải v
 
   const decrypted = await readBackupFile(fileContent, "mat-khau-sao-luu-2026");
   assert.deepEqual(decrypted, backup);
-  const { counters } = await importBackup({ url: targetUrl, backup: decrypted, replace: true });
+  const { counters } = await importBackup({ url: targetUrl, backup: decrypted, replace: true, encryptionKey: targetKey });
   assert.equal(counters.students, backup.counts.students);
 });
 
@@ -155,11 +161,11 @@ test("không nạp đè lên cơ sở dữ liệu đang có dữ liệu nếu kh
   const backup = await exportEverything(source, cookie);
 
   await assert.rejects(
-    () => importBackup({ url: targetUrl, backup }),
+    () => importBackup({ url: targetUrl, backup, encryptionKey: targetKey }),
     (error) => error.code === "BACKUP_IMPORT_ERROR" && /đã có dữ liệu/.test(error.message),
   );
 
   // Có --replace thì xóa sạch rồi nạp lại, kết quả không nhân đôi bản ghi.
-  const { counters } = await importBackup({ url: targetUrl, backup, replace: true });
+  const { counters } = await importBackup({ url: targetUrl, backup, replace: true, encryptionKey: targetKey });
   assert.equal(counters.students, backup.counts.students);
 });

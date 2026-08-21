@@ -10,12 +10,18 @@
 -- 2) Không có bảng đếm chỗ riêng. Firestore cần bảng đếm vì không truy vấn tổng hợp
 --    được trong giao dịch; MySQL khóa được dòng lớp bằng SELECT ... FOR UPDATE rồi
 --    đếm trực tiếp, nên số chỗ luôn khớp với dữ liệu thật, không thể lệch.
+--
+-- 3) Các cột chứa thông tin cá nhân được ứng dụng mã hóa trước khi ghi, nên trong
+--    cơ sở dữ liệu chúng là chuỗi vô nghĩa. Vì mỗi lần mã hóa dùng IV ngẫu nhiên,
+--    không thể tra cứu trực tiếp trên các cột đó; việc tra cứu đi qua các cột
+--    *_index chứa chỉ mục mù HMAC, cố định theo giá trị nhưng không suy ngược được.
+--    Cột mã hóa rộng hơn hẳn bản rõ vì mang thêm IV, thẻ xác thực và phần base64.
 
 CREATE TABLE IF NOT EXISTS users (
   id                    VARCHAR(64)  NOT NULL,
-  account               VARCHAR(190) NOT NULL,
-  account_lower         VARCHAR(190) NOT NULL,
-  display_name          VARCHAR(190) NOT NULL,
+  account               VARCHAR(512) NOT NULL,
+  account_index         VARCHAR(190) NOT NULL,
+  display_name          VARCHAR(768) NOT NULL,
   role                  VARCHAR(16)  NOT NULL,
   password_salt         VARCHAR(64)      NULL,
   password_hash         VARCHAR(191)     NULL,
@@ -27,22 +33,23 @@ CREATE TABLE IF NOT EXISTS users (
   active                TINYINT(1)   NOT NULL DEFAULT 1,
   created_at            VARCHAR(32)  NOT NULL,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_users_account_lower (account_lower),
+  UNIQUE KEY uk_users_account_index (account_index),
   UNIQUE KEY uk_users_microsoft_object_id (microsoft_object_id),
   KEY idx_users_role (role)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS students (
   id            VARCHAR(64)  NOT NULL,
-  code          VARCHAR(64)  NOT NULL,
-  name          VARCHAR(190) NOT NULL,
-  date_of_birth VARCHAR(32)      NULL,
+  code          VARCHAR(512) NOT NULL,
+  code_index    VARCHAR(190) NOT NULL,
+  name          VARCHAR(768) NOT NULL,
+  date_of_birth VARCHAR(256)     NULL,
   grade         INT          NOT NULL,
   homeroom      VARCHAR(64)  NOT NULL,
   level         VARCHAR(64)  NOT NULL,
   status        VARCHAR(24)  NOT NULL DEFAULT 'active',
   PRIMARY KEY (id),
-  UNIQUE KEY uk_students_code (code),
+  UNIQUE KEY uk_students_code_index (code_index),
   KEY idx_students_grade (grade)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

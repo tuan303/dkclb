@@ -13,6 +13,7 @@
 //   - khóa chỉ mục mù: HMAC-SHA256, cho ra giá trị cố định để còn TRA CỨU được
 //     theo số điện thoại mà không cần giải mã cả bảng.
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 const CIPHER_PREFIX = "v1.";
 const IV_LENGTH = 12;
@@ -47,6 +48,28 @@ export function normalizeMasterKey(material) {
 
 export function generateMasterKey() {
   return randomBytes(KEY_LENGTH).toString("base64");
+}
+
+/**
+ * Lấy khóa từ biến môi trường hoặc từ tệp khóa. Nên dùng tệp khóa đặt ngoài thư mục
+ * mã nguồn với quyền chỉ cho tài khoản chạy dịch vụ đọc, để khóa không lẫn vào
+ * bản sao mã nguồn hay lịch sử shell.
+ */
+export async function loadMasterKey({
+  key = process.env.ENCRYPTION_KEY,
+  keyFile = process.env.ENCRYPTION_KEY_FILE,
+} = {}) {
+  if (key) return normalizeMasterKey(key);
+  if (keyFile) {
+    try {
+      return normalizeMasterKey((await readFile(keyFile, "utf8")).trim());
+    } catch (error) {
+      if (error.code === "ENCRYPTION_KEY_INVALID") throw error;
+      throw cryptoError("ENCRYPTION_KEY_MISSING", `Không đọc được tệp khóa mã hóa: ${keyFile}`);
+    }
+  }
+  throw cryptoError("ENCRYPTION_KEY_MISSING",
+    "Chưa cấu hình khóa mã hóa dữ liệu. Đặt ENCRYPTION_KEY hoặc ENCRYPTION_KEY_FILE. Sinh khóa mới: node field-crypto.mjs --generate");
 }
 
 export function createFieldCrypto(masterKeyMaterial) {
