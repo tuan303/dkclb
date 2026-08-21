@@ -30,6 +30,8 @@ flowchart LR
 | `public/sheet-reader.js` | Đọc `.xlsx`/`.csv` ngay trong trình duyệt để file danh mục không phải rời máy người dùng |
 | `catalog-schema.mjs` | Module thuần: chuẩn hóa và kiểm tra đợt/CLB/lớp, nhận diện cột và phân tích file nhập |
 | `error-reporting.mjs` | Module thuần: quyết định lỗi nào được hiển thị nguyên văn, lỗi hạ tầng quy về thông báo tiếng Việt |
+| `record-diff.mjs` | Module thuần: đối chiếu dữ liệu sắp ghi với bản ghi hiện có |
+| `directory-plan.mjs` | Module thuần: quyết định đồng bộ danh bạ cần ghi gì, bỏ qua bản ghi không đổi |
 | `server.mjs` | Static server, JSON API, session auth, validation, báo cáo CSV |
 | SQLite | Dữ liệu dự phòng chỉ cho phát triển và kiểm thử local |
 | `api/index.mjs` | Adapter Vercel Function và định tuyến toàn bộ API |
@@ -56,6 +58,7 @@ flowchart LR
 - Có security headers cơ bản và giới hạn body JSON 1 MB (riêng hai endpoint nhập danh mục là 8 MB).
 - Chỉ lỗi nghiệp vụ do hệ thống này tạo ra (`expose`) mới hiển thị nguyên văn. Lỗi từ Firestore, Google API hay mạng được quy về thông báo tiếng Việt kèm mã phân loại, không bao giờ trả nguyên văn payload của nhà cung cấp ra ngoài; mã trạng thái của lỗi hạ tầng cũng không được dùng lại làm mã HTTP trả về. Có kiểm thử chặn hồi quy trên đúng payload đã từng lọt ra màn hình đăng nhập.
 - Đăng nhập đúng ngay lần đầu không phát sinh lượt ghi thừa để xóa bộ đếm sai, nhằm tiết kiệm hạn ngạch ghi của Firestore.
+- Đồng bộ danh bạ chỉ ghi bản ghi thực sự thay đổi. Phần quyết định nằm ở `directory-plan.mjs` và được kiểm thử độc lập, trong đó có tính chất quan trọng nhất: đồng bộ lại một danh sách không đổi thì số lượt ghi bằng 0.
 - Chuyển trạng thái phí tạo audit log trước/sau.
 - Mọi thay đổi đợt, CLB và lớp đều ghi audit log kèm giá trị trước/sau; nhập hàng loạt ghi log số bản ghi tạo mới và cập nhật.
 - Tra cứu tài khoản hỗ trợ chỉ trả trạng thái (đang hoạt động, còn mật khẩu khởi tạo, số lần sai, thời điểm hết khóa) và không bao giờ trả salt hay hash.

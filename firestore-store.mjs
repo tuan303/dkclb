@@ -1,5 +1,6 @@
 import { Firestore } from "@google-cloud/firestore";
 import { randomBytes } from "node:crypto";
+import { planDirectoryWrites } from "./directory-plan.mjs";
 
 const ACTIVE_STATUSES = new Set(["submitted", "payment", "confirmed"]);
 
@@ -466,57 +467,17 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
 
       async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis }) {
         const [studentSnapshot, userSnapshot, linkSnapshot] = await Promise.all([students.get(), users.get(), parentStudents.get()]);
-        const studentsByCode = new Map(snapshotRows(studentSnapshot).map((student) => [student.code, student]));
-        const usersByAccount = new Map(snapshotRows(userSnapshot).map((user) => [String(user.accountLower || user.account || "").toLowerCase(), user]));
-        const linksByKey = new Map(snapshotRows(linkSnapshot).map((link) => [`${link.parentUserId}_${link.studentId}`, link]));
-        const counters = { studentsCreated: 0, studentsUpdated: 0, parentsCreated: 0, parentsExisting: 0, linksCreated: 0, linksUpdated: 0 };
-        const studentIdsByCode = new Map();
-        const writes = [];
-        for (const student of snapshot.students) {
-          const existing = studentsByCode.get(student.code);
-          const studentId = existing?.id || idFactory("hs");
-          studentIdsByCode.set(student.code, studentId);
-          writes.push({ path: `students/${studentId}`, options: { merge: true }, data: {
-            code: student.code, name: student.name, dateOfBirth: student.dateOfBirth, grade: student.grade,
-            homeroom: student.className, level: student.educationLevel, status: "active",
-          } });
-          if (existing) counters.studentsUpdated += 1;
-          else counters.studentsCreated += 1;
-        }
-        for (const guardian of snapshot.guardians) {
-          const accountLower = guardian.account.toLowerCase();
-          let user = usersByAccount.get(accountLower);
-          if (user && user.role !== "parent") throw createHttpError(409, "ACCOUNT_ROLE_CONFLICT", "Có SĐT phụ huynh trùng với một tài khoản vai trò khác; cần IT xử lý thủ công.");
-          if (!user) {
-            const userId = idFactory("u_parent");
-            user = { id: userId, account: guardian.account, accountLower, role: "parent" };
-            usersByAccount.set(accountLower, user);
-            // Chưa có mật khẩu riêng: mật khẩu khởi tạo là chính số điện thoại nên không lưu hash.
-            writes.push({ path: `users/${userId}`, options: { merge: true }, data: {
-              account: guardian.account, accountLower, displayName: guardian.displayName || "Phụ huynh học sinh", role: "parent",
-              passwordSalt: null, passwordHash: null, authProvider: "local", mustChangePassword: true,
-              loginFailures: 0, lockedUntil: null, active: true, createdAt: timestamp,
-            } });
-            counters.parentsCreated += 1;
-          } else {
-            writes.push({ path: `users/${user.id}`, options: { merge: true }, data: { accountLower, active: true } });
-            counters.parentsExisting += 1;
-          }
-          for (const linkedStudent of guardian.students) {
-            const studentId = studentIdsByCode.get(linkedStudent.studentCode);
-            if (!studentId) continue;
-            const key = `${user.id}_${studentId}`;
-            const existingLink = linksByKey.get(key);
-            const relationship = existingLink && existingLink.relationship !== linkedStudent.relationship ? "Bố/Mẹ" : linkedStudent.relationship;
-            writes.push({ path: `parentStudents/${key}`, options: { merge: true }, data: { parentUserId: user.id, studentId, relationship } });
-            if (existingLink) counters.linksUpdated += 1;
-            else {
-              linksByKey.set(key, { parentUserId: user.id, studentId, relationship });
-              counters.linksCreated += 1;
-            }
-          }
-        }
-        await bulkCommitDocuments(writes);
+        const { writes, counters } = planDirectoryWrites({
+          snapshot,
+          students: snapshotRows(studentSnapshot),
+          users: snapshotRows(userSnapshot),
+          links: snapshotRows(linkSnapshot),
+          timestamp,
+          idFactory,
+        });
+        await bulkCommitDocuments(writes.map((write) => ({
+          path: `${write.collection}/${write.id}`, options: { merge: true }, data: write.data,
+        })));
         const syncId = idFactory("sync");
         await auditLogs.doc(`audit_${randomBytes(8).toString("hex")}`).set({
           actorUserId, action: "SYNC_STUDENT_DIRECTORY", entityType: "google_sheet", entityId: syncId,

@@ -243,7 +243,7 @@ Gói Firebase miễn phí (Spark) giới hạn khoảng **20.000 lượt ghi và
 
 Lúc đó hệ thống trả về thông báo *"Cơ sở dữ liệu đã dùng hết hạn ngạch trong ngày..."*. Hạn ngạch được đặt lại hằng ngày theo giờ Thái Bình Dương. Trước đợt đăng ký thật, nên chuyển dự án Firebase sang gói **Blaze (trả theo dùng)**: gói này giữ nguyên phần miễn phí và chỉ tính tiền phần vượt, vốn rất nhỏ ở quy mô một trường.
 
-Mẹo tiết kiệm hạn ngạch: chỉ bấm Đồng bộ khi danh sách trong Google Sheets thực sự thay đổi, vì mỗi lần chạy đều đọc và ghi lại toàn bộ danh bạ.
+Đồng bộ chỉ ghi những bản ghi **thực sự thay đổi** so với dữ liệu đang có: chạy lại đúng một danh sách không đổi thì không tốn lượt ghi nào. Sau mỗi lần đồng bộ, hệ thống báo rõ đã ghi bao nhiêu bản ghi và bỏ qua bao nhiêu bản ghi không đổi, để theo dõi mức tiêu hạn ngạch.
 
 ## Phụ huynh không đăng nhập được
 

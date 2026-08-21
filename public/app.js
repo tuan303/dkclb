@@ -1585,7 +1585,9 @@ function bindPageEvents() {
         method: "POST",
         body: JSON.stringify({ confirmation: "SYNC_STUDENT_DIRECTORY" }),
       });
-      toast(`Đồng bộ hoàn tất trong ${(result.elapsedMs / 1000).toFixed(0)} giây: ${result.counters.studentsCreated} học sinh mới, ${result.counters.parentsCreated} tài khoản PH mới, ${result.counters.linksCreated} liên kết.`, "success");
+      const counters = result.counters;
+      const unchanged = counters.studentsUnchanged + counters.parentsUnchanged + counters.linksUnchanged;
+      toast(`Đồng bộ xong sau ${(result.elapsedMs / 1000).toFixed(0)} giây · ghi ${counters.writes} bản ghi (${counters.studentsCreated} học sinh mới, ${counters.parentsCreated} tài khoản PH mới) · bỏ qua ${unchanged} bản ghi không đổi.`, "success");
       state.sheetPreview = null;
       state.accountLookup = null;
       renderPage();

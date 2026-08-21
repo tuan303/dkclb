@@ -11,6 +11,7 @@ import { createMicrosoftAuth } from "./microsoft-auth.mjs";
 import { createGoogleCloudAuth } from "./google-cloud-auth.mjs";
 import { validatePasswordPolicy } from "./password-policy.mjs";
 import { toErrorResponse } from "./error-reporting.mjs";
+import { isUnchanged } from "./record-diff.mjs";
 import {
   MAX_IMPORT_ROWS,
   analyzeCatalogImport,
@@ -661,7 +662,11 @@ async function dashboardData() {
 async function syncGoogleDirectory(actorUserId) {
   const { snapshot, analysis, source } = await directorySource.loadForSync();
   const timestamp = nowIso();
-  const counters = { studentsCreated: 0, studentsUpdated: 0, parentsCreated: 0, parentsExisting: 0, linksCreated: 0, linksUpdated: 0 };
+  const counters = {
+    studentsCreated: 0, studentsUpdated: 0, studentsUnchanged: 0,
+    parentsCreated: 0, parentsUpdated: 0, parentsUnchanged: 0,
+    linksCreated: 0, linksUpdated: 0, linksUnchanged: 0, writes: 0,
+  };
   const studentIdsByCode = new Map();
 
   if (businessStore) {
@@ -671,12 +676,22 @@ async function syncGoogleDirectory(actorUserId) {
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const student of snapshot.students) {
-      const existing = db.prepare("SELECT id FROM students WHERE code = ?").get(student.code);
+      const existing = db.prepare(`SELECT id, name, date_of_birth AS dateOfBirth, grade, homeroom, level, status
+        FROM students WHERE code = ?`).get(student.code);
+      const data = {
+        name: student.name, dateOfBirth: student.dateOfBirth, grade: student.grade,
+        homeroom: student.className, level: student.educationLevel, status: "active",
+      };
       if (existing) {
+        studentIdsByCode.set(student.code, existing.id);
+        if (isUnchanged(existing, data)) {
+          counters.studentsUnchanged += 1;
+          continue;
+        }
         db.prepare(`UPDATE students SET name = ?, date_of_birth = ?, grade = ?, homeroom = ?, level = ?, status = 'active' WHERE id = ?`)
           .run(student.name, student.dateOfBirth, student.grade, student.className, student.educationLevel, existing.id);
-        studentIdsByCode.set(student.code, existing.id);
         counters.studentsUpdated += 1;
+        counters.writes += 1;
       } else {
         const studentId = id("hs");
         db.prepare(`INSERT INTO students (id, code, name, date_of_birth, grade, homeroom, level, status)
@@ -684,6 +699,7 @@ async function syncGoogleDirectory(actorUserId) {
           .run(studentId, student.code, student.name, student.dateOfBirth, student.grade, student.className, student.educationLevel);
         studentIdsByCode.set(student.code, studentId);
         counters.studentsCreated += 1;
+        counters.writes += 1;
       }
     }
 
@@ -699,9 +715,13 @@ async function syncGoogleDirectory(actorUserId) {
           .run(userId, guardian.account, guardian.displayName || "Phụ huynh học sinh", timestamp);
         user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
         counters.parentsCreated += 1;
+        counters.writes += 1;
+      } else if (asInt(user.active) === 1) {
+        counters.parentsUnchanged += 1;
       } else {
         db.prepare("UPDATE users SET active = 1 WHERE id = ?").run(user.id);
-        counters.parentsExisting += 1;
+        counters.parentsUpdated += 1;
+        counters.writes += 1;
       }
 
       for (const linkedStudent of guardian.students) {
@@ -709,12 +729,16 @@ async function syncGoogleDirectory(actorUserId) {
         if (!studentId) continue;
         const existingLink = db.prepare("SELECT relationship FROM parent_students WHERE parent_user_id = ? AND student_id = ?").get(user.id, studentId);
         const relationship = existingLink && existingLink.relationship !== linkedStudent.relationship ? "Bố/Mẹ" : linkedStudent.relationship;
-        if (existingLink) {
+        if (existingLink && isUnchanged(existingLink, { relationship })) {
+          counters.linksUnchanged += 1;
+        } else if (existingLink) {
           db.prepare("UPDATE parent_students SET relationship = ? WHERE parent_user_id = ? AND student_id = ?").run(relationship, user.id, studentId);
           counters.linksUpdated += 1;
+          counters.writes += 1;
         } else {
           db.prepare("INSERT INTO parent_students (parent_user_id, student_id, relationship) VALUES (?, ?, ?)").run(user.id, studentId, relationship);
           counters.linksCreated += 1;
+          counters.writes += 1;
         }
       }
     }
