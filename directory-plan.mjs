@@ -5,6 +5,7 @@
 // đều tính vào hạn ngạch, mà danh sách hàng nghìn học sinh thường chỉ đổi vài dòng.
 import { isUnchanged } from "./record-diff.mjs";
 import { generateActivationCode } from "./activation-code.mjs";
+import { checkSnapshotSanity } from "./directory-merge.mjs";
 
 function conflictError(message) {
   const error = new Error(message);
@@ -15,6 +16,7 @@ function conflictError(message) {
 export function emptyCounters() {
   return {
     studentsCreated: 0, studentsUpdated: 0, studentsUnchanged: 0,
+    studentsDeactivated: 0, studentsDeactivationSkipped: 0,
     parentsCreated: 0, parentsUpdated: 0, parentsUnchanged: 0,
     linksCreated: 0, linksUpdated: 0, linksUnchanged: 0, writes: 0,
   };
@@ -30,6 +32,10 @@ export function emptyCounters() {
 export function planDirectoryWrites({
   snapshot, students = [], users = [], links = [], timestamp, idFactory,
   codeFactory = generateActivationCode,
+  // Chỉ được đánh dấu nghỉ học khi TẤT CẢ nguồn đọc thành công. Một file lỗi mà
+  // vẫn xử lý thì cả cấp học đó biến mất khỏi ảnh chụp và bị vô hiệu hóa nhầm.
+  allSourcesLoaded = false,
+  maxShrinkRatio = 0.2,
 }) {
   const studentsByCode = new Map(students.map((student) => [student.code, student]));
   const usersByAccount = new Map(users.map((user) => [String(user.accountLower || user.account || "").toLowerCase(), user]));
@@ -103,6 +109,35 @@ export function planDirectoryWrites({
     }
   }
 
+  // Học sinh đang hoạt động nhưng không còn trong ảnh chụp: chuyển trường, nghỉ học.
+  // Không bao giờ xóa dữ liệu — đơn đăng ký và lịch sử vẫn phải giữ để đối soát.
+  const incomingCodes = new Set(snapshot.students.map((student) => student.code));
+  const activeExisting = students.filter((student) => student.status !== "inactive");
+  const missing = activeExisting.filter((student) => !incomingCodes.has(student.code));
+
+  if (!allSourcesLoaded) {
+    counters.studentsDeactivationSkipped = missing.length;
+  } else if (missing.length) {
+    checkSnapshotSanity({ incoming: snapshot.students.length, activeExisting: activeExisting.length, maxShrinkRatio });
+    for (const student of missing) {
+      writes.push({ collection: "students", id: student.id, data: { ...studentRecord(student), status: "inactive" } });
+      counters.studentsDeactivated += 1;
+    }
+  }
+
   counters.writes = writes.length;
-  return { writes, counters, studentIdsByCode };
+  return {
+    writes,
+    counters,
+    studentIdsByCode,
+    deactivated: missing.map((student) => ({ id: student.id, code: student.code })),
+  };
+}
+
+// Giữ nguyên các trường hiện có của học sinh khi chỉ đổi trạng thái sang nghỉ học.
+function studentRecord(student) {
+  return {
+    code: student.code, name: student.name, dateOfBirth: student.dateOfBirth,
+    grade: student.grade, homeroom: student.homeroom, level: student.level,
+  };
 }

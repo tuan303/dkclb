@@ -202,9 +202,15 @@ function quoteSheetName(name) {
 }
 
 export function createGoogleSheetsDirectorySource(config) {
+  const gid = String(config.sheetGid ?? "").trim();
   const normalizedConfig = {
+    key: String(config.key || "default").trim(),
+    label: String(config.label || "Danh sách học sinh").trim(),
     spreadsheetId: String(config.spreadsheetId || "").trim(),
     sheetName: String(config.sheetName || "").trim(),
+    // Link giáo vụ gửi chỉ có gid chứ không có tên tab, mà tên tab thì hay bị đổi.
+    // Trỏ theo gid thì đổi tên tab bao nhiêu lần cũng vẫn đọc đúng.
+    sheetGid: /^[0-9]+$/.test(gid) ? Number(gid) : null,
     headerRow: Number(config.headerRow || 1),
     serviceAccountEmail: String(config.serviceAccountEmail || "").trim(),
     accessToken: String(config.accessToken || "").trim(),
@@ -238,16 +244,34 @@ export function createGoogleSheetsDirectorySource(config) {
     });
   }
 
+  // Ưu tiên gid, rồi tới tên tab, cuối cùng là tab hiển thị đầu tiên. Mỗi file chỉ
+  // có một bảng danh sách nên lấy tab đầu là suy đoán an toàn khi chưa cấu hình gì.
+  function resolveTab(sheets) {
+    if (normalizedConfig.sheetGid !== null) {
+      const byGid = sheets.find((item) => Number(item.sheetId) === normalizedConfig.sheetGid);
+      if (byGid) return byGid;
+      throw integrationError(404, "SHEET_TAB_NOT_FOUND", `Không tìm thấy tab có gid ${normalizedConfig.sheetGid} trong file “${normalizedConfig.label}”.`);
+    }
+    if (normalizedConfig.sheetName) {
+      const byName = sheets.find((item) => item.title === normalizedConfig.sheetName && !item.hidden);
+      if (byName) return byName;
+      throw integrationError(404, "SHEET_TAB_NOT_FOUND", `Không tìm thấy tab hiển thị có tên chính xác “${normalizedConfig.sheetName}”.`);
+    }
+    const firstVisible = sheets.find((item) => !item.hidden);
+    if (firstVisible) return firstVisible;
+    throw integrationError(404, "SHEET_TAB_NOT_FOUND", `File “${normalizedConfig.label}” không có tab nào đang hiển thị.`);
+  }
+
   async function readDirectory(maxRows) {
     const spreadsheet = await metadata();
     const sheets = (spreadsheet.sheets || []).map((item) => item.properties);
-    const target = sheets.find((item) => item.title === normalizedConfig.sheetName && !item.hidden);
-    if (!target) throw integrationError(404, "SHEET_TAB_NOT_FOUND", `Không tìm thấy tab hiển thị có tên chính xác “${normalizedConfig.sheetName}”.`);
+    const target = resolveTab(sheets);
+    const tabName = target.title;
     const columnCount = Math.min(Number(target.gridProperties?.columnCount || 26), MAX_COLUMNS);
     const rowCount = Number(target.gridProperties?.rowCount || normalizedConfig.headerRow + maxRows);
     const endRow = Math.min(rowCount, normalizedConfig.headerRow + maxRows);
     const lastColumn = columnName(columnCount);
-    const headerRange = `${quoteSheetName(normalizedConfig.sheetName)}!A${normalizedConfig.headerRow}:${lastColumn}${normalizedConfig.headerRow}`;
+    const headerRange = `${quoteSheetName(tabName)}!A${normalizedConfig.headerRow}:${lastColumn}${normalizedConfig.headerRow}`;
     const headerPayload = await request({
       url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(normalizedConfig.spreadsheetId)}/values/${encodeURIComponent(headerRange)}`,
       params: { valueRenderOption: "FORMATTED_VALUE", majorDimension: "ROWS" },
@@ -258,7 +282,7 @@ export function createGoogleSheetsDirectorySource(config) {
     const chunkSize = Math.min(2_000, Math.max(1, Math.floor(40_000 / columnCount)));
     for (let startRow = normalizedConfig.headerRow + 1; startRow <= endRow; startRow += chunkSize) {
       const chunkEndRow = Math.min(endRow, startRow + chunkSize - 1);
-      const chunkRange = `${quoteSheetName(normalizedConfig.sheetName)}!A${startRow}:${lastColumn}${chunkEndRow}`;
+      const chunkRange = `${quoteSheetName(tabName)}!A${startRow}:${lastColumn}${chunkEndRow}`;
       const valuesPayload = await request({
         url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(normalizedConfig.spreadsheetId)}/values/${encodeURIComponent(chunkRange)}`,
         params: { valueRenderOption: "FORMATTED_VALUE", majorDimension: "ROWS" },
@@ -267,17 +291,24 @@ export function createGoogleSheetsDirectorySource(config) {
       while (chunkRows.length < chunkEndRow - startRow + 1) chunkRows.push([]);
       rows.push(...chunkRows);
     }
-    const range = `${quoteSheetName(normalizedConfig.sheetName)}!A${normalizedConfig.headerRow}:${lastColumn}${endRow}`;
+    const range = `${quoteSheetName(tabName)}!A${normalizedConfig.headerRow}:${lastColumn}${endRow}`;
     const analysis = missing.length ? null : analyzeDirectoryRows(rows, mapping, normalizedConfig.headerRow + 1);
     return { spreadsheet, target, rowCount, columnCount, range, headers, mapping, missing, rows, analysis };
   }
 
   return {
+    key: normalizedConfig.key,
+    label: normalizedConfig.label,
+
     getStatus() {
       return {
-        configured: Boolean(normalizedConfig.spreadsheetId && normalizedConfig.sheetName && normalizedConfig.headerRow > 0),
+        key: normalizedConfig.key,
+        label: normalizedConfig.label,
+        // Chỉ cần biết file nào; tab thì tự dò theo gid hoặc lấy tab hiển thị đầu tiên.
+        configured: Boolean(normalizedConfig.spreadsheetId && normalizedConfig.headerRow > 0),
         spreadsheetId: normalizedConfig.spreadsheetId,
         sheetName: normalizedConfig.sheetName,
+        sheetGid: normalizedConfig.sheetGid,
         headerRow: normalizedConfig.headerRow,
         serviceAccountEmail: normalizedConfig.serviceAccountEmail,
         accessMode: "read-only",
@@ -288,6 +319,8 @@ export function createGoogleSheetsDirectorySource(config) {
     async preview() {
       const { spreadsheet, target, rowCount, columnCount, range, headers, mapping, missing, analysis } = await readDirectory(PREVIEW_ROWS);
       return {
+        key: normalizedConfig.key,
+        label: normalizedConfig.label,
         spreadsheet: { id: spreadsheet.spreadsheetId, title: spreadsheet.properties?.title || "", sheetId: target.sheetId },
         source: { sheetName: target.title, headerRow: normalizedConfig.headerRow, rowCount, columnCount: Number(target.gridProperties?.columnCount || 0), inspectedRange: range },
         headers,
@@ -308,9 +341,15 @@ export function createGoogleSheetsDirectorySource(config) {
         throw integrationError(422, "SHEETS_SYNC_LIMIT", `Sheet vượt giới hạn ${MAX_SYNC_ROWS} dòng cho một lần đồng bộ an toàn.`);
       }
       return {
+        key: normalizedConfig.key,
+        label: normalizedConfig.label,
         snapshot: buildDirectorySnapshot(result.rows, result.mapping),
         analysis: result.analysis,
-        source: { spreadsheetId: normalizedConfig.spreadsheetId, sheetName: normalizedConfig.sheetName, inspectedRange: result.range },
+        source: {
+          key: normalizedConfig.key, label: normalizedConfig.label,
+          spreadsheetId: normalizedConfig.spreadsheetId, sheetName: result.target.title,
+          sheetId: result.target.sheetId, inspectedRange: result.range,
+        },
       };
     },
   };
