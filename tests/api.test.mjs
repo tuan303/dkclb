@@ -102,6 +102,9 @@ test("admin sees dashboard and can confirm payment", async () => {
   const integrationResponse = await request("/api/admin/integrations/google-sheets", cookie);
   assert.equal(integrationResponse.status, 200);
   const integration = (await integrationResponse.json()).integration;
-  assert.equal(integration.sheetName, "dshs26-27");
+  // Danh sách học sinh đọc từ ba file Google Sheet, mỗi cấp học một file.
+  assert.equal(integration.sourceCount, 3);
+  assert.deepEqual(integration.sources.map((source) => source.label), ["Tiểu học", "THCS", "THPT"]);
+  assert.ok(integration.sources.every((source) => source.configured));
   assert.equal(integration.accessMode, "read-only");
 });

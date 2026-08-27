@@ -486,15 +486,16 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         });
       },
 
-      async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis }) {
+      async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded }) {
         const [studentSnapshot, userSnapshot, linkSnapshot] = await Promise.all([students.get(), users.get(), parentStudents.get()]);
-        const { writes, counters } = planDirectoryWrites({
+        const { writes, counters, deactivated } = planDirectoryWrites({
           snapshot,
           students: snapshotRows(studentSnapshot),
           users: snapshotRows(userSnapshot),
           links: snapshotRows(linkSnapshot),
           timestamp,
           idFactory,
+          allSourcesLoaded,
         });
         await bulkCommitDocuments(writes.map((write) => ({
           path: `${write.collection}/${write.id}`, options: { merge: true }, data: write.data,
@@ -502,9 +503,9 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         const syncId = idFactory("sync");
         await auditLogs.doc(`audit_${randomBytes(8).toString("hex")}`).set({
           actorUserId, action: "SYNC_STUDENT_DIRECTORY", entityType: "google_sheet", entityId: syncId,
-          after: { source: { spreadsheetId: source.spreadsheetId, sheetName: source.sheetName }, counters, scannedRows: analysis.scannedRows }, createdAt: timestamp,
+          after: { source, counters, scannedRows: analysis.scannedRows }, createdAt: timestamp,
         });
-        return { syncId, counters, scannedRows: analysis.scannedRows };
+        return { syncId, counters, scannedRows: analysis.scannedRows, deactivated };
       },
     };
   } catch (error) {

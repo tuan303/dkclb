@@ -740,7 +740,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
 
     /* ---------- Đồng bộ danh bạ và xuất dữ liệu ---------- */
 
-    async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis }) {
+    async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded }) {
       const [studentRows, userRows, links] = await Promise.all([
         query("SELECT id, code, name, date_of_birth, grade, homeroom, level, status FROM students"),
         query("SELECT id, account, role, active FROM users"),
@@ -762,6 +762,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         links,
         timestamp,
         idFactory,
+        allSourcesLoaded,
       });
 
       await withTransaction(async (connection) => {
@@ -804,16 +805,13 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         const syncId = idFactory("sync");
         await insertAudit(connection, {
           actorUserId, action: "SYNC_STUDENT_DIRECTORY", entityType: "google_sheet", entityId: syncId,
-          after: {
-            source: { spreadsheetId: source.spreadsheetId, sheetName: source.sheetName },
-            counters: plan.counters, scannedRows: analysis.scannedRows,
-          },
+          after: { source, counters: plan.counters, scannedRows: analysis.scannedRows },
           createdAt: timestamp,
         });
         plan.syncId = syncId;
       });
 
-      return { syncId: plan.syncId, counters: plan.counters, scannedRows: analysis.scannedRows };
+      return { syncId: plan.syncId, counters: plan.counters, scannedRows: analysis.scannedRows, deactivated: plan.deactivated };
     },
 
     async exportCollection(name, { after = null, limit = 500 } = {}) {

@@ -115,6 +115,7 @@ export function planDirectoryWrites({
   const activeExisting = students.filter((student) => student.status !== "inactive");
   const missing = activeExisting.filter((student) => !incomingCodes.has(student.code));
 
+  let deactivated = [];
   if (!allSourcesLoaded) {
     counters.studentsDeactivationSkipped = missing.length;
   } else if (missing.length) {
@@ -123,6 +124,7 @@ export function planDirectoryWrites({
       writes.push({ collection: "students", id: student.id, data: { ...studentRecord(student), status: "inactive" } });
       counters.studentsDeactivated += 1;
     }
+    deactivated = missing.map((student) => ({ id: student.id, code: student.code }));
   }
 
   counters.writes = writes.length;
@@ -130,7 +132,8 @@ export function planDirectoryWrites({
     writes,
     counters,
     studentIdsByCode,
-    deactivated: missing.map((student) => ({ id: student.id, code: student.code })),
+    deactivated,
+    deactivationSkipped: allSourcesLoaded ? [] : missing.map((student) => ({ id: student.id, code: student.code })),
   };
 }
 

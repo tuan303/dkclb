@@ -6,7 +6,9 @@ import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { createGoogleSheetsDirectorySource, toVietnameseLocalPhone } from "./sheets-directory.mjs";
+import { toVietnameseLocalPhone } from "./sheets-directory.mjs";
+import { createMultiSourceDirectory, parseDirectorySources } from "./directory-sources.mjs";
+import { planDirectoryWrites } from "./directory-plan.mjs";
 import { createMicrosoftAuth } from "./microsoft-auth.mjs";
 import { createGoogleCloudAuth } from "./google-cloud-auth.mjs";
 import { validatePasswordPolicy } from "./password-policy.mjs";
@@ -31,9 +33,6 @@ const HOST = process.env.HOST || "127.0.0.1";
 const DB_FILE = process.env.DATA_FILE || join(ROOT, "data", "nshm-clubs.sqlite");
 const DATA_BACKEND = String(process.env.DATA_BACKEND || "sqlite").toLowerCase();
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "dkclb-2626f";
-const SHEETS_SPREADSHEET_ID = process.env.GOOGLE_SHEETS_SPREADSHEET_ID || "1YUCh0_U8ASCf4nVMZ_dXj9EAkEGq9ghpHggiYVT1zeM";
-const SHEETS_TAB_NAME = process.env.GOOGLE_SHEETS_TAB || "dshs26-27";
-const SHEETS_HEADER_ROW = Number(process.env.GOOGLE_SHEETS_HEADER_ROW || 1);
 const SHEETS_SERVICE_ACCOUNT = process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT || "nshm-sheet-reader@dkclb-2626f.iam.gserviceaccount.com";
 const MICROSOFT_REDIRECT_URI = process.env.MICROSOFT_REDIRECT_URI || `http://127.0.0.1:${PORT}/api/auth/microsoft/callback`;
 const SESSION_COOKIE = "nshm_session";
@@ -57,13 +56,15 @@ const googleCloudAuth = createGoogleCloudAuth({
   providerId: process.env.GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID,
   serviceAccountEmail: process.env.GCP_SERVICE_ACCOUNT_EMAIL || SHEETS_SERVICE_ACCOUNT,
 });
-const directorySource = createGoogleSheetsDirectorySource({
-  spreadsheetId: SHEETS_SPREADSHEET_ID,
-  sheetName: SHEETS_TAB_NAME,
-  headerRow: SHEETS_HEADER_ROW,
-  serviceAccountEmail: SHEETS_SERVICE_ACCOUNT,
-  accessToken: process.env.GOOGLE_SHEETS_ACCESS_TOKEN,
-  authClientFactory: DATA_BACKEND === "firestore" ? googleCloudAuth.getClient : undefined,
+// Danh sách học sinh nằm ở ba file Google Sheet riêng theo cấp học, mỗi bộ phận
+// giáo vụ giữ file của mình. Đọc cả ba rồi gộp lại; xem directory-sources.mjs.
+const directorySource = createMultiSourceDirectory({
+  configs: parseDirectorySources(process.env),
+  credentials: {
+    serviceAccountEmail: SHEETS_SERVICE_ACCOUNT,
+    accessToken: process.env.GOOGLE_SHEETS_ACCESS_TOKEN,
+    authClientFactory: DATA_BACKEND === "firestore" ? googleCloudAuth.getClient : undefined,
+  },
 });
 const microsoftAuth = createMicrosoftAuth({
   tenantId: process.env.MICROSOFT_TENANT_ID,
@@ -709,96 +710,74 @@ async function dashboardData() {
 }
 
 async function syncGoogleDirectory(actorUserId) {
-  const { snapshot, analysis, source } = await directorySource.loadForSync();
+  const loaded = await directorySource.loadForSync();
   const timestamp = nowIso();
-  const counters = {
-    studentsCreated: 0, studentsUpdated: 0, studentsUnchanged: 0,
-    parentsCreated: 0, parentsUpdated: 0, parentsUnchanged: 0,
-    linksCreated: 0, linksUpdated: 0, linksUnchanged: 0, writes: 0,
+  const context = {
+    snapshot: loaded.snapshot, actorUserId, timestamp, idFactory: id,
+    source: loaded.source, analysis: loaded.analysis, allSourcesLoaded: loaded.allSourcesLoaded,
   };
-  const studentIdsByCode = new Map();
+  const result = businessStore ? await businessStore.syncDirectory(context) : syncDirectoryLocal(context);
+  // Kết quả từng file được trả về nguyên vẹn để màn hình quản trị chỉ đúng file
+  // đang hỏng, thay vì chỉ báo chung chung là "đồng bộ lỗi".
+  return {
+    ...result,
+    sources: loaded.sources,
+    duplicates: loaded.duplicates,
+    allSourcesLoaded: loaded.allSourcesLoaded,
+  };
+}
 
-  if (businessStore) {
-    return businessStore.syncDirectory({ snapshot, actorUserId, timestamp, idFactory: id, source, analysis });
-  }
+// Nhánh SQLite dùng chung bộ lập kế hoạch với MySQL và Firestore, để ba nền lưu
+// trữ hành xử y hệt nhau — nhất là ở quy tắc đánh dấu nghỉ học.
+function syncDirectoryLocal({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded }) {
+  const plan = planDirectoryWrites({
+    snapshot,
+    students: db.prepare("SELECT id, code, name, date_of_birth AS dateOfBirth, grade, homeroom, level, status FROM students").all(),
+    users: db.prepare("SELECT id, account, lower(account) AS accountLower, role, active FROM users").all()
+      .map((row) => ({ ...row, active: asInt(row.active) === 1 })),
+    links: db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students").all(),
+    timestamp, idFactory, allSourcesLoaded,
+  });
 
   db.exec("BEGIN IMMEDIATE");
   try {
-    for (const student of snapshot.students) {
-      const existing = db.prepare(`SELECT id, name, date_of_birth AS dateOfBirth, grade, homeroom, level, status
-        FROM students WHERE code = ?`).get(student.code);
-      const data = {
-        name: student.name, dateOfBirth: student.dateOfBirth, grade: student.grade,
-        homeroom: student.className, level: student.educationLevel, status: "active",
-      };
-      if (existing) {
-        studentIdsByCode.set(student.code, existing.id);
-        if (isUnchanged(existing, data)) {
-          counters.studentsUnchanged += 1;
+    for (const write of plan.writes) {
+      const data = write.data;
+      if (write.collection === "students") {
+        db.prepare(`INSERT INTO students (id, code, name, date_of_birth, grade, homeroom, level, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET code = excluded.code, name = excluded.name,
+            date_of_birth = excluded.date_of_birth, grade = excluded.grade,
+            homeroom = excluded.homeroom, level = excluded.level, status = excluded.status`)
+          .run(write.id, data.code, data.name, data.dateOfBirth, data.grade, data.homeroom, data.level, data.status);
+      } else if (write.collection === "users") {
+        // Bản ghi chỉ có accountLower/active là lệnh bật lại tài khoản đang tắt.
+        if (!data.account) {
+          db.prepare("UPDATE users SET active = 1 WHERE id = ?").run(write.id);
           continue;
         }
-        db.prepare(`UPDATE students SET name = ?, date_of_birth = ?, grade = ?, homeroom = ?, level = ?, status = 'active' WHERE id = ?`)
-          .run(student.name, student.dateOfBirth, student.grade, student.className, student.educationLevel, existing.id);
-        counters.studentsUpdated += 1;
-        counters.writes += 1;
-      } else {
-        const studentId = id("hs");
-        db.prepare(`INSERT INTO students (id, code, name, date_of_birth, grade, homeroom, level, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`)
-          .run(studentId, student.code, student.name, student.dateOfBirth, student.grade, student.className, student.educationLevel);
-        studentIdsByCode.set(student.code, studentId);
-        counters.studentsCreated += 1;
-        counters.writes += 1;
-      }
-    }
-
-    for (const guardian of snapshot.guardians) {
-      let user = db.prepare("SELECT * FROM users WHERE lower(account) = lower(?)").get(guardian.account);
-      if (user && user.role !== "parent") throw httpError(409, "ACCOUNT_ROLE_CONFLICT", "Có SĐT phụ huynh trùng với một tài khoản vai trò khác; cần IT xử lý thủ công.");
-      if (!user) {
-        const userId = id("u_parent");
-        // Chưa có mật khẩu riêng: để trống salt/hash, đăng nhập lần đầu bằng mã kích hoạt.
+        // Chưa có mật khẩu riêng: salt/hash để trống, lần đầu đăng nhập bằng mã kích hoạt.
         db.prepare(`INSERT INTO users
           (id, account, display_name, role, password_salt, password_hash, activation_code,
-            auth_provider, must_change_password, active, created_at)
-          VALUES (?, ?, ?, 'parent', '', '', ?, 'local', 1, 1, ?)`)
-          .run(userId, guardian.account, guardian.displayName || "Phụ huynh học sinh", generateActivationCode(), timestamp);
-        user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
-        counters.parentsCreated += 1;
-        counters.writes += 1;
-      } else if (asInt(user.active) === 1) {
-        counters.parentsUnchanged += 1;
-      } else {
-        db.prepare("UPDATE users SET active = 1 WHERE id = ?").run(user.id);
-        counters.parentsUpdated += 1;
-        counters.writes += 1;
-      }
-
-      for (const linkedStudent of guardian.students) {
-        const studentId = studentIdsByCode.get(linkedStudent.studentCode);
-        if (!studentId) continue;
-        const existingLink = db.prepare("SELECT relationship FROM parent_students WHERE parent_user_id = ? AND student_id = ?").get(user.id, studentId);
-        const relationship = existingLink && existingLink.relationship !== linkedStudent.relationship ? "Bố/Mẹ" : linkedStudent.relationship;
-        if (existingLink && isUnchanged(existingLink, { relationship })) {
-          counters.linksUnchanged += 1;
-        } else if (existingLink) {
-          db.prepare("UPDATE parent_students SET relationship = ? WHERE parent_user_id = ? AND student_id = ?").run(relationship, user.id, studentId);
-          counters.linksUpdated += 1;
-          counters.writes += 1;
-        } else {
-          db.prepare("INSERT INTO parent_students (parent_user_id, student_id, relationship) VALUES (?, ?, ?)").run(user.id, studentId, relationship);
-          counters.linksCreated += 1;
-          counters.writes += 1;
-        }
+            auth_provider, must_change_password, login_failures, locked_until, active, created_at)
+          VALUES (?, ?, ?, ?, '', '', ?, ?, ?, 0, NULL, 1, ?)
+          ON CONFLICT(id) DO UPDATE SET active = 1`)
+          .run(write.id, data.account, data.displayName, data.role, data.activationCode,
+            data.authProvider || "local", data.mustChangePassword ? 1 : 0, data.createdAt);
+      } else if (write.collection === "parentStudents") {
+        db.prepare(`INSERT INTO parent_students (parent_user_id, student_id, relationship) VALUES (?, ?, ?)
+          ON CONFLICT(parent_user_id, student_id) DO UPDATE SET relationship = excluded.relationship`)
+          .run(data.parentUserId, data.studentId, data.relationship);
       }
     }
 
-    const syncId = id("sync");
+    const syncId = idFactory("sync");
     db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, created_at)
       VALUES (?, ?, 'SYNC_STUDENT_DIRECTORY', 'google_sheet', ?, ?, ?)`)
-      .run(id("audit"), actorUserId, syncId, JSON.stringify({ source: { spreadsheetId: source.spreadsheetId, sheetName: source.sheetName }, counters, scannedRows: analysis.scannedRows }), timestamp);
+      .run(idFactory("audit"), actorUserId, syncId,
+        JSON.stringify({ source, counters: plan.counters, scannedRows: analysis.scannedRows }), timestamp);
     db.exec("COMMIT");
-    return { syncId, counters, scannedRows: analysis.scannedRows };
+    return { syncId, counters: plan.counters, scannedRows: analysis.scannedRows, deactivated: plan.deactivated };
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
