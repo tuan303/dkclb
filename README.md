@@ -59,7 +59,7 @@ npm run check
 | Phụ huynh | `0901234567` | `123456` |
 | Nhà trường | `admin@nshm.edu.vn` | `Admin@123` |
 
-Các tài khoản này chỉ dùng cho demo. Luồng production dùng mật khẩu khởi tạo một lần cho phụ huynh và Microsoft 365 SSO cho nhà trường.
+Các tài khoản này chỉ dùng cho demo. Luồng production dùng mã kích hoạt dùng một lần cho phụ huynh và Microsoft 365 SSO cho nhà trường.
 
 ## Cấu hình Microsoft 365
 
@@ -131,29 +131,67 @@ File `.xlsx` được đọc ngay trong trình duyệt (không tải file lên m
 
 ## Kết nối Google Sheets
 
-Nguồn danh sách học sinh đã được cấu hình:
+Danh sách học sinh nằm ở **ba file riêng theo cấp học**, mỗi bộ phận giáo vụ giữ file của mình:
 
-- Spreadsheet ID: `1YUCh0_U8ASCf4nVMZ_dXj9EAkEGq9ghpHggiYVT1zeM`
-- Tab: `dshs26-27`
-- Dòng tiêu đề: `1`
-- Service account: `nshm-sheet-reader@dkclb-2626f.iam.gserviceaccount.com`
+| Cấp học | Spreadsheet ID | Tab |
+| --- | --- | --- |
+| Tiểu học | `1h4UXgj7HXNEU6Gm1sTrEC-oZlJQC5Mc4i8QZjtSd38o` | gid `0` |
+| THCS | `1dO1Y8wc3-XpeyrHCzblyCZ6jJKj40OpwAO2Bj6tirUo` | gid `0` |
+| THPT | `1aGSuLq9sgbHDDn8KCABnTKlXQnsRZkLGUYaQ9jua5Ps` | gid `804479104` |
 
-Trong cổng Nhà trường, mở **Cấu hình & phân quyền → Google Sheets → Kiểm tra kết nối**. Backend dùng scope `spreadsheets.readonly`, đọc metadata trước rồi đọc phạm vi giới hạn tối đa 100 dòng để xác nhận mapping. Khi kiểm tra hợp lệ, nút **Đồng bộ học sinh & tài khoản PH** sẽ xuất hiện. Đồng bộ chỉ thêm/cập nhật dữ liệu hệ thống, không sửa Google Sheet và không tự xóa tài khoản cũ.
+Service account: `nshm-sheet-reader@dkclb-2626f.iam.gserviceaccount.com` — cần được share **Viewer** trên cả ba file.
 
-Tài khoản PH mới được tạo theo quy tắc `912345678` → `0912345678`; mật khẩu khởi tạo cũng là `0912345678` và phải đổi ngay lần đầu. Các lần đồng bộ sau không đặt lại mật khẩu đã đổi.
+Tab được trỏ theo **gid** chứ không theo tên, vì tên tab hay bị đổi trong lúc dùng còn gid thì không đổi. Nếu không khai gid lẫn tên tab, hệ thống lấy tab hiển thị đầu tiên.
 
-Tài khoản vừa đồng bộ **không lưu mật khẩu**: mật khẩu khởi tạo đúng bằng số điện thoại, mà số này chính là tên tài khoản nên không phải bí mật. Băm nó không bảo vệ thêm được gì trong khi băm vài nghìn tài khoản đủ làm một lần đồng bộ vượt trần thời gian chạy hàm. Ngay khi phụ huynh đặt mật khẩu riêng, hệ thống lưu hash `scrypt` và lối đăng nhập bằng số điện thoại tắt hẳn cho tài khoản đó.
+### Vì sao phải gộp ba file rồi mới đối chiếu
 
-Biến môi trường có thể thay đổi nguồn mà không sửa code:
+Em lớp 5 sang năm nằm ở file THCS và biến mất khỏi file Tiểu học. Nếu đồng bộ từng file rời rạc và coi "vắng mặt trong file này = nghỉ học", em đó sẽ bị vô hiệu hóa rồi tạo lại thành một người mới, mất hết liên kết phụ huynh và lịch sử đăng ký. Vì vậy hệ thống đọc cả ba file, gộp thành **một ảnh chụp duy nhất**, rồi mới so với cơ sở dữ liệu. Một phụ huynh có con ở hai cấp cũng được gộp về một tài khoản với đủ hai con.
+
+### Ba lá chắn khi đánh dấu nghỉ học
+
+Đánh dấu nghỉ học là thao tác nguy hiểm nhất trong toàn bộ luồng đồng bộ, nên có ba lớp chặn:
+
+1. **Chỉ đánh dấu khi cả ba file đều đọc được.** Một file mất quyền chia sẻ hoặc đổi gid thì lần đồng bộ đó bỏ qua hoàn toàn phần nghỉ học và đếm riêng số em bị bỏ qua — hai file còn lại vẫn cập nhật bình thường.
+2. **Danh sách tụt bất thường thì dừng hẳn** (`DIRECTORY_SNAPSHOT_SHRANK`, HTTP 409). Phải vượt **cả** ngưỡng tỉ lệ 20% **lẫn** 10 học sinh mới coi là sự cố: chỉ xét tỉ lệ thì nhóm nhỏ bị chặn oan mỗi lần đồng bộ, chỉ xét số lượng thì trường lớn mất cả trăm em vẫn lọt.
+3. **Không bao giờ xóa bản ghi.** Học sinh nghỉ chỉ đổi `status` sang `inactive`; đơn đăng ký và lịch sử vẫn còn để đối soát.
+
+Mã học sinh trùng giữa hai file được báo rõ (giữ bản gặp trước) chứ không ghi đè im lặng.
+
+### Tự đồng bộ và theo dõi
+
+Máy chủ tự chạy đồng bộ mỗi **15 phút**. Bấm tay trong lúc lịch đang chạy thì cùng chờ lượt đó, không mở thêm một lượt ghi song song.
+
+Màn hình **Cấu hình & phân quyền → Google Sheets** hiện từng file kèm trạng thái đọc, tình trạng đồng bộ và kết quả lần chạy gần nhất. Trạng thái chuyển sang **quá hạn** khi đã quá ba chu kỳ không có lần nào thành công — bắt được cả trường hợp tác vụ nền chết mà không ném ra lỗi nào. Đây chính là thứ giữ cho một sự cố đồng bộ không nằm im hàng tuần.
+
+Nút **Kiểm tra kết nối** chỉ đọc metadata, tiêu đề và tối đa 100 dòng mỗi file; không ghi và không sửa Google Sheet.
+
+### Tài khoản phụ huynh sinh ra từ đồng bộ
+
+Tài khoản PH mới lấy số điện thoại làm tên đăng nhập theo quy tắc `912345678` → `0912345678`, và nhận một **mã kích hoạt dùng một lần** thay cho mật khẩu đầu tiên (xem mục mã kích hoạt bên dưới). Các lần đồng bộ sau không đặt lại mật khẩu đã đổi.
+
+### Biến môi trường
 
 ```text
-GOOGLE_SHEETS_SPREADSHEET_ID
-GOOGLE_SHEETS_TAB
-GOOGLE_SHEETS_HEADER_ROW
-GOOGLE_SHEETS_SERVICE_ACCOUNT
+GOOGLE_SHEETS_SOURCES           # JSON, ghi đè toàn bộ danh sách nguồn
+GOOGLE_SHEETS_SERVICE_ACCOUNT   # email service account hiển thị trên giao diện
+SHEETS_SYNC_INTERVAL_MINUTES    # chu kỳ tự đồng bộ, đặt 0 để tắt
 ```
 
-Để nút kiểm tra đọc được Sheet, service account phải được share Viewer và runtime phải nhận danh tính ngắn hạn. Production đổi Vercel OIDC token thành access token Google qua Workload Identity Federation; không dùng khóa JSON dài hạn.
+`GOOGLE_SHEETS_SOURCES` nhận nguyên đường dẫn dán từ thanh địa chỉ, không phải tự bóc mã file:
+
+```json
+[
+  { "key": "tieuhoc", "label": "Tiểu học", "url": "https://docs.google.com/spreadsheets/d/…/edit?gid=0#gid=0" },
+  { "key": "thcs", "label": "THCS", "url": "https://docs.google.com/spreadsheets/d/…/edit?gid=0#gid=0" },
+  { "key": "thpt", "label": "THPT", "url": "https://docs.google.com/spreadsheets/d/…/edit?gid=804479104", "headerRow": 1 }
+]
+```
+
+Cấu hình một file kiểu cũ (`GOOGLE_SHEETS_SPREADSHEET_ID` + `GOOGLE_SHEETS_TAB` + `GOOGLE_SHEETS_HEADER_ROW`) vẫn chạy được và sẽ được hiểu là một nguồn duy nhất.
+
+Trên Vercel lịch tự đồng bộ không bật, vì mỗi request là một tiến trình riêng nên bộ hẹn giờ trong tiến trình không có tác dụng.
+
+Để nút kiểm tra đọc được, service account phải được share Viewer trên **cả ba file** và runtime phải nhận danh tính ngắn hạn. Production đổi Vercel OIDC token thành access token Google qua Workload Identity Federation; không dùng khóa JSON dài hạn.
 
 Trên máy phát triển, phương án an toàn là cài Google Cloud CLI rồi dùng service-account impersonation với credential ngắn hạn:
 
@@ -373,9 +411,9 @@ Cổng Nhà trường → **Cấu hình & phân quyền → Tra cứu tài kho�
 
 1. **Hệ thống đã có bao nhiêu tài khoản phụ huynh và lần đồng bộ gần nhất là khi nào.** Nếu hiện `Chưa từng chạy` thì chưa có tài khoản phụ huynh nào — cần chạy đồng bộ từ Google Sheets trước.
 2. **Số này đã có tài khoản chưa.** Chưa có thường là do số chưa nằm trong Sheet, nằm ở cột không được nhận diện, hoặc được thêm vào Sheet sau lần đồng bộ gần nhất. Chạy lại đồng bộ là đủ.
-3. **Nếu đã có tài khoản** thì đang ở trạng thái nào: còn dùng mật khẩu khởi tạo (chính là số điện thoại), đã đổi mật khẩu riêng, đang bị tạm khóa 15 phút do sai 5 lần, hay đã bị tắt. Kèm danh sách học sinh đã liên kết.
+3. **Nếu đã có tài khoản** thì đang ở trạng thái nào: chưa dùng mã kích hoạt (màn hình hiện luôn mã đó dạng `ABCD-EFGH` để đọc lại cho phụ huynh), đã đổi mật khẩu riêng, đang bị tạm khóa 15 phút do sai 5 lần, hay đã bị tắt. Kèm danh sách học sinh đã liên kết.
 
-Khi phụ huynh quên mật khẩu, bấm **Đặt lại về mật khẩu khởi tạo**: mật khẩu trở lại chính là số điện thoại, khóa tạm được gỡ, và phụ huynh bắt buộc đổi mật khẩu ngay lần đăng nhập kế tiếp. Quản trị không tự đặt mật khẩu và hệ thống không bao giờ hiển thị mật khẩu hiện tại. Thao tác ghi audit log kèm người thực hiện.
+Khi phụ huynh quên mật khẩu, bấm **Cấp mã kích hoạt mới**: hệ thống sinh một mã dùng một lần, xóa mật khẩu cũ, gỡ khóa tạm, và phụ huynh bắt buộc đặt mật khẩu riêng ngay lần đăng nhập kế tiếp. Mã cũ hết hiệu lực ngay. Quản trị không tự đặt mật khẩu và hệ thống không bao giờ hiển thị mật khẩu hiện tại. Thao tác ghi audit log kèm người thực hiện, nhưng **không ghi mã** vì nhật ký nằm trong bản sao lưu xuất ra ngoài.
 
 ## Khi sửa tệp trong `public/`
 

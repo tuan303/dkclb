@@ -42,12 +42,15 @@ flowchart LR
 | `tests/api.test.mjs` | Kiểm thử tích hợp trên CSDL tạm độc lập |
 | `tests/catalog-api.test.mjs` | Kiểm thử tích hợp quản trị danh mục và nhập hàng loạt |
 | `tests/catalog-schema.test.mjs` | Kiểm thử chuẩn hóa dữ liệu danh mục, độc lập với CSDL |
-| `tests/account-support.test.mjs` | Kiểm thử tra cứu tài khoản và đặt lại mật khẩu khởi tạo |
+| `tests/account-support.test.mjs` | Kiểm thử tra cứu tài khoản và cấp mã kích hoạt |
+| `tests/directory-merge.test.mjs` | Kiểm thử gộp ba file nguồn và quy tắc đánh dấu nghỉ học |
+| `tests/directory-sources.test.mjs` | Kiểm thử cấu hình nguồn và hành vi khi một file lỗi |
+| `tests/sync-scheduler.test.mjs` | Kiểm thử lịch tự đồng bộ và cách lỗi nền lộ ra |
 
 ## 3. Bảo mật đang có
 
 - Mật khẩu do người dùng đặt được băm bằng `scrypt` với salt riêng.
-- Tài khoản phụ huynh vừa đồng bộ không lưu salt/hash: mật khẩu khởi tạo đúng bằng số điện thoại, vốn chính là tên tài khoản nên không phải bí mật, và được so sánh bằng `timingSafeEqual`. Nhánh này chỉ áp dụng khi tài khoản chưa có hash; đặt mật khẩu riêng là nhánh đó tắt hẳn, có kiểm thử chặn hồi quy.
+- Tài khoản phụ huynh vừa đồng bộ không lưu salt/hash mà giữ một **mã kích hoạt dùng một lần** (8 ký tự ngẫu nhiên, bỏ `0/O` và `1/I/L`), so sánh bằng `timingSafeEqual`. Không dùng số điện thoại làm mật khẩu đầu tiên vì số điện thoại chính là tên tài khoản, ai biết số của một phụ huynh cũng vào xem được hồ sơ con họ. Nhánh mã kích hoạt chỉ áp dụng khi tài khoản chưa có hash; đặt mật khẩu riêng là nhánh đó tắt hẳn, có kiểm thử chặn hồi quy.
 - Phiên dùng token ngẫu nhiên 256 bit; Production chỉ lưu SHA-256 của token trong Firestore.
 - Cookie phiên có `HttpOnly`, `Secure`, `SameSite=Lax` và thời hạn 8 giờ ở Production.
 - Kiểm tra vai trò và phạm vi học sinh được thực hiện ở API.
@@ -61,8 +64,16 @@ flowchart LR
 - Đồng bộ danh bạ chỉ ghi bản ghi thực sự thay đổi. Phần quyết định nằm ở `directory-plan.mjs` và được kiểm thử độc lập, trong đó có tính chất quan trọng nhất: đồng bộ lại một danh sách không đổi thì số lượt ghi bằng 0.
 - Chuyển trạng thái phí tạo audit log trước/sau.
 - Mọi thay đổi đợt, CLB và lớp đều ghi audit log kèm giá trị trước/sau; nhập hàng loạt ghi log số bản ghi tạo mới và cập nhật.
-- Tra cứu tài khoản hỗ trợ chỉ trả trạng thái (đang hoạt động, còn mật khẩu khởi tạo, số lần sai, thời điểm hết khóa) và không bao giờ trả salt hay hash.
-- Đặt lại mật khẩu chỉ đưa tài khoản phụ huynh về đúng trạng thái mà đồng bộ tạo ra: mật khẩu là số điện thoại và bắt buộc đổi ngay lần đăng nhập kế tiếp. Quản trị không tự chọn mật khẩu; thao tác ghi audit log kèm lý do.
+- Tra cứu tài khoản hỗ trợ chỉ trả trạng thái (đang hoạt động, chưa dùng mã kích hoạt, số lần sai, thời điểm hết khóa) và không bao giờ trả salt hay hash.
+- Cấp mã kích hoạt mới đưa tài khoản phụ huynh về đúng trạng thái mà đồng bộ tạo ra: một mã dùng một lần, bắt buộc đặt mật khẩu riêng ngay lần đăng nhập kế tiếp, mã cũ hết hiệu lực. Quản trị không tự chọn mật khẩu; thao tác ghi audit log kèm lý do nhưng không ghi mã.
+
+## 3b. Đồng bộ từ nhiều nguồn
+
+- Danh sách học sinh nằm ở ba file Google Sheet theo cấp học. `directory-sources.mjs` đọc song song, giữ nguyên kết quả từng file kể cả khi lỗi; `directory-merge.mjs` gộp thành một ảnh chụp duy nhất trước khi đối chiếu.
+- Gộp trước rồi mới đối chiếu là bắt buộc: học sinh lên cấp sẽ chuyển sang file khác, xử lý từng file rời rạc sẽ vô hiệu hóa rồi tạo lại em đó thành một người mới, mất liên kết phụ huynh và lịch sử đăng ký.
+- Đánh dấu nghỉ học chỉ chạy khi **tất cả** nguồn đọc được, và dừng hẳn khi danh sách tụt quá cả ngưỡng tỉ lệ 20% lẫn 10 học sinh. Không bao giờ xóa bản ghi, chỉ đổi `status` sang `inactive`.
+- Cả ba nền lưu trữ (SQLite, MySQL, Firestore) đi qua cùng một bộ lập kế hoạch `directory-plan.mjs`, nên quy tắc trên không thể lệch giữa các nền.
+- `sync-scheduler.mjs` chạy đồng bộ mỗi 15 phút, một lượt tại một thời điểm, và chuyển sang trạng thái "quá hạn" khi quá lâu không có lần nào thành công — để một sự cố nền không nằm im.
 
 ## 4. Quy tắc đăng ký
 
@@ -122,7 +133,7 @@ Trước khi dùng dữ liệu thật nên thực hiện:
 
 1. Bổ sung OTP/MFA cho phụ huynh; Microsoft 365 SSO đã dùng Authorization Code + PKCE, tenant/domain và federated client assertion.
 2. Duy trì Workload Identity Federation, không tạo khóa JSON hoặc Client Secret dài hạn.
-3. Thay mật khẩu khởi tạo PH bằng OTP; áp dụng MFA Conditional Access và Entra group/app role cho nhân sự.
+3. Thay mã kích hoạt PH bằng OTP; áp dụng MFA Conditional Access và Entra group/app role cho nhân sự.
 4. Thêm CSRF protection nếu mở rộng các kiểu xác thực/cross-origin.
 5. Áp dụng rate limit, reverse proxy HTTPS, WAF và centralized logging.
 6. CRUD đợt/CLB/lớp đã có; còn thiếu CRUD tài khoản, maker-checker cho hoàn/chuyển phí và quyền theo scope.

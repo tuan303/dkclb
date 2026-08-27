@@ -108,7 +108,7 @@ syncIssues/{issueId}
 
 ## 8. Đăng nhập người dùng
 
-- Phụ huynh: tài khoản là SĐT trong nước đã thêm `0`. Theo yêu cầu vận hành, mật khẩu khởi tạo bằng chính tài khoản nhưng chỉ dùng **một lần**; bắt buộc đổi sang mật khẩu riêng tối thiểu 8 ký tự, có chữ hoa, chữ thường, số và ký tự đặc biệt trước khi truy cập dữ liệu học sinh. Khóa tạm sau 5 lần sai. Giai đoạn tiếp theo nên thay mật khẩu khởi tạo bằng OTP có chống bot/rate limit.
+- Phụ huynh: tài khoản là SĐT trong nước đã thêm `0`. Mật khẩu đầu tiên là một **mã kích hoạt ngẫu nhiên dùng một lần**, nhà trường in và phát trực tiếp — không dùng chính số điện thoại, vì số đó cũng là tên tài khoản nên ai biết số của một phụ huynh cũng vào xem được hồ sơ con họ. Bắt buộc đổi sang mật khẩu riêng tối thiểu 8 ký tự, có chữ hoa, chữ thường, số và ký tự đặc biệt trước khi truy cập dữ liệu học sinh. Khóa tạm sau 5 lần sai. Giai đoạn tiếp theo có thể thay mã kích hoạt bằng OTP có chống bot/rate limit.
 - Nhà trường: dùng Microsoft 365 Authorization Code Flow + PKCE. Backend chỉ chấp nhận token đúng tenant Entra ID và tên miền `@hoangmaistarschool.edu.vn`; phân quyền nghiệp vụ vẫn phải ánh xạ theo nhóm/app role, không suy ra chỉ từ email.
 - Backend chỉ cấp quyền xem học sinh sau khi phiên đăng nhập đã được xác minh và `guardianStudentLinks` đang hoạt động.
 
@@ -120,5 +120,5 @@ syncIssues/{issueId}
 4. Xác nhận dữ liệu chỉ đọc một chiều hay cần ghi trạng thái từ hệ thống về Sheet.
 5. Tần suất đồng bộ mong muốn: thủ công, theo giờ hay gần thời gian thực.
 6. Tài khoản Google Cloud/Workspace nào có quyền tạo service account và chia sẻ file.
-7. Nhà cung cấp OTP cho giai đoạn thay thế mật khẩu khởi tạo và nhóm/app role Entra ID dùng để phân quyền nhân sự.
+7. Nhà cung cấp OTP cho giai đoạn thay thế mã kích hoạt và nhóm/app role Entra ID dùng để phân quyền nhân sự.
 8. Yêu cầu lưu trú dữ liệu, thời hạn lưu, backup và người được phép xem dữ liệu nhạy cảm.
