@@ -201,6 +201,44 @@ function quoteSheetName(name) {
   return `'${String(name).replaceAll("'", "''")}'`;
 }
 
+// Google Sheets API thỉnh thoảng trả 503/500 hoặc 429 trong vài giây rồi tự khỏi —
+// đã gặp thật khi khảo sát file của trường. Không thử lại thì một trục trặc thoáng qua
+// bị ghi thành "nguồn lỗi", và vì lỗi một nguồn khiến cả lần đồng bộ bỏ qua phần đánh
+// dấu nghỉ học, danh sách sẽ đứng yên cho tới lần chạy sau.
+//
+// Chỉ thử lại những lỗi có thể tự khỏi. 401/403/404 là sai cấu hình hoặc sai quyền:
+// thử lại chỉ làm chậm và che mất nguyên nhân thật.
+const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+export function isRetryableSheetsError(error) {
+  const status = Number(error?.response?.status || 0);
+  if (status) return RETRYABLE_STATUSES.has(status);
+  // Không có mã HTTP nghĩa là hỏng ở tầng mạng (đứt kết nối, hết thời gian chờ, DNS).
+  return /ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EPIPE|socket hang up|network/i.test(
+    String(error?.code || error?.message || ""),
+  );
+}
+
+export async function withRetry(task, { attempts = 4, baseDelayMs = 500, sleep = defaultSleep } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await task(attempt);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts || !isRetryableSheetsError(error)) throw error;
+      // Giãn theo cấp số nhân, cộng nhiễu ngẫu nhiên để ba tab không cùng gõ lại một nhịp.
+      const delay = baseDelayMs * 2 ** (attempt - 1);
+      await sleep(delay + Math.floor(Math.random() * baseDelayMs));
+    }
+  }
+  throw lastError;
+}
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function createGoogleSheetsDirectorySource(config) {
   const gid = String(config.sheetGid ?? "").trim();
   const normalizedConfig = {
@@ -216,21 +254,28 @@ export function createGoogleSheetsDirectorySource(config) {
     accessToken: String(config.accessToken || "").trim(),
   };
   const authClientFactory = typeof config.authClientFactory === "function" ? config.authClientFactory : null;
+  const retryOptions = { attempts: 4, baseDelayMs: 500, ...(config.retry || {}) };
   const auth = new GoogleAuth({ scopes: [READONLY_SCOPE] });
   const tokenClient = normalizedConfig.accessToken ? new OAuth2Client() : null;
   if (tokenClient) tokenClient.setCredentials({ access_token: normalizedConfig.accessToken });
 
   async function request(options) {
     try {
-      const client = tokenClient || (authClientFactory ? await authClientFactory() : await auth.getClient());
-      const response = await client.request(options);
-      return response.data;
+      return await withRetry(async () => {
+        const client = tokenClient || (authClientFactory ? await authClientFactory() : await auth.getClient());
+        const response = await client.request(options);
+        return response.data;
+      }, retryOptions);
     } catch (error) {
       const status = Number(error.response?.status || error.code || 0);
       if (status === 403) throw integrationError(503, "SHEETS_ACCESS_DENIED", "Service account chưa có quyền Viewer trên Sheet hoặc Google Sheets API chưa được bật.", error);
       if (status === 404) throw integrationError(404, "SHEETS_NOT_FOUND", "Không tìm thấy Google Sheet hoặc tab dữ liệu được cấu hình.", error);
       if (/credential|default credentials|Could not load/i.test(String(error.message))) {
         throw integrationError(503, "GOOGLE_ADC_REQUIRED", "Backend chưa có Application Default Credentials. Hãy chạy bằng service account trên Cloud Run hoặc cấu hình ADC an toàn cho môi trường phát triển.", error);
+      }
+      if (isRetryableSheetsError(error)) {
+        throw integrationError(503, "SHEETS_TEMPORARILY_UNAVAILABLE",
+          `Google Sheets tạm thời không phản hồi (${status || "lỗi mạng"}) sau ${retryOptions.attempts} lần thử. Đây là sự cố thoáng qua phía Google, lần đồng bộ theo lịch kế tiếp sẽ tự thử lại.`, error);
       }
       throw integrationError(503, "SHEETS_CONNECTION_FAILED", "Không thể kết nối Google Sheets API. Vui lòng kiểm tra API, quyền Viewer và danh tính runtime.", error);
     }
