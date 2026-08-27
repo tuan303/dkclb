@@ -8,6 +8,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { DatabaseSync } from "node:sqlite";
 import { toVietnameseLocalPhone } from "./sheets-directory.mjs";
 import { createMultiSourceDirectory, parseDirectorySources } from "./directory-sources.mjs";
+import { DEFAULT_SYNC_INTERVAL_MS, createSyncScheduler } from "./sync-scheduler.mjs";
 import { planDirectoryWrites } from "./directory-plan.mjs";
 import { createMicrosoftAuth } from "./microsoft-auth.mjs";
 import { createGoogleCloudAuth } from "./google-cloud-auth.mjs";
@@ -66,6 +67,23 @@ const directorySource = createMultiSourceDirectory({
     authClientFactory: DATA_BACKEND === "firestore" ? googleCloudAuth.getClient : undefined,
   },
 });
+// Chu kỳ tự đồng bộ. Đặt SHEETS_SYNC_INTERVAL_MINUTES=0 để tắt hẳn.
+// Trên Vercel mỗi request là một tiến trình riêng nên hẹn giờ trong tiến trình
+// không có tác dụng; lịch chỉ bật khi tự vận hành trên máy chủ của trường.
+const SYNC_INTERVAL_MS = process.env.SHEETS_SYNC_INTERVAL_MINUTES === undefined
+  ? DEFAULT_SYNC_INTERVAL_MS
+  : Math.max(0, Number(process.env.SHEETS_SYNC_INTERVAL_MINUTES) || 0) * 60 * 1000;
+const SYNC_SCHEDULE_ENABLED = SYNC_INTERVAL_MS > 0 && !process.env.VERCEL;
+
+const syncScheduler = createSyncScheduler({
+  intervalMs: SYNC_INTERVAL_MS || DEFAULT_SYNC_INTERVAL_MS,
+  // Lần chạy theo lịch không có người bấm nên nhật ký không gắn actor nào.
+  run: ({ actorUserId = null }) => syncGoogleDirectory(actorUserId),
+  onEvent(event) {
+    if (event.type === "loi") console.error(`[dong-bo] ${event.trigger}: ${event.run.error.message}`);
+  },
+});
+
 const microsoftAuth = createMicrosoftAuth({
   tenantId: process.env.MICROSOFT_TENANT_ID,
   clientId: process.env.MICROSOFT_CLIENT_ID,
@@ -1618,7 +1636,7 @@ async function handleApi(req, res, url) {
 
   if (method === "GET" && url.pathname === "/api/admin/integrations/google-sheets") {
     await requireUser(req, "admin");
-    return sendJson(res, 200, { integration: directorySource.getStatus() });
+    return sendJson(res, 200, { integration: { ...directorySource.getStatus(), schedule: syncScheduler.getStatus() } });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/integrations/google-sheets/preview") {
@@ -1630,9 +1648,10 @@ async function handleApi(req, res, url) {
     const user = await requireUser(req, "admin");
     const { confirmation = "" } = await readJson(req);
     if (confirmation !== "SYNC_STUDENT_DIRECTORY") throw httpError(422, "SYNC_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đồng bộ danh bạ học sinh.");
-    // Báo lại thời gian chạy để còn biết lần đồng bộ có đang tiến sát trần thời gian của hàm hay không.
+    // Đi qua bộ hẹn giờ để lượt bấm tay không chồng lên lượt chạy theo lịch:
+    // hai lượt ghi song song lên cùng bảng học sinh là chuyện phải tránh.
     const startedAt = Date.now();
-    const result = await syncGoogleDirectory(user.id);
+    const result = await syncScheduler.runNow("thu-cong", { actorUserId: user.id });
     return sendJson(res, 200, { result: { ...result, elapsedMs: Date.now() - startedAt } });
   }
 
@@ -1831,6 +1850,10 @@ export function createAppServer() {
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const server = createAppServer();
+  if (SYNC_SCHEDULE_ENABLED) {
+    syncScheduler.start();
+    console.log(`Tự đồng bộ danh sách học sinh mỗi ${Math.round(SYNC_INTERVAL_MS / 60000)} phút.`);
+  }
   // PORT=0 để hệ điều hành cấp cổng trống; in ra cổng thật để bộ kiểm thử bám vào.
   server.listen(PORT, HOST, () => console.log(`NSHM Clubs running at http://${HOST}:${server.address().port}`));
 }

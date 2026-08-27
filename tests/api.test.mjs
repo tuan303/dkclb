@@ -107,4 +107,9 @@ test("admin sees dashboard and can confirm payment", async () => {
   assert.deepEqual(integration.sources.map((source) => source.label), ["Tiểu học", "THCS", "THPT"]);
   assert.ok(integration.sources.every((source) => source.configured));
   assert.equal(integration.accessMode, "read-only");
+  // Tình hình lịch tự đồng bộ phải lộ ra để lỗi nền không nằm im.
+  assert.equal(integration.schedule.health, "chua-chay");
+  assert.equal(integration.schedule.healthy, false);
+  assert.equal(integration.schedule.running, false);
+  assert.equal(integration.schedule.intervalMs, 15 * 60 * 1000);
 });

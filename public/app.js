@@ -1483,30 +1483,102 @@ function renderStructure() {
   <section class="section panel"><div class="panel-head"><div><h3>Luồng dữ liệu chính</h3><p>Từ cấu hình đến danh sách vận hành</p></div></div><div class="panel-body"><div class="flow-line">${flowNodes(["Cấu hình đợt & CLB","PH chọn học sinh","Kiểm tra quy tắc","Tạo đơn & đối soát","Xử lý ngoại lệ","Khóa & xuất danh sách"])}</div></div></section>`;
 }
 
+const SHEET_FIELD_LABELS = {
+  studentCode: "Mã học sinh", studentName: "Họ tên", dateOfBirth: "Ngày sinh", className: "Lớp",
+  educationLevel: "Cấp học", gradeBand: "Khối", fatherName: "Tên bố", fatherPhone: "SĐT bố", motherName: "Tên mẹ", motherPhone: "SĐT mẹ",
+};
+
+const SYNC_HEALTH_LABELS = {
+  "chua-chay": ["badge-blue", "Chưa chạy lần nào"],
+  "tot": ["badge-green", "Bình thường"],
+  "thieu-nguon": ["badge-gold", "Đọc thiếu file"],
+  "loi": ["badge-red", "Lỗi"],
+  "qua-han": ["badge-red", "Quá hạn"],
+};
+
+// Lỗi đồng bộ nền phải nhìn thấy ngay trên màn hình cấu hình. Giáo vụ thêm học
+// sinh mà việc đồng bộ chết lặng lẽ thì phụ huynh không đăng ký được, và không
+// ai truy ra được nguyên nhân.
+function renderSyncSchedule(schedule) {
+  if (!schedule) return "";
+  const [tone, label] = SYNC_HEALTH_LABELS[schedule.health] || SYNC_HEALTH_LABELS["chua-chay"];
+  const last = schedule.lastRun;
+  const counters = last?.counters;
+  const summary = counters
+    ? `${counters.writes} bản ghi · ${counters.studentsCreated} HS mới · ${counters.studentsDeactivated ?? 0} HS nghỉ học`
+    : last?.error ? escapeHtml(last.error.message)
+    : "—";
+  const failed = (last?.sources || []).filter((source) => source.ok === false);
+  const alert = failed.length
+    ? `Không đọc được: ${failed.map((source) => `${escapeHtml(source.label)} — ${escapeHtml(source.error || "lỗi không rõ")}`).join(" · ")}. Trong lúc chưa khắc phục, hệ thống <b>không đánh dấu học sinh nghỉ học</b> để tránh vô hiệu hóa nhầm cả một cấp.`
+    : last?.error ? escapeHtml(last.error.message)
+    : schedule.health === "qua-han" ? `Đã ${Math.round((schedule.msSinceLastSuccess || 0) / 60000)} phút không có lần đồng bộ nào thành công.`
+    : "Chưa có lần đồng bộ nào thành công.";
+
+  return `${schedule.healthy ? "" : `<div class="inline-alert">${icon("clock")}<span><b>${label}.</b> ${alert}</span></div>`}
+    <div class="integration-source">
+      <div><span>Tình trạng đồng bộ</span><strong><span class="badge ${tone}">${label}</span></strong></div>
+      <div><span>Lần chạy gần nhất</span><strong>${last ? `${formatDateTime(new Date(last.finishedAt))} · ${last.trigger === "thu-cong" ? "bấm tay" : "theo lịch"}` : "Chưa chạy"}</strong></div>
+      <div><span>Kết quả gần nhất</span><strong>${summary}</strong></div>
+      <div><span>Lịch tự động</span><strong>${schedule.enabled ? `Mỗi ${Math.round(schedule.intervalMs / 60000)} phút` : "Đã tắt · chỉ chạy khi bấm tay"}</strong></div>
+    </div>`;
+}
+
+// Mỗi file nguồn một thẻ, kèm kết quả lần kiểm tra kết nối gần nhất.
+function renderSheetSources(sources = [], probes = []) {
+  const byKey = new Map((probes || []).map((item) => [item.key, item]));
+  return `<div class="integration-source">${sources.map((source) => {
+    const probe = byKey.get(source.key);
+    // Badge là viên pill không xuống dòng nên chỉ để nhãn ngắn; nguyên văn lỗi
+    // xuống dòng riêng để đọc được hết.
+    const badge = !probe ? ""
+      : probe.ok ? `<strong><span class="badge badge-green">Đọc được</span></strong>`
+      : `<strong><span class="badge badge-red">Không đọc được</span></strong><strong style="color:#b23a4c;font-weight:600">${escapeHtml(probe.error || "")}</strong>`;
+    const tab = source.sheetGid === null || source.sheetGid === undefined
+      ? escapeHtml(source.sheetName || "tab hiển thị đầu tiên")
+      : `gid ${escapeHtml(String(source.sheetGid))}`;
+    return `<div><span>${escapeHtml(source.label || source.key)}</span><strong>${escapeHtml(source.spreadsheetId || "—")}</strong><strong>${tab} · tiêu đề dòng ${Number(source.headerRow || 1)}</strong>${badge}</div>`;
+  }).join("")}</div>`;
+}
+
+function renderSheetPreviewSource(source) {
+  if (!source.ok) {
+    return `<div class="info-note"><strong>${escapeHtml(source.label)}:</strong> ${escapeHtml(source.error || "Không đọc được file.")}</div>`;
+  }
+  const analysis = source.analysis || {};
+  return `<div class="info-note"><strong>${escapeHtml(source.label)}</strong> · ${escapeHtml(source.spreadsheet?.title || "")} → ${escapeHtml(source.source?.sheetName || "")}</div>
+    <div class="kpi-strip">
+      <div class="kpi-item"><span>Dòng đã kiểm tra</span><strong>${analysis.scannedRows ?? 0}</strong></div>
+      <div class="kpi-item"><span>Dòng hợp lệ</span><strong>${analysis.validRows ?? 0}</strong></div>
+      <div class="kpi-item"><span>Lỗi / cảnh báo</span><strong>${analysis.invalidRows ?? 0} / ${analysis.warningRows ?? 0}</strong></div>
+      <div class="kpi-item"><span>Phụ huynh duy nhất</span><strong>${analysis.uniqueGuardians ?? 0}</strong></div>
+    </div>
+    <div class="mapping-list">${Object.entries(source.mapping || {}).map(([field, header]) => `<span><b>${escapeHtml(SHEET_FIELD_LABELS[field] || field)}</b>${escapeHtml(header)}</span>`).join("")}</div>
+    ${source.missing?.length ? `<div class="inline-alert">Thiếu cột bắt buộc: ${source.missing.map(escapeHtml).join(", ")}.</div>` : ""}
+    ${analysis.issues?.length ? `<div class="info-note"><strong>Cần rà soát:</strong> ${analysis.issues.slice(0, 8).map((issue) => `Dòng ${issue.row} (${issue.severity === "warning" ? "cảnh báo" : "lỗi"}): ${issue.codes.map(escapeHtml).join(", ")}`).join(" · ")}</div>` : ""}`;
+}
+
+function renderSheetPreview(preview) {
+  if (!preview) {
+    return `<div class="info-note"><strong>Chế độ an toàn:</strong> Nút kiểm tra chỉ đọc metadata, tiêu đề và tối đa 100 dòng của từng file; không ghi hoặc sửa Google Sheet.</div>`;
+  }
+  return `<div class="sync-preview">
+    ${(preview.sources || []).map(renderSheetPreviewSource).join("")}
+    <div class="sync-verdict ${preview.readyToSync ? "ready" : "blocked"}">${preview.readyToSync
+      ? "✓ Tất cả file đọc được, cột và dữ liệu mẫu hợp lệ. Có thể đồng bộ vào hệ thống."
+      : "Chưa cho phép ghi dữ liệu: cần xử lý cột thiếu hoặc lỗi ở các file nêu bên trên."}</div>
+    ${preview.readyToSync ? `<div class="sync-actions"><button class="button button-primary" data-sync-sheets>Đồng bộ học sinh & tài khoản PH</button><span>Chỉ thêm/cập nhật và đánh dấu nghỉ học; không xóa dữ liệu và không sửa Google Sheet.</span></div>` : ""}
+  </div>`;
+}
+
 function renderSettings() {
   const integration = state.sheetIntegration || {};
   const preview = state.sheetPreview;
-  const fieldLabels = {
-    studentCode: "Mã học sinh", studentName: "Họ tên", dateOfBirth: "Ngày sinh", className: "Lớp",
-    educationLevel: "Cấp học", gradeBand: "Khối", fatherName: "Tên bố", fatherPhone: "SĐT bố", motherName: "Tên mẹ", motherPhone: "SĐT mẹ",
-  };
-  const previewHtml = preview ? `<div class="sync-preview">
-    <div class="kpi-strip">
-      <div class="kpi-item"><span>Dòng đã kiểm tra</span><strong>${preview.analysis?.scannedRows ?? 0}</strong></div>
-      <div class="kpi-item"><span>Dòng hợp lệ</span><strong>${preview.analysis?.validRows ?? 0}</strong></div>
-      <div class="kpi-item"><span>Lỗi / cảnh báo</span><strong>${preview.analysis?.invalidRows ?? 0} / ${preview.analysis?.warningRows ?? 0}</strong></div>
-      <div class="kpi-item"><span>Phụ huynh duy nhất</span><strong>${preview.analysis?.uniqueGuardians ?? 0}</strong></div>
-    </div>
-    <div class="mapping-list">${Object.entries(preview.mapping || {}).map(([field, header]) => `<span><b>${escapeHtml(fieldLabels[field] || field)}</b>${escapeHtml(header)}</span>`).join("")}</div>
-    ${preview.missing?.length ? `<div class="inline-alert">Thiếu mapping bắt buộc: ${preview.missing.map(escapeHtml).join(", ")}.</div>` : ""}
-    ${preview.analysis?.issues?.length ? `<div class="info-note"><strong>Cần rà soát:</strong> ${preview.analysis.issues.slice(0, 8).map((issue) => `Dòng ${issue.row} (${issue.severity === "warning" ? "cảnh báo" : "lỗi"}): ${issue.codes.map(escapeHtml).join(", ")}`).join(" · ")}</div>` : ""}
-    <div class="sync-verdict ${preview.readyToSync ? "ready" : "blocked"}">${preview.readyToSync ? "✓ Mapping và dữ liệu mẫu hợp lệ. Có thể đồng bộ tài khoản vào hệ thống." : "Chưa cho phép ghi dữ liệu: cần xử lý mapping hoặc lỗi nguồn trước."}</div>
-    ${preview.readyToSync ? `<div class="sync-actions"><button class="button button-primary" data-sync-sheets>Đồng bộ học sinh & tài khoản PH</button><span>Chỉ thêm/cập nhật; không xóa tài khoản và không sửa Google Sheet.</span></div>` : ""}
-  </div>` : `<div class="info-note"><strong>Chế độ an toàn:</strong> Nút kiểm tra chỉ đọc metadata, tiêu đề và tối đa 100 dòng; không ghi hoặc sửa Google Sheet.</div>`;
   return `<section class="grid grid-3">${renderModuleCard("01","Người dùng & vai trò","8 nhóm vai trò với phạm vi xem/thao tác khác nhau.",["Phụ huynh","Vận hành/Giáo vụ/Kế toán","GV/BGH/IT Admin"])}${renderModuleCard("02","Quy tắc nghiệp vụ","Cấu hình giới hạn CLB, waitlist, thời hạn đổi/hủy.",["Không hard-code theo năm","Ghi log mọi ngoại lệ"])}${renderModuleCard("03","Tích hợp","Kết nối dữ liệu học sinh, OTP, thông báo và kế toán.",["Google Sheets chỉ đọc","Mã hóa trước khi ghi Firestore"])}</section>
-  <section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets</h3><p>Application Default Credentials · scope chỉ đọc</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
-    <div class="integration-source"><div><span>Spreadsheet ID</span><strong>${escapeHtml(integration.spreadsheetId || "—")}</strong></div><div><span>Tab / tiêu đề</span><strong>${escapeHtml(integration.sheetName || "—")} · dòng ${Number(integration.headerRow || 1)}</strong></div><div><span>Service account</span><strong>${escapeHtml(integration.serviceAccountEmail || "—")}</strong></div><div><span>Quyền</span><strong>Viewer · Read-only</strong></div></div>
-    ${previewHtml}
+  <section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets · ${Number(integration.sourceCount || 0)} file theo cấp học</h3><p>${escapeHtml(integration.serviceAccountEmail || "—")} · quyền Viewer, chỉ đọc</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
+    ${renderSyncSchedule(integration.schedule)}
+    ${renderSheetSources(integration.sources, preview?.sources)}
+    ${renderSheetPreview(preview)}
   </div></section>
   ${renderAccountSupport()}
   <section class="section panel"><div class="panel-head"><div><h3>Ma trận quyền tóm tắt</h3><p>Ví dụ phạm vi thao tác theo vai trò</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Vai trò</th><th>Xem hồ sơ</th><th>Cấu hình CLB</th><th>Xử lý đơn</th><th>Xác nhận phí</th><th>Xuất dữ liệu</th></tr></thead><tbody><tr><td>Phụ huynh</td><td>Chỉ con mình</td><td>—</td><td>Tạo/yêu cầu đổi</td><td>—</td><td>—</td></tr><tr><td>Vận hành CLB</td><td>Theo phạm vi đợt</td><td>Được phép</td><td>Được phép</td><td>Xem</td><td>Theo mẫu</td></tr><tr><td>Kế toán</td><td>Trường tối thiểu</td><td>—</td><td>Xem</td><td>Được phép</td><td>Báo cáo phí</td></tr><tr><td>Giáo viên</td><td>Lớp phụ trách</td><td>—</td><td>—</td><td>Trạng thái</td><td>DS lớp</td></tr><tr><td>IT Admin</td><td>Theo phân quyền</td><td>Hỗ trợ</td><td>Hỗ trợ</td><td>—</td><td>Audit kỹ thuật</td></tr></tbody></table></div></section>`;
@@ -1745,7 +1817,13 @@ function bindPageEvents() {
     try {
       state.sheetPreview = (await api("/admin/integrations/google-sheets/preview", { method: "POST", body: "{}" })).preview;
       renderPage();
-      toast(state.sheetPreview.readyToSync ? "Kết nối và mapping Google Sheet hợp lệ." : "Đã đọc Sheet; cần rà soát mapping hoặc dữ liệu nguồn.", state.sheetPreview.readyToSync ? "success" : "");
+      const failed = state.sheetPreview.failed || [];
+      toast(state.sheetPreview.readyToSync
+        ? "Đọc được toàn bộ file nguồn, cột dữ liệu hợp lệ."
+        : failed.length
+          ? `Không đọc được ${failed.length} file: ${failed.map((item) => item.label).join(", ")}.`
+          : "Đã đọc các file; cần rà soát cột hoặc dữ liệu nguồn.",
+        state.sheetPreview.readyToSync ? "success" : "error");
     } catch (error) {
       button.disabled = false;
       button.textContent = "Kiểm tra kết nối";
@@ -1753,7 +1831,7 @@ function bindPageEvents() {
     }
   });
   $("[data-sync-sheets]")?.addEventListener("click", async (event) => {
-    if (!window.confirm("Đồng bộ toàn bộ học sinh và tài khoản phụ huynh hợp lệ từ tab dshs26-27? Thao tác không sửa Google Sheet.")) return;
+    if (!window.confirm("Đồng bộ toàn bộ học sinh và tài khoản phụ huynh từ các file Google Sheet đã cấu hình?\n\nHọc sinh không còn trong danh sách sẽ được đánh dấu nghỉ học (giữ nguyên dữ liệu, không xóa). Thao tác không sửa Google Sheet.")) return;
     const button = event.currentTarget;
     button.disabled = true;
     button.textContent = "Đang đồng bộ, vui lòng đợi…";
@@ -1764,9 +1842,26 @@ function bindPageEvents() {
       });
       const counters = result.counters;
       const unchanged = counters.studentsUnchanged + counters.parentsUnchanged + counters.linksUnchanged;
-      toast(`Đồng bộ xong sau ${(result.elapsedMs / 1000).toFixed(0)} giây · ghi ${counters.writes} bản ghi (${counters.studentsCreated} học sinh mới, ${counters.parentsCreated} tài khoản PH mới) · bỏ qua ${unchanged} bản ghi không đổi.`, "success");
+      const parts = [
+        `Đồng bộ xong sau ${(result.elapsedMs / 1000).toFixed(0)} giây`,
+        `ghi ${counters.writes} bản ghi (${counters.studentsCreated} học sinh mới, ${counters.parentsCreated} tài khoản PH mới)`,
+        `bỏ qua ${unchanged} bản ghi không đổi`,
+      ];
+      if (counters.studentsDeactivated) parts.push(`đánh dấu nghỉ học ${counters.studentsDeactivated} em`);
+      // Đọc thiếu file thì phải nói rõ, vì lần đồng bộ đó cố tình không xử lý
+      // phần nghỉ học — im lặng sẽ khiến người dùng tưởng danh sách đã đủ.
+      if (result.allSourcesLoaded === false) {
+        const failed = (result.sources || []).filter((source) => !source.ok).map((source) => source.label);
+        parts.push(`CHƯA đọc được ${failed.join(", ")} nên tạm chưa xét học sinh nghỉ học`);
+      }
+      if (result.duplicates?.length) parts.push(`${result.duplicates.length} mã học sinh bị trùng giữa các file`);
+      toast(`${parts.join(" · ")}.`, result.allSourcesLoaded === false ? "error" : "success");
       state.sheetPreview = null;
       state.accountLookup = null;
+      // Nạp lại trạng thái tích hợp để bảng tình hình đồng bộ hiện kết quả vừa chạy.
+      try {
+        state.sheetIntegration = (await api("/admin/integrations/google-sheets")).integration;
+      } catch { /* không nạp được thì giữ nguyên bảng cũ, không chặn luồng */ }
       renderPage();
     } catch (error) {
       button.disabled = false;
