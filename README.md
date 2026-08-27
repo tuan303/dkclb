@@ -349,6 +349,24 @@ Lúc đó hệ thống trả về thông báo *"Cơ sở dữ liệu đã dùng 
 
 Đồng bộ chỉ ghi những bản ghi **thực sự thay đổi** so với dữ liệu đang có: chạy lại đúng một danh sách không đổi thì không tốn lượt ghi nào. Sau mỗi lần đồng bộ, hệ thống báo rõ đã ghi bao nhiêu bản ghi và bỏ qua bao nhiêu bản ghi không đổi, để theo dõi mức tiêu hạn ngạch.
 
+## Mã kích hoạt cho phụ huynh
+
+Tài khoản phụ huynh mới **không dùng số điện thoại làm mật khẩu đầu tiên** nữa. Số điện thoại không phải bí mật: ai biết số của một phụ huynh cũng đăng nhập được và xem hồ sơ con họ cho tới khi phụ huynh đó đổi mật khẩu.
+
+Thay vào đó mỗi tài khoản nhận một **mã kích hoạt dùng một lần**, 8 ký tự sinh ngẫu nhiên, in ra dạng `ABCD-EFGH`. Bảng chữ cái bỏ hẳn `0/O` và `1/I/L` để phụ huynh không đọc nhầm khi nhìn mã in trên giấy.
+
+### Phát mã cho phụ huynh
+
+Cổng Nhà trường → **Cấu hình & phân quyền → Cấp & in mã kích hoạt**. Hệ thống sinh mã cho những tài khoản chưa có và tải về một file CSV gồm số điện thoại, tên phụ huynh, danh sách con và mã. Nút này **chỉ sinh mã cho tài khoản chưa có mã**, nên bấm lại nhiều lần không làm hỏng những mã đã in và phát.
+
+File CSV chứa mã đăng nhập của phụ huynh: chỉ in và phát trực tiếp, không gửi qua kênh công khai. Mỗi lần lấy danh sách đều ghi vào nhật ký thao tác.
+
+Muốn cấp lại cho một phụ huynh cụ thể thì tra cứu số điện thoại rồi bấm **Cấp mã kích hoạt mới**; mã cũ hết hiệu lực ngay lập tức.
+
+### Vòng đời của mã
+
+Mã hết hiệu lực ngay khi phụ huynh đặt mật khẩu riêng — kiểm thử khóa chặt đúng điểm này. Ở nền MySQL mã được **lưu mã hóa chứ không băm**, vì nhà trường buộc phải đọc lại được để in; băm thì mất khả năng đó mà không bảo vệ thêm được gì khi toàn bộ trường nhạy cảm đã mã hóa. Mã **không bao giờ** được ghi vào nhật ký thao tác, vì nhật ký nằm trong bản sao lưu xuất ra ngoài.
+
 ## Phụ huynh không đăng nhập được
 
 Cổng Nhà trường → **Cấu hình & phân quyền → Tra cứu tài khoản phụ huynh**. Nhập số điện thoại rồi bấm Tra cứu. Màn hình trả lời ba câu hỏi cùng lúc:

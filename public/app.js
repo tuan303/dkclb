@@ -164,7 +164,7 @@ function showLogin(message = "") {
   $("#microsoft-login").classList.toggle("hidden", parent);
   $("#credential-box").classList.toggle("hidden", !parent || !state.demoAccounts);
   $("#login-intro").textContent = parent
-    ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường."
+    ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường. Lần đầu dùng mã kích hoạt nhà trường cấp."
     : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
   $("#login-error").textContent = message;
 }
@@ -1187,8 +1187,12 @@ function renderAccountSupport() {
     <div class="panel-body">
       <div class="grid grid-2">
         <label class="search-field">${icon("search")}<input id="account-lookup-input" value="${escapeHtml(state.accountLookupInput || "")}" placeholder="Số điện thoại phụ huynh, ví dụ 0975662437" /></label>
-        <div><button class="button button-secondary" data-lookup-account>Tra cứu</button></div>
+        <div class="club-actions">
+          <button class="button button-secondary" data-lookup-account>Tra cứu</button>
+          <button class="button button-primary" data-issue-codes>${icon("download")} Cấp &amp; in mã kích hoạt</button>
+        </div>
       </div>
+      <p class="field-hint">Nút cấp mã chỉ sinh mã cho tài khoản <b>chưa có mã</b>, nên bấm lại nhiều lần không làm hỏng những mã đã phát.</p>
       ${summary}
       ${detail}
     </div></section>`;
@@ -1211,26 +1215,67 @@ async function runAccountLookup(button) {
 }
 
 async function runPasswordReset(account, button) {
-  if (!window.confirm(`Đặt lại mật khẩu của ${account} về chính số điện thoại? Phụ huynh sẽ phải đổi mật khẩu ngay lần đăng nhập kế tiếp.`)) return;
+  if (!window.confirm(`Cấp mã kích hoạt mới cho ${account}?\n\nMã cũ sẽ hết hiệu lực ngay lập tức.`)) return;
   button.disabled = true;
-  button.textContent = "Đang đặt lại…";
+  button.textContent = "Đang cấp mã…";
   try {
-    await api("/admin/accounts/reset-initial-password", {
+    const { result } = await api("/admin/accounts/reset-initial-password", {
       method: "POST",
       body: JSON.stringify({ account, confirmation: "RESET_INITIAL_PASSWORD" }),
     });
     state.accountLookup = (await api(`/admin/accounts/lookup?account=${encodeURIComponent(account)}`)).lookup;
     renderPage();
-    toast(`Đã đặt lại. Mật khẩu tạm thời của ${account} chính là số điện thoại đó.`, "success");
+    toast(`Mã kích hoạt mới của ${account} là ${result.activationCode}.`, "success");
   } catch (error) {
     button.disabled = false;
-    button.textContent = "Đặt lại về mật khẩu khởi tạo";
+    button.textContent = "Cấp mã kích hoạt mới";
     toast(error.message, "error");
+  }
+}
+
+async function issueActivationCodes(button) {
+  const confirmed = window.confirm(
+    "Cấp mã kích hoạt cho các tài khoản phụ huynh chưa đặt mật khẩu, rồi tải danh sách về để in?\n\n"
+    + "Danh sách chứa số điện thoại và mã đăng nhập của phụ huynh. Chỉ in và phát trực tiếp, không gửi qua kênh công khai.",
+  );
+  if (!confirmed) return;
+  const original = button.innerHTML;
+  button.disabled = true;
+  button.textContent = "Đang cấp mã…";
+  try {
+    const { result } = await api("/admin/accounts/activation-codes", {
+      method: "POST",
+      body: JSON.stringify({ confirmation: "ISSUE_ACTIVATION_CODES" }),
+    });
+    if (!result.rows.length) {
+      toast("Không có tài khoản nào đang chờ kích hoạt.", "");
+      return;
+    }
+    const header = ["So dien thoai", "Ten phu huynh", "Hoc sinh", "Ma kich hoat"];
+    const csv = "\uFEFF" + [header, ...result.rows.map((row) => [row.account, row.displayName, row.students, row.activationCode])]
+      .map((line) => line.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(","))
+      .join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `NSHM_Ma_kich_hoat_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast(`${result.pending} tài khoản chờ kích hoạt, vừa cấp mới ${result.issued} mã. Đã tải danh sách để in.`, "success");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = original;
   }
 }
 
 function bindAccountSupportEvents() {
   $("[data-lookup-account]")?.addEventListener("click", (event) => runAccountLookup(event.currentTarget));
+  $("[data-issue-codes]")?.addEventListener("click", (event) => issueActivationCodes(event.currentTarget));
   $("#account-lookup-input")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -1271,7 +1316,7 @@ function renderBackupPanel() {
 // cho mọi người dùng khi chỉ quản trị mới xuất dữ liệu.
 let backupCryptoModule = null;
 async function loadBackupCrypto() {
-  if (!backupCryptoModule) backupCryptoModule = await import("./backup-crypto.mjs?v=20260821-4");
+  if (!backupCryptoModule) backupCryptoModule = await import("./backup-crypto.mjs?v=20260822-1");
   return backupCryptoModule;
 }
 
@@ -1616,7 +1661,7 @@ function bindLoginEvents() {
     $("#microsoft-login").classList.toggle("hidden", parent);
     $("#credential-box").classList.toggle("hidden", !parent || !state.demoAccounts);
     $("#login-intro").textContent = parent
-      ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường."
+      ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường. Lần đầu dùng mã kích hoạt nhà trường cấp."
       : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
     $("#login-account").value = "0901234567";
     $("#login-password").value = "123456";

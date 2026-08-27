@@ -12,6 +12,7 @@ import { createGoogleCloudAuth } from "./google-cloud-auth.mjs";
 import { validatePasswordPolicy } from "./password-policy.mjs";
 import { toErrorResponse } from "./error-reporting.mjs";
 import { loadMasterKey } from "./field-crypto.mjs";
+import { formatActivationCode, generateActivationCode, normalizeActivationCode } from "./activation-code.mjs";
 import { isUnchanged } from "./record-diff.mjs";
 import {
   MAX_IMPORT_ROWS,
@@ -107,13 +108,11 @@ function timingSafeEqualText(left, right) {
   return timingSafeEqual(a, b);
 }
 
-// Tài khoản vừa đồng bộ chưa có mật khẩu riêng: mật khẩu khởi tạo đúng bằng số
-// điện thoại, vốn chính là tên tài khoản nên không phải bí mật. Không băm chuỗi
-// này để việc đồng bộ hàng nghìn phụ huynh không vượt trần thời gian chạy hàm.
-// Ngay khi phụ huynh đặt mật khẩu riêng, hệ thống lưu hash scrypt và nhánh này
-// không còn được dùng nữa.
-function usesInitialPassword(user) {
-  return Boolean(user?.must_change_password) && !user?.password_hash;
+// Tài khoản vừa tạo chưa có mật khẩu riêng thì đăng nhập bằng mã kích hoạt dùng
+// một lần. Ngay khi phụ huynh đặt mật khẩu riêng, hệ thống lưu hash scrypt, xóa
+// mã kích hoạt, và nhánh này không còn được dùng cho tài khoản đó nữa.
+function usesActivationCode(user) {
+  return Boolean(user?.must_change_password) && !user?.password_hash && Boolean(user?.activation_code);
 }
 
 function ensureColumn(table, column, definition) {
@@ -263,6 +262,7 @@ function initializeDatabase() {
   ensureColumn("club_classes", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("registrations", "period_id", "TEXT");
   ensureColumn("club_classes", "grades_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn("users", "activation_code", "TEXT");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_microsoft_object_id ON users(microsoft_object_id) WHERE microsoft_object_id IS NOT NULL;");
 
   const count = asInt(db.prepare("SELECT COUNT(*) AS count FROM users").get().count);
@@ -757,11 +757,12 @@ async function syncGoogleDirectory(actorUserId) {
       if (user && user.role !== "parent") throw httpError(409, "ACCOUNT_ROLE_CONFLICT", "Có SĐT phụ huynh trùng với một tài khoản vai trò khác; cần IT xử lý thủ công.");
       if (!user) {
         const userId = id("u_parent");
-        // Chưa có mật khẩu riêng: để trống salt/hash, mật khẩu khởi tạo là chính số điện thoại.
+        // Chưa có mật khẩu riêng: để trống salt/hash, đăng nhập lần đầu bằng mã kích hoạt.
         db.prepare(`INSERT INTO users
-          (id, account, display_name, role, password_salt, password_hash, auth_provider, must_change_password, active, created_at)
-          VALUES (?, ?, ?, 'parent', '', '', 'local', 1, 1, ?)`)
-          .run(userId, guardian.account, guardian.displayName || "Phụ huynh học sinh", timestamp);
+          (id, account, display_name, role, password_salt, password_hash, activation_code,
+            auth_provider, must_change_password, active, created_at)
+          VALUES (?, ?, ?, 'parent', '', '', ?, 'local', 1, 1, ?)`)
+          .run(userId, guardian.account, guardian.displayName || "Phụ huynh học sinh", generateActivationCode(), timestamp);
         user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
         counters.parentsCreated += 1;
         counters.writes += 1;
@@ -1149,6 +1150,9 @@ async function lookupAccount(rawAccount) {
     authProvider: user.auth_provider,
     active: Boolean(user.active),
     mustChangePassword: Boolean(user.must_change_password),
+    // Chỉ trả mã khi tài khoản còn CHƯA kích hoạt: đã đặt mật khẩu riêng rồi thì
+    // không còn mã nào để đọc, và cũng không được phép đọc mật khẩu của phụ huynh.
+    activationCode: usesActivationCode(user) ? formatActivationCode(user.activation_code) : null,
     loginFailures: asInt(user.login_failures),
     lockedUntil: locked ? user.locked_until : null,
     createdAt: user.created_at,
@@ -1160,8 +1164,9 @@ async function lookupAccount(rawAccount) {
   else if (account.role !== "parent") diagnosis = "Số này đang gắn với tài khoản nhà trường, không đăng nhập được ở cổng Phụ huynh.";
   else if (account.authProvider !== "local") diagnosis = "Tài khoản này đăng nhập bằng Microsoft 365, không dùng mật khẩu riêng.";
   else if (locked) diagnosis = `Đang tạm khóa 15 phút do đăng nhập sai ${account.loginFailures} lần. Hết khóa lúc ${account.lockedUntil} (giờ UTC).`;
-  else if (account.mustChangePassword) diagnosis = `Tài khoản vẫn dùng mật khẩu khởi tạo, chính là số điện thoại: ${normalized}. Nhập đúng chuỗi này, không có dấu cách.`;
-  else diagnosis = "Phụ huynh đã đổi sang mật khẩu riêng. Nếu quên thì đặt lại về mật khẩu khởi tạo bằng nút bên dưới.";
+  else if (account.activationCode) diagnosis = `Tài khoản chưa kích hoạt. Mã kích hoạt hiện tại là ${account.activationCode}; phụ huynh nhập mã này rồi đặt mật khẩu riêng.`;
+  else if (account.mustChangePassword) diagnosis = "Tài khoản chưa kích hoạt nhưng không còn mã. Hãy cấp mã kích hoạt mới bằng nút bên dưới.";
+  else diagnosis = "Phụ huynh đã đổi sang mật khẩu riêng. Nếu quên thì cấp mã kích hoạt mới bằng nút bên dưới.";
   if (!students.length) diagnosis += " Lưu ý: tài khoản chưa liên kết học sinh nào nên sau khi vào sẽ không thấy con.";
 
   return { input, normalized, found: true, account, students, directory, diagnosis };
@@ -1180,22 +1185,25 @@ async function resetInitialPassword({ actorUserId, rawAccount }) {
   if (user.role !== "parent") throw httpError(409, "ACCOUNT_NOT_PARENT", "Chỉ đặt lại được mật khẩu của tài khoản phụ huynh.");
   if (user.auth_provider !== "local") throw httpError(409, "ACCOUNT_NOT_LOCAL", "Tài khoản này đăng nhập bằng Microsoft 365.");
 
-  // Đưa về đúng trạng thái sau đồng bộ: không lưu mật khẩu, đăng nhập bằng chính số điện thoại.
-  if (businessStore) await businessStore.resetToInitialPassword(user.id);
+  // Sinh mã mới mỗi lần đặt lại: mã cũ hết hiệu lực ngay, kể cả khi đã lỡ phát ra ngoài.
+  const activationCode = generateActivationCode();
+  if (businessStore) await businessStore.setActivationCode(user.id, activationCode);
   else {
-    db.prepare(`UPDATE users SET password_salt = '', password_hash = '', must_change_password = 1,
-      login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`).run(user.id);
+    db.prepare(`UPDATE users SET password_salt = '', password_hash = '', activation_code = ?,
+      must_change_password = 1, login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`)
+      .run(activationCode, user.id);
   }
   await writeAudit({
     actorUserId,
-    action: "RESET_INITIAL_PASSWORD",
+    action: "RESET_ACTIVATION_CODE",
     entityType: "user",
     entityId: user.id,
+    // Không bao giờ ghi mã vào nhật ký: nhật ký được xuất ra ngoài khi sao lưu.
     before: { mustChangePassword: Boolean(user.must_change_password), loginFailures: asInt(user.login_failures), lockedUntil: user.locked_until || null },
-    after: { mustChangePassword: true, loginFailures: 0, lockedUntil: null },
+    after: { mustChangePassword: true, loginFailures: 0, lockedUntil: null, activationCodeIssued: true },
     reason: "Hỗ trợ phụ huynh không đăng nhập được",
   });
-  return { account: normalized, mustChangePassword: true };
+  return { account: normalized, mustChangePassword: true, activationCode: formatActivationCode(activationCode) };
 }
 
 // ---- Xuất toàn bộ dữ liệu ----
@@ -1336,6 +1344,67 @@ async function exportCollectionPage({ actorUserId, collection, after = null, lim
   };
 }
 
+/**
+ * Cấp mã kích hoạt cho mọi tài khoản phụ huynh chưa đặt mật khẩu riêng.
+ *
+ * Chỉ cấp cho tài khoản CHƯA có mã, nên chạy lại nhiều lần cũng không làm hỏng
+ * những mã đã in và phát ra ngoài. Danh sách trả về để nhà trường in và phát;
+ * đây là dữ liệu nhạy cảm nên mỗi lần lấy đều ghi vào nhật ký thao tác.
+ */
+async function issueActivationCodes({ actorUserId }) {
+  const pending = businessStore
+    ? await businessStore.listPendingActivations()
+    : db.prepare(`SELECT u.id, u.account, u.display_name AS displayName, u.activation_code AS activationCode
+        FROM users u
+        WHERE u.role = 'parent' AND u.must_change_password = 1
+          AND (u.password_hash IS NULL OR u.password_hash = '')
+        ORDER BY u.account`).all();
+
+  let issued = 0;
+  const rows = [];
+  for (const account of pending) {
+    let code = account.activationCode;
+    if (!code) {
+      code = generateActivationCode();
+      if (businessStore) await businessStore.setActivationCode(account.id, code);
+      else {
+        db.prepare("UPDATE users SET activation_code = ? WHERE id = ?").run(code, account.id);
+      }
+      issued += 1;
+    }
+    const students = businessStore
+      ? await businessStore.listStudentsByParent(account.id)
+      : db.prepare(`SELECT s.name, s.homeroom FROM students s
+          JOIN parent_students ps ON ps.student_id = s.id
+          WHERE ps.parent_user_id = ? ORDER BY s.grade, s.name`).all(account.id);
+    rows.push({
+      account: account.account,
+      displayName: account.displayName,
+      students: students.map((student) => `${student.name} (${student.homeroom})`).join("; "),
+      activationCode: formatActivationCode(code),
+    });
+  }
+
+  // Ghi log là việc nên làm, không phải điều kiện để lấy danh sách: nếu cơ sở dữ
+  // liệu đang không ghi được thì nhà trường vẫn phải phát được mã cho phụ huynh.
+  let auditLogged = false;
+  try {
+    await writeAudit({
+      actorUserId,
+      action: "ISSUE_ACTIVATION_CODES",
+      entityType: "user",
+      entityId: `bulk_${nowIso()}`,
+      after: { pending: rows.length, issued },
+      reason: "Cấp và in mã kích hoạt cho phụ huynh",
+    });
+    auditLogged = true;
+  } catch (error) {
+    console.error("Không ghi được nhật ký cho lần cấp mã kích hoạt:", error?.message);
+  }
+
+  return { pending: rows.length, issued, auditLogged, rows };
+}
+
 async function handleApi(req, res, url) {
   const method = req.method || "GET";
 
@@ -1368,8 +1437,8 @@ async function handleApi(req, res, url) {
     if (user?.locked_until && user.locked_until > nowIso()) {
       throw httpError(429, "ACCOUNT_TEMPORARILY_LOCKED", "Tài khoản tạm khóa do đăng nhập sai nhiều lần. Vui lòng thử lại sau 15 phút.");
     }
-    const passwordValid = user?.auth_provider === "local" && (usesInitialPassword(user)
-      ? timingSafeEqualText(String(password), user.account)
+    const passwordValid = user?.auth_provider === "local" && (usesActivationCode(user)
+      ? timingSafeEqualText(normalizeActivationCode(password), normalizeActivationCode(user.activation_code))
       : verifyPassword(String(password), user.password_salt, user.password_hash));
     if (!user || !passwordValid) {
       if (user) {
@@ -1455,7 +1524,8 @@ async function handleApi(req, res, url) {
     if (!validation.valid) throw httpError(422, validation.code, validation.message);
     const secured = hashPassword(password);
     const updatedUser = businessStore ? await businessStore.updatePassword(user.id, secured) : (() => {
-      db.prepare("UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 0, login_failures = 0, locked_until = NULL WHERE id = ?")
+      // Đặt mật khẩu riêng xong là mã kích hoạt hết hiệu lực ngay.
+      db.prepare("UPDATE users SET password_salt = ?, password_hash = ?, activation_code = NULL, must_change_password = 0, login_failures = 0, locked_until = NULL WHERE id = ?")
         .run(secured.salt, secured.hash, user.id);
       return db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
     })();
@@ -1600,6 +1670,15 @@ async function handleApi(req, res, url) {
     }
     const page = await exportCollectionPage({ actorUserId: user.id, collection: String(collection), after: after || null });
     return sendJson(res, 200, { page });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/accounts/activation-codes") {
+    const user = await requireUser(req, "admin");
+    const { confirmation = "" } = await readJson(req);
+    if (confirmation !== "ISSUE_ACTIVATION_CODES") {
+      throw httpError(422, "ISSUE_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi cấp và xem danh sách mã kích hoạt.");
+    }
+    return sendJson(res, 200, { result: await issueActivationCodes({ actorUserId: user.id }) });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/accounts/lookup") {

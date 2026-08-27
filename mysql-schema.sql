@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS users (
   role                  VARCHAR(16)  NOT NULL,
   password_salt         VARCHAR(64)      NULL,
   password_hash         VARCHAR(191)     NULL,
+  activation_code       VARCHAR(512)     NULL,
   auth_provider         VARCHAR(24)  NOT NULL DEFAULT 'local',
   microsoft_object_id   VARCHAR(64)      NULL,
   must_change_password  TINYINT(1)   NOT NULL DEFAULT 0,

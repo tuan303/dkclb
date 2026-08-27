@@ -4,6 +4,7 @@
 // lại cùng một dữ liệu thì không phát sinh lượt ghi nào. Mỗi lượt ghi Firestore
 // đều tính vào hạn ngạch, mà danh sách hàng nghìn học sinh thường chỉ đổi vài dòng.
 import { isUnchanged } from "./record-diff.mjs";
+import { generateActivationCode } from "./activation-code.mjs";
 
 function conflictError(message) {
   const error = new Error(message);
@@ -26,7 +27,10 @@ export function emptyCounters() {
  * @param links      liên kết phụ huynh–học sinh hiện có, có `parentUserId`, `studentId`, `relationship`
  * @param idFactory  hàm sinh mã cho bản ghi mới
  */
-export function planDirectoryWrites({ snapshot, students = [], users = [], links = [], timestamp, idFactory }) {
+export function planDirectoryWrites({
+  snapshot, students = [], users = [], links = [], timestamp, idFactory,
+  codeFactory = generateActivationCode,
+}) {
   const studentsByCode = new Map(students.map((student) => [student.code, student]));
   const usersByAccount = new Map(users.map((user) => [String(user.accountLower || user.account || "").toLowerCase(), user]));
   const linksByKey = new Map(links.map((link) => [`${link.parentUserId}_${link.studentId}`, link]));
@@ -61,11 +65,12 @@ export function planDirectoryWrites({ snapshot, students = [], users = [], links
       const userId = idFactory("u_parent");
       user = { id: userId, account: guardian.account, accountLower, role: "parent" };
       usersByAccount.set(accountLower, user);
-      // Chưa có mật khẩu riêng: mật khẩu khởi tạo là chính số điện thoại nên không lưu hash.
+      // Chưa có mật khẩu riêng: đăng nhập lần đầu bằng mã kích hoạt dùng một lần,
+      // nhà trường in ra và phát cho phụ huynh.
       writes.push({ collection: "users", id: userId, data: {
         account: guardian.account, accountLower, displayName: guardian.displayName || "Phụ huynh học sinh", role: "parent",
-        passwordSalt: null, passwordHash: null, authProvider: "local", mustChangePassword: true,
-        loginFailures: 0, lockedUntil: null, active: true, createdAt: timestamp,
+        passwordSalt: null, passwordHash: null, activationCode: codeFactory(), authProvider: "local",
+        mustChangePassword: true, loginFailures: 0, lockedUntil: null, active: true, createdAt: timestamp,
       } });
       counters.parentsCreated += 1;
     } else {

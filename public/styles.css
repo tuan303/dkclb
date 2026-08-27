@@ -513,3 +513,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .week-day { min-height: 0; }
   .week-day.empty { display: none; }
 }
+
+/* Mã kích hoạt cấp cho phụ huynh */
+.activation-code-box { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; padding: 14px 16px; border: 1px solid #bfe4d3; border-radius: 12px; background: var(--green-soft); }
+.activation-code-box span { color: #247a55; font-size: 10px; font-weight: 600; }
+.activation-code-box strong { color: #17603f; font-family: "DM Sans", monospace; font-size: 24px; letter-spacing: .12em; }

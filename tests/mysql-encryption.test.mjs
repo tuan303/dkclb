@@ -104,11 +104,27 @@ test("hai bản ghi cùng giá trị vẫn cho ra hai chuỗi mã hóa khác nha
   const before = await rawRows("SELECT account FROM users WHERE role = 'parent'");
   assert.equal(new Set(before.map((row) => row.account)).size, before.length, "không có hai bản mã trùng nhau");
 
-  // Đổi mật khẩu về mã khởi tạo rồi đọc lại: bản mã của tài khoản không đổi vì không ghi lại cột đó.
-  await server.request("/api/admin/accounts/reset-initial-password", adminCookie, {
+  // Cấp mã kích hoạt rồi đăng nhập: chỉ mục mù vẫn tra đúng tài khoản đã mã hóa.
+  const reset = await server.request("/api/admin/accounts/reset-initial-password", adminCookie, {
     method: "POST",
     body: JSON.stringify({ account: "0901234567", confirmation: "RESET_INITIAL_PASSWORD" }),
   });
-  const login = await server.login("0901234567", "0901234567");
-  assert.equal(login.status, 200, "mật khẩu khởi tạo vẫn so khớp đúng với tài khoản đã mã hóa");
+  const code = (await reset.json()).result.activationCode;
+  const login = await server.login("0901234567", code);
+  assert.equal(login.status, 200, "mã kích hoạt vẫn so khớp đúng với tài khoản đã mã hóa");
+});
+
+test("mã kích hoạt cũng được mã hóa trong cơ sở dữ liệu", { skip: !MYSQL_BASE_URL }, async () => {
+  const adminCookie = await server.loginCookie("admin@nshm.edu.vn", "Admin@123");
+  const reset = await server.request("/api/admin/accounts/reset-initial-password", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({ account: "0901234567", confirmation: "RESET_INITIAL_PASSWORD" }),
+  });
+  const code = (await reset.json()).result.activationCode;
+
+  const rows = await rawRows("SELECT activation_code FROM users WHERE activation_code IS NOT NULL");
+  assert.ok(rows.length >= 1);
+  for (const row of rows) assert.ok(row.activation_code.startsWith("v1."), "mã kích hoạt phải ở dạng mã hóa");
+  const stored = JSON.stringify(rows);
+  assert.ok(!stored.includes(code.replace("-", "")), "không được lộ mã kích hoạt ở dạng đọc được");
 });

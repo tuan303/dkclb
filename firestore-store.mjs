@@ -32,6 +32,7 @@ function asServerUser(document) {
     password_hash: data.passwordHash,
     auth_provider: data.authProvider || "local",
     microsoft_object_id: data.microsoftObjectId || null,
+    activation_code: data.activationCode || null,
     must_change_password: data.mustChangePassword ? 1 : 0,
     login_failures: Number(data.loginFailures || 0),
     locked_until: data.lockedUntil || null,
@@ -251,7 +252,8 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
       },
 
       async updatePassword(userId, password) {
-        await users.doc(userId).update({ passwordSalt: password.salt, passwordHash: password.hash, mustChangePassword: false, loginFailures: 0, lockedUntil: null });
+        // Đặt mật khẩu riêng xong là mã kích hoạt hết hiệu lực ngay.
+        await users.doc(userId).update({ passwordSalt: password.salt, passwordHash: password.hash, activationCode: null, mustChangePassword: false, loginFailures: 0, lockedUntil: null });
         return asServerUser(await users.doc(userId).get());
       },
 
@@ -316,10 +318,21 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         return { parents: parentCount.data().count, students: studentCount.data().count, lastSyncAt };
       },
 
-      async resetToInitialPassword(userId) {
+      async listPendingActivations() {
+        const snapshot = await users.where("role", "==", "parent").get();
+        return snapshotRows(snapshot)
+          .filter((user) => user.mustChangePassword && !user.passwordHash)
+          .map((user) => ({
+            id: user.id, account: user.account, displayName: user.displayName, activationCode: user.activationCode || null,
+          }))
+          .sort((left, right) => String(left.account).localeCompare(String(right.account)));
+      },
+
+      async setActivationCode(userId, code) {
         await users.doc(userId).update({
           passwordSalt: null,
           passwordHash: null,
+          activationCode: code,
           mustChangePassword: true,
           loginFailures: 0,
           lockedUntil: null,

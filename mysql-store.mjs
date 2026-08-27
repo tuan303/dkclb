@@ -38,6 +38,7 @@ function asServerUser(row, crypto) {
     ...row,
     account: crypto.decrypt(row.account),
     display_name: crypto.decrypt(row.display_name),
+    activation_code: crypto.decrypt(row.activation_code),
     password_salt: row.password_salt || null,
     password_hash: row.password_hash || null,
     microsoft_object_id: row.microsoft_object_id || null,
@@ -85,7 +86,7 @@ const CATALOG_SELECT = `SELECT cc.id, cc.club_id, c.code, c.name, cc.name AS cla
 // Mỗi nhóm dữ liệu xuất ra đúng hình dạng chung của bản sao lưu, không phụ thuộc nền lưu trữ.
 const EXPORT_QUERIES = {
   users: {
-    sql: `SELECT id, account, display_name, role, password_salt, password_hash, auth_provider,
+    sql: `SELECT id, account, display_name, role, password_salt, password_hash, activation_code, auth_provider,
       microsoft_object_id, must_change_password, login_failures, locked_until, active, created_at FROM users`,
     // Bản sao lưu chứa dữ liệu đã giải mã, để nạp được sang hệ thống dùng khóa khác.
     // Bản thân tệp sao lưu được bảo vệ bằng mật khẩu riêng khi tải về.
@@ -94,6 +95,7 @@ const EXPORT_QUERIES = {
       accountLower: String(crypto.decrypt(row.account) || "").toLowerCase(),
       displayName: crypto.decrypt(row.display_name),
       role: row.role, passwordSalt: row.password_salt || null, passwordHash: row.password_hash || null,
+      activationCode: crypto.decrypt(row.activation_code),
       authProvider: row.auth_provider, microsoftObjectId: row.microsoft_object_id || null,
       mustChangePassword: toBool(row.must_change_password), loginFailures: toInt(row.login_failures),
       lockedUntil: row.locked_until || null, active: toBool(row.active), createdAt: row.created_at,
@@ -267,12 +269,12 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       for (const user of seed.users || []) {
         await connection.query(
           `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
-            auth_provider, must_change_password, login_failures, active, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)`,
+            activation_code, auth_provider, must_change_password, login_failures, active, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)`,
           [user.id, crypto.encrypt(user.account), crypto.blindIndex(user.account),
             crypto.encrypt(user.displayName), user.role,
-            user.passwordSalt || null, user.passwordHash || null, user.authProvider || "local",
-            user.mustChangePassword ? 1 : 0, user.createdAt],
+            user.passwordSalt || null, user.passwordHash || null, crypto.encrypt(user.activationCode || null),
+            user.authProvider || "local", user.mustChangePassword ? 1 : 0, user.createdAt],
         );
       }
       for (const student of seed.students || []) {
@@ -410,19 +412,35 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
     },
 
     async updatePassword(userId, password) {
+      // Đặt mật khẩu riêng xong là mã kích hoạt hết hiệu lực ngay.
       await query(
-        `UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 0,
-          login_failures = 0, locked_until = NULL WHERE id = ?`,
+        `UPDATE users SET password_salt = ?, password_hash = ?, activation_code = NULL,
+          must_change_password = 0, login_failures = 0, locked_until = NULL WHERE id = ?`,
         [password.salt, password.hash, userId],
       );
       return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
     },
 
-    async resetToInitialPassword(userId) {
+    async listPendingActivations() {
+      const rows = await query(
+        `SELECT id, account, display_name, activation_code FROM users
+         WHERE role = 'parent' AND must_change_password = 1 AND password_hash IS NULL`,
+      );
+      return rows
+        .map((row) => ({
+          id: row.id,
+          account: crypto.decrypt(row.account),
+          displayName: crypto.decrypt(row.display_name),
+          activationCode: crypto.decrypt(row.activation_code),
+        }))
+        .sort((left, right) => String(left.account).localeCompare(String(right.account)));
+    },
+
+    async setActivationCode(userId, code) {
       await query(
-        `UPDATE users SET password_salt = NULL, password_hash = NULL, must_change_password = 1,
-          login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`,
-        [userId],
+        `UPDATE users SET password_salt = NULL, password_hash = NULL, activation_code = ?,
+          must_change_password = 1, login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`,
+        [crypto.encrypt(code), userId],
       );
     },
 
@@ -764,13 +782,13 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
             if (data.account) {
               await connection.query(
                 `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
-                  auth_provider, must_change_password, login_failures, locked_until, active, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 1, ?)
+                  activation_code, auth_provider, must_change_password, login_failures, locked_until, active, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 1, ?)
                  ON DUPLICATE KEY UPDATE active = 1`,
                 [write.id, crypto.encrypt(data.account), crypto.blindIndex(data.account),
                   crypto.encrypt(data.displayName), data.role,
-                  data.passwordSalt || null, data.passwordHash || null, data.authProvider || "local",
-                  data.mustChangePassword ? 1 : 0, data.createdAt],
+                  data.passwordSalt || null, data.passwordHash || null, crypto.encrypt(data.activationCode || null),
+                  data.authProvider || "local", data.mustChangePassword ? 1 : 0, data.createdAt],
               );
             } else {
               await connection.query("UPDATE users SET active = 1 WHERE id = ?", [write.id]);
