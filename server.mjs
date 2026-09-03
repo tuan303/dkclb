@@ -1756,7 +1756,7 @@ async function handleApi(req, res, url) {
     }
     const active = await getActivePeriod();
     // Phụ huynh chỉ thấy lớp thuộc đợt đang mở; quản trị có thể xem theo đợt bất kỳ.
-    const periodId = user.role === "admin" ? url.searchParams.get("periodId") || active?.id || null : active?.id || null;
+    const periodId = user.role !== "parent" ? url.searchParams.get("periodId") || active?.id || null : active?.id || null;
     if (user.role === "parent" && !periodId) return sendJson(res, 200, { clubs: [], period: null });
     return sendJson(res, 200, { clubs: await clubRows(studentId, periodId), period: publicPeriod(active) });
   }

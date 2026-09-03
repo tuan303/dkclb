@@ -15,6 +15,10 @@ const state = {
   importDraft: null,
   period: null,
   demoAccounts: false,
+  schoolAccounts: null,
+  schoolAccountSearch: "",
+  schoolAccountImport: null,
+  schoolAccountImportPayload: null,
   accountLookup: null,
   accountLookupInput: "",
   lastBackup: null,
@@ -59,17 +63,20 @@ const parentNav = [
   { id: "support", label: "Yêu cầu hỗ trợ", icon: "help" },
 ];
 
+// Mỗi mục gắn với một QUYỀN. Giáo vụ sẽ không thấy những mục mình không dùng
+// được, thay vì bấm vào rồi nhận lỗi 403.
 const adminNav = [
   { section: "Vận hành" },
-  { id: "dashboard", label: "Dashboard", icon: "home" },
-  { id: "campaigns", label: "Đợt đăng ký", icon: "calendar" },
-  { id: "classes", label: "CLB & lịch học", icon: "grid" },
-  { id: "applications", label: "Đơn đăng ký", icon: "clipboard", badge: 12 },
-  { id: "finance", label: "Đối soát phí", icon: "credit" },
+  { id: "dashboard", label: "Dashboard", icon: "home", cap: "bao-cao" },
+  { id: "campaigns", label: "Đợt đăng ký", icon: "calendar", cap: "danh-muc" },
+  { id: "classes", label: "CLB & lịch học", icon: "grid", cap: "danh-muc" },
+  { id: "applications", label: "Đơn đăng ký", icon: "clipboard", badge: 12, cap: "duyet-don" },
+  { id: "finance", label: "Đối soát phí", icon: "credit", cap: "duyet-don" },
   { section: "Quản trị" },
-  { id: "reports", label: "Báo cáo & xuất file", icon: "chart" },
+  { id: "reports", label: "Báo cáo & xuất file", icon: "chart", cap: "xuat-du-lieu" },
+  { id: "accounts", label: "Tài khoản nhà trường", icon: "settings", cap: "quan-ly-tai-khoan" },
   { id: "structure", label: "Cấu trúc hệ thống", icon: "file" },
-  { id: "settings", label: "Cấu hình & phân quyền", icon: "settings" },
+  { id: "settings", label: "Cấu hình & phân quyền", icon: "settings", cap: "ma-kich-hoat" },
 ];
 
 const pageMeta = {
@@ -80,6 +87,7 @@ const pageMeta = {
   applications: ["Đơn đăng ký", "158 bản ghi trong đợt hiện tại"], finance: ["Đối soát phí", "Dữ liệu minh họa"],
   reports: ["Báo cáo & xuất file", "Trung tâm dữ liệu vận hành"], structure: ["Cấu trúc hệ thống", "Bản đồ module MVP"],
   settings: ["Cấu hình & phân quyền", "Quản trị hệ thống"],
+  accounts: ["Tài khoản nhà trường", "Chỉ quản trị cao nhất truy cập được"],
 };
 
 const statusMap = {
@@ -129,14 +137,16 @@ async function hydrateRole() {
     adminApplications = [];
   } else {
     const [clubPayload, registrationPayload, dashboardPayload, sheetPayload] = await Promise.all([
-      api("/clubs"), api("/registrations"), api("/admin/dashboard"), api("/admin/integrations/google-sheets"),
+      api("/clubs"), api("/registrations"), api("/admin/dashboard"),
+      hasCap("dong-bo-danh-ba") ? api("/admin/integrations/google-sheets") : Promise.resolve(null),
       refreshCatalog(),
     ]);
     clubs = clubPayload.clubs;
     adminApplications = registrationPayload.registrations;
     state.dashboard = dashboardPayload.dashboard;
     state.period = clubPayload.period || null;
-    state.sheetIntegration = sheetPayload.integration;
+    state.sheetIntegration = sheetPayload?.integration || null;
+    await loadSchoolAccounts();
     state.sheetPreview = null;
     state.importDraft = null;
     state.registrations = [];
@@ -227,6 +237,22 @@ async function logout() {
   showLogin();
 }
 
+const SSO_DENIAL_MESSAGE = "Tài khoản của bạn chưa được kích hoạt, liên hệ với bộ phận CNTT.";
+
+// Luồng SSO quay về bằng chuyển hướng chứ không phải lời gọi API, nên lý do bị
+// từ chối đi kèm trong địa chỉ. Hiện nó ngay trên màn hình đăng nhập; để nguyên
+// một trang JSON thô là cách chắc chắn làm người dùng hoảng.
+function showSsoOutcome() {
+  const params = new URLSearchParams(window.location.search);
+  const outcome = params.get("sso");
+  if (!outcome) return;
+  // Dọn địa chỉ để tải lại trang không hiện lại thông báo cũ.
+  window.history.replaceState({}, "", window.location.pathname);
+  if (outcome === "success") return;
+  const box = $("#login-error");
+  if (box) box.textContent = SSO_DENIAL_MESSAGE;
+}
+
 async function boot() {
   bindLoginEvents();
   bindGlobalEvents();
@@ -244,6 +270,7 @@ async function boot() {
   } catch {
     showLogin();
   }
+  showSsoOutcome();
 }
 
 function renderApp() {
@@ -256,7 +283,8 @@ function renderApp() {
 }
 
 function renderNav() {
-  const nav = state.role === "parent" ? parentNav : adminNav;
+  const nav = (state.role === "parent" ? parentNav : adminNav)
+    .filter((item) => !item.cap || hasCap(item.cap));
   $("#main-nav").innerHTML = nav.map((item) => {
     if (item.section) return `<div class="nav-section">${item.section}</div>`;
     const badge = item.id === "registrations" ? state.registrations.length : item.id === "applications" ? state.dashboard?.needAction : item.badge;
@@ -269,9 +297,9 @@ function renderNav() {
 
 // Phụ đề trên thanh tiêu đề lấy theo dữ liệu đang có, không ghi cứng theo năm học.
 function pageContext(page, fallback) {
-  const period = state.role === "admin"
-    ? state.catalog?.periods.find((item) => item.id === state.catalog.activePeriodId) || null
-    : state.period;
+  const period = state.role === "parent"
+    ? state.period
+    : state.catalog?.periods.find((item) => item.id === state.catalog.activePeriodId) || null;
   const periodLabel = period ? `${period.term} · ${period.schoolYear}` : "Chưa có đợt đăng ký đang mở";
   if (["home", "clubs", "registrations", "schedule", "dashboard", "campaigns"].includes(page)) return periodLabel;
   if (page === "classes") return `${state.catalog?.clubs.length || 0} CLB · ${state.catalog?.classes.length || 0} lớp`;
@@ -283,11 +311,11 @@ function renderHeader() {
   const [title, context] = pageMeta[state.page] || ["NSHM Clubs", "Cổng đăng ký ngoại khóa"];
   $("#page-title").textContent = title;
   $("#topbar-context").textContent = pageContext(state.page, context);
-  const admin = state.role === "admin";
-  $("#profile-name").textContent = state.me?.displayName || (admin ? "Nhà trường" : "Phụ huynh");
-  $("#profile-role").textContent = admin ? "Vận hành CLB" : "Phụ huynh";
+  const staff = state.role !== "parent";
+  $("#profile-name").textContent = state.me?.displayName || (staff ? "Nhà trường" : "Phụ huynh");
+  $("#profile-role").textContent = state.me?.roleLabel || (staff ? "Nhà trường" : "Phụ huynh");
   $("#profile-avatar").textContent = (state.me?.displayName || "NS").split(" ").slice(-2).map((part) => part[0]).join("").toUpperCase();
-  $("#cart-button").style.display = admin ? "none" : "flex";
+  $("#cart-button").style.display = staff ? "none" : "flex";
   $("#cart-count").textContent = state.cart.length;
 }
 
@@ -297,6 +325,7 @@ function renderPage() {
     schedule: renderSchedule, support: renderSupport, dashboard: renderAdminDashboard,
     campaigns: renderCampaigns, classes: renderClasses, applications: renderApplications,
     finance: renderFinance, reports: renderReports, structure: renderStructure, settings: renderSettings,
+    accounts: renderSchoolAccounts,
   };
   $("#page-content").innerHTML = (pages[state.page] || renderParentHome)();
   bindPageEvents();
@@ -1571,15 +1600,220 @@ function renderSheetPreview(preview) {
   </div>`;
 }
 
+// Quyền do máy chủ trả về; giao diện không tự suy từ tên vai trò. Nếu suy đoán,
+// hai bên sẽ lệch nhau và người dùng thấy nút bấm vào là báo lỗi.
+const hasCap = (capability) => (state.me?.capabilities || []).includes(capability);
+
+const SCHOOL_ACCOUNT_STATUS = {
+  "dang-dung": ["badge-green", "Đang dùng"],
+  "cho-dang-nhap-lan-dau": ["badge-blue", "Chờ đăng nhập lần đầu"],
+  "vo-hieu-hoa": ["badge-red", "Đã vô hiệu hoá"],
+};
+
+function renderSchoolAccounts() {
+  const data = state.schoolAccounts;
+  if (!data) return `<div class="info-note">Đang tải danh sách tài khoản…</div>`;
+  const roleOptions = data.roles.map((role) => `<option value="${role.value}">${escapeHtml(role.label)}</option>`).join("");
+
+  const rows = data.accounts.map((account) => {
+    const [tone, label] = SCHOOL_ACCOUNT_STATUS[account.status] || ["badge-blue", account.status];
+    // Tài khoản do biến môi trường quy định thì mọi nút sửa đều vô nghĩa: sửa
+    // trong cơ sở dữ liệu sẽ bị ghi đè ở lần đăng nhập kế tiếp.
+    const actions = account.lockedByEnv
+      ? `<span class="badge badge-purple">Khoá bởi cấu hình máy chủ</span>`
+      : `<select data-account-role="${account.id}">${data.roles.map((role) =>
+          `<option value="${role.value}"${role.value === account.role ? " selected" : ""}>${escapeHtml(role.label)}</option>`).join("")}</select>
+         <button class="button button-secondary" data-account-toggle="${account.id}" data-active="${account.active ? "1" : "0"}">
+           ${account.active ? "Vô hiệu hoá" : "Kích hoạt lại"}
+         </button>`;
+    return `<tr>
+      <td>${escapeHtml(account.displayName)}</td>
+      <td>${escapeHtml(account.account)}</td>
+      <td>${escapeHtml(account.roleLabel)}</td>
+      <td><span class="badge ${tone}">${escapeHtml(label)}</span></td>
+      <td>${account.lastLoginAt ? formatDateTime(account.lastLoginAt) : "Chưa đăng nhập"}</td>
+      <td class="account-actions">${actions}</td>
+    </tr>`;
+  }).join("");
+
+  const preview = state.schoolAccountImport;
+  const previewHtml = !preview ? "" : `<div class="sync-preview">
+    <div class="kpi-strip">
+      <div class="kpi-item"><span>Tạo mới</span><strong>${preview.summary.create}</strong></div>
+      <div class="kpi-item"><span>Cập nhật</span><strong>${preview.summary.update}</strong></div>
+      <div class="kpi-item"><span>Không đổi</span><strong>${preview.summary.unchanged}</strong></div>
+      <div class="kpi-item"><span>Dòng lỗi</span><strong>${preview.summary.invalid}</strong></div>
+    </div>
+    ${preview.missing?.length ? `<div class="inline-alert">Thiếu cột bắt buộc: ${preview.missing.map(escapeHtml).join(", ")}.</div>` : ""}
+    ${preview.issues?.length ? `<div class="info-note"><strong>Cần sửa trong tệp:</strong> ${preview.issues.map((issue) =>
+      `Dòng ${issue.row}${issue.email ? ` (${escapeHtml(issue.email)})` : ""}: ${issue.codes.join(", ")}`).join(" · ")}</div>` : ""}
+    <div class="sync-verdict ${preview.readyToCommit ? "ready" : "blocked"}">${preview.readyToCommit
+      ? `✓ Sẵn sàng ghi ${preview.summary.create} tài khoản mới và cập nhật ${preview.summary.update} tài khoản.`
+      : "Chưa ghi được: hãy sửa các dòng lỗi trong tệp rồi chọn lại."}</div>
+    ${preview.readyToCommit ? `<div class="sync-actions"><button class="button button-primary" data-account-import-commit>Ghi vào hệ thống</button><button class="button button-secondary" data-account-import-cancel>Bỏ qua</button></div>` : ""}
+  </div>`;
+
+  return `
+    ${data.superadminCount === 0 ? `<div class="inline-alert">${icon("clock")}<span><b>Chưa đặt SUPERADMIN_ACCOUNTS trên máy chủ.</b> Nếu tài khoản quản trị bị vô hiệu hoá nhầm thì sẽ không còn ai đăng nhập được, và phải sửa trực tiếp trong cơ sở dữ liệu mới cứu được.</span></div>` : ""}
+
+    <section class="section panel">
+      <div class="panel-head">
+        <div><span class="eyebrow">Nhân sự nhà trường</span><h3>${data.accounts.length} tài khoản</h3>
+        <p>Chỉ những tài khoản trong danh sách này mới đăng nhập được bằng Microsoft 365.</p></div>
+        <input id="account-search" type="search" placeholder="Tìm theo tên hoặc email" value="${escapeHtml(state.schoolAccountSearch || "")}" />
+      </div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Họ tên</th><th>Email</th><th>Vai trò</th><th>Trạng thái</th><th>Đăng nhập gần nhất</th><th>Thao tác</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6">Không có tài khoản nào khớp.</td></tr>`}</tbody>
+      </table></div>
+    </section>
+
+    <section class="section panel">
+      <div class="panel-head"><div><h3>Thêm tài khoản</h3><p>Email phải thuộc miền @${escapeHtml(data.domain)}. Tài khoản mới ở trạng thái chờ đăng nhập lần đầu.</p></div></div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <label class="form-field"><span>Email</span><input id="new-account-email" type="email" placeholder="ten.nguoi@${escapeHtml(data.domain)}" /></label>
+          <label class="form-field"><span>Họ và tên</span><input id="new-account-name" type="text" placeholder="Nguyễn Văn A" /></label>
+          <label class="form-field"><span>Vai trò</span><select id="new-account-role">${roleOptions}</select></label>
+        </div>
+        <div class="sync-actions"><button class="button button-primary" data-account-create>Thêm tài khoản</button></div>
+      </div>
+    </section>
+
+    <section class="section panel">
+      <div class="panel-head"><div><h3>Nhập hàng loạt từ tệp</h3><p>Tệp Excel hoặc CSV gồm ba cột: Email, Họ và tên, Vai trò. Xem trước rồi mới ghi.</p></div></div>
+      <div class="panel-body">
+        <input id="account-import-file" type="file" accept=".xlsx,.csv" />
+        ${previewHtml}
+      </div>
+    </section>`;
+}
+
+async function loadSchoolAccounts() {
+  if (!hasCap("quan-ly-tai-khoan")) return;
+  const search = state.schoolAccountSearch ? `?search=${encodeURIComponent(state.schoolAccountSearch)}` : "";
+  state.schoolAccounts = await api(`/admin/school-accounts${search}`);
+}
+
+function bindSchoolAccountEvents() {
+  $("#account-search")?.addEventListener("input", debounceSearch(async (event) => {
+    state.schoolAccountSearch = event.target.value;
+    await loadSchoolAccounts();
+    renderPage();
+    const box = $("#account-search");
+    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  }));
+
+  $("[data-account-create]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await api("/admin/school-accounts", {
+        method: "POST",
+        body: JSON.stringify({
+          email: $("#new-account-email").value.trim(),
+          displayName: $("#new-account-name").value.trim(),
+          role: $("#new-account-role").value,
+        }),
+      });
+      toast("Đã thêm tài khoản. Người này đăng nhập bằng Microsoft 365 là dùng được ngay.", "success");
+      await loadSchoolAccounts();
+      renderPage();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+
+  $$("[data-account-role]").forEach((select) => select.addEventListener("change", async (event) => {
+    try {
+      await api(`/admin/school-accounts/${event.target.dataset.accountRole}`, {
+        method: "PATCH", body: JSON.stringify({ role: event.target.value }),
+      });
+      toast("Đã đổi vai trò.", "success");
+      await loadSchoolAccounts();
+      renderPage();
+    } catch (error) { toast(error.message, "error"); }
+  }));
+
+  $$("[data-account-toggle]").forEach((button) => button.addEventListener("click", async (event) => {
+    const target = event.currentTarget;
+    const active = target.dataset.active !== "1";
+    if (!active && !window.confirm("Vô hiệu hoá tài khoản này? Dữ liệu và nhật ký thao tác vẫn được giữ nguyên.")) return;
+    target.disabled = true;
+    try {
+      await api(`/admin/school-accounts/${target.dataset.accountToggle}`, {
+        method: "PATCH", body: JSON.stringify({ active }),
+      });
+      toast(active ? "Đã kích hoạt lại tài khoản." : "Đã vô hiệu hoá tài khoản.", "success");
+      await loadSchoolAccounts();
+      renderPage();
+    } catch (error) {
+      target.disabled = false;
+      toast(error.message, "error");
+    }
+  }));
+
+  $("#account-import-file")?.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const workbook = await window.NSHMSheet.readFile(file);
+      const sheet = workbook.sheets.find((item) => !item.hidden && item.rows.length) || workbook.sheets[0];
+      if (!sheet?.rows.length) throw new Error("Tệp không có dòng dữ liệu nào.");
+      const { headers, rows } = window.NSHMSheet.splitHeaderAndRows(sheet.rows);
+      if (!headers.length) throw new Error("Không tìm thấy dòng tiêu đề trong tệp.");
+      state.schoolAccountImportPayload = { headers, rows };
+      const { preview } = await api("/admin/school-accounts/import/preview", {
+        method: "POST", body: JSON.stringify(state.schoolAccountImportPayload),
+      });
+      state.schoolAccountImport = preview;
+      renderPage();
+    } catch (error) { toast(error.message, "error"); }
+  });
+
+  $("[data-account-import-cancel]")?.addEventListener("click", () => {
+    state.schoolAccountImport = null;
+    state.schoolAccountImportPayload = null;
+    renderPage();
+  });
+
+  $("[data-account-import-commit]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const { result } = await api("/admin/school-accounts/import/commit", {
+        method: "POST", body: JSON.stringify(state.schoolAccountImportPayload),
+      });
+      toast(`Đã tạo ${result.counters.created} tài khoản mới, cập nhật ${result.counters.updated}, bỏ qua ${result.counters.unchanged} không đổi.`, "success");
+      state.schoolAccountImport = null;
+      state.schoolAccountImportPayload = null;
+      await loadSchoolAccounts();
+      renderPage();
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+}
+
+function debounceSearch(handler, delay = 250) {
+  let timer = null;
+  return (event) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => handler(event), delay);
+  };
+}
+
 function renderSettings() {
   const integration = state.sheetIntegration || {};
   const preview = state.sheetPreview;
   return `<section class="grid grid-3">${renderModuleCard("01","Người dùng & vai trò","8 nhóm vai trò với phạm vi xem/thao tác khác nhau.",["Phụ huynh","Vận hành/Giáo vụ/Kế toán","GV/BGH/IT Admin"])}${renderModuleCard("02","Quy tắc nghiệp vụ","Cấu hình giới hạn CLB, waitlist, thời hạn đổi/hủy.",["Không hard-code theo năm","Ghi log mọi ngoại lệ"])}${renderModuleCard("03","Tích hợp","Kết nối dữ liệu học sinh, OTP, thông báo và kế toán.",["Google Sheets chỉ đọc","Mã hóa trước khi ghi Firestore"])}</section>
-  <section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets · ${Number(integration.sourceCount || 0)} file theo cấp học</h3><p>${escapeHtml(integration.serviceAccountEmail || "—")} · quyền Viewer, chỉ đọc</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
+  ${hasCap("dong-bo-danh-ba") ? `<section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets · ${Number(integration.sourceCount || 0)} file theo cấp học</h3><p>${escapeHtml(integration.serviceAccountEmail || "—")} · quyền Viewer, chỉ đọc</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
     ${renderSyncSchedule(integration.schedule)}
     ${renderSheetSources(integration.sources, preview?.sources)}
     ${renderSheetPreview(preview)}
-  </div></section>
+  </div></section>` : ""}
   ${renderAccountSupport()}
   <section class="section panel"><div class="panel-head"><div><h3>Ma trận quyền tóm tắt</h3><p>Ví dụ phạm vi thao tác theo vai trò</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Vai trò</th><th>Xem hồ sơ</th><th>Cấu hình CLB</th><th>Xử lý đơn</th><th>Xác nhận phí</th><th>Xuất dữ liệu</th></tr></thead><tbody><tr><td>Phụ huynh</td><td>Chỉ con mình</td><td>—</td><td>Tạo/yêu cầu đổi</td><td>—</td><td>—</td></tr><tr><td>Vận hành CLB</td><td>Theo phạm vi đợt</td><td>Được phép</td><td>Được phép</td><td>Xem</td><td>Theo mẫu</td></tr><tr><td>Kế toán</td><td>Trường tối thiểu</td><td>—</td><td>Xem</td><td>Được phép</td><td>Báo cáo phí</td></tr><tr><td>Giáo viên</td><td>Lớp phụ trách</td><td>—</td><td>—</td><td>Trạng thái</td><td>DS lớp</td></tr><tr><td>IT Admin</td><td>Theo phân quyền</td><td>Hỗ trợ</td><td>Hỗ trợ</td><td>—</td><td>Audit kỹ thuật</td></tr></tbody></table></div></section>`;
 }
@@ -1870,6 +2104,7 @@ function bindPageEvents() {
     }
   });
   bindCatalogEvents();
+  bindSchoolAccountEvents();
   bindAccountSupportEvents();
   bindBackupEvents();
   $("[data-export]")?.addEventListener("click", exportCsv);

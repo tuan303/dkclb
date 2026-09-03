@@ -49,6 +49,12 @@ flowchart LR
 
 ## 3. Bảo mật đang có
 
+- Cổng Nhà trường TỪ CHỐI theo mặc định: chỉ tài khoản đã tạo sẵn mới đăng nhập được bằng Microsoft 365. Đăng nhập không còn tạo tài khoản và không còn chạm tới vai trò — trước đây nó ép mọi người về `admin` ở mỗi lần đăng nhập, xoá sạch phân quyền đặt tay.
+- Phân quyền theo NĂNG LỰC (`roles.mjs`), không theo tên vai trò. Mỗi endpoint hỏi "thao tác này cần quyền gì", nên thêm vai trò mới chỉ phải sửa một bảng thay vì rà lại hơn hai chục điểm kiểm tra rời rạc.
+- `SUPERADMIN_ACCOUNTS` là đường cứu độc lập với cơ sở dữ liệu, cho trường hợp bản ghi quản trị bị vô hiệu hoá nhầm. Thiếu biến này thì cảnh báo lúc khởi động chứ không chặn khởi động — chặn là hạ luôn cổng đăng nhập của phụ huynh.
+- Quyền cao nhất không cấp được từ giao diện: một tài khoản bị chiếm cũng không thể tự nâng mình lên rồi khoá người khác ra ngoài.
+- Tài khoản nhà trường không xoá cứng, chỉ vô hiệu hoá; vô hiệu hoá cắt phiên đang mở ngay lập tức.
+
 - Mật khẩu do người dùng đặt được băm bằng `scrypt` với salt riêng.
 - Tài khoản phụ huynh vừa đồng bộ không lưu salt/hash mà giữ một **mã kích hoạt dùng một lần** (8 ký tự ngẫu nhiên, bỏ `0/O` và `1/I/L`), so sánh bằng `timingSafeEqual`. Không dùng số điện thoại làm mật khẩu đầu tiên vì số điện thoại chính là tên tài khoản, ai biết số của một phụ huynh cũng vào xem được hồ sơ con họ. Nhánh mã kích hoạt chỉ áp dụng khi tài khoản chưa có hash; đặt mật khẩu riêng là nhánh đó tắt hẳn, có kiểm thử chặn hồi quy.
 - Phiên dùng token ngẫu nhiên 256 bit; Production chỉ lưu SHA-256 của token trong Firestore.

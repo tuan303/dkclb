@@ -52,12 +52,13 @@ npm test
 npm run check
 ```
 
-## Tài khoản demo
+## Tài khoản demo (chỉ khi bật NSHM_SEED_DEMO=1)
 
 | Cổng | Tài khoản | Mật khẩu/OTP |
 |---|---|---|
 | Phụ huynh | `0901234567` | `123456` |
-| Nhà trường | `admin@nshm.edu.vn` | `Admin@123` |
+| Nhà trường · quản trị | `admin@nshm.edu.vn` | `Admin@123` |
+| Nhà trường · giáo vụ | `giaovu@nshm.edu.vn` | `Admin@123` |
 
 Các tài khoản này chỉ dùng cho demo. Luồng production dùng mã kích hoạt dùng một lần cho phụ huynh và Microsoft 365 SSO cho nhà trường.
 
@@ -386,6 +387,59 @@ Gói Firebase miễn phí (Spark) giới hạn khoảng **20.000 lượt ghi và
 Lúc đó hệ thống trả về thông báo *"Cơ sở dữ liệu đã dùng hết hạn ngạch trong ngày..."*. Hạn ngạch được đặt lại hằng ngày theo giờ Thái Bình Dương. Trước đợt đăng ký thật, nên chuyển dự án Firebase sang gói **Blaze (trả theo dùng)**: gói này giữ nguyên phần miễn phí và chỉ tính tiền phần vượt, vốn rất nhỏ ở quy mô một trường.
 
 Đồng bộ chỉ ghi những bản ghi **thực sự thay đổi** so với dữ liệu đang có: chạy lại đúng một danh sách không đổi thì không tốn lượt ghi nào. Sau mỗi lần đồng bộ, hệ thống báo rõ đã ghi bao nhiêu bản ghi và bỏ qua bao nhiêu bản ghi không đổi, để theo dõi mức tiêu hạn ngạch.
+
+## Tài khoản nhà trường
+
+Cổng Nhà trường đăng nhập bằng Microsoft 365. **Chỉ những tài khoản đã được tạo sẵn trong hệ thống mới vào được.** Trước đây bất kỳ ai thuộc miền `hoangmaistarschool.edu.vn` đăng nhập là tự có một tài khoản quản trị toàn quyền, và vai trò đặt tay bị ép về `admin` ở mỗi lần người đó đăng nhập lại.
+
+Người chưa được cấp tài khoản sẽ thấy đúng một câu trên màn hình đăng nhập:
+
+> Tài khoản của bạn chưa được kích hoạt, liên hệ với bộ phận CNTT.
+
+Mỗi lần từ chối đều được ghi vào nhật ký kèm email, để bộ phận CNTT biết ai đang cần cấp quyền mà chủ động liên hệ thay vì chờ người đó gọi tới.
+
+### Ba mức quyền
+
+| Vai trò | Làm được | Không làm được |
+| --- | --- | --- |
+| **Quản trị cao nhất** | Toàn quyền, gồm quản lý tài khoản nhà trường | — |
+| **Quản trị vận hành** (`admin`) | Danh mục CLB, đợt đăng ký, duyệt đơn, đồng bộ danh bạ, xuất dữ liệu | Quản lý tài khoản nhà trường |
+| **Giáo vụ** (`giaovu`) | Nhập danh mục CLB, xem báo cáo, cấp mã kích hoạt cho phụ huynh | Xuất dữ liệu, duyệt đơn, đồng bộ danh bạ, quản lý tài khoản |
+
+Giáo vụ không xuất được dữ liệu vì tệp xuất ra mang thông tin cá nhân học sinh rời khỏi hệ thống — kể cả tệp `registrations.csv` mang tên "báo cáo".
+
+Quyền kiểm tra theo **năng lực** chứ không theo tên vai trò: mỗi endpoint hỏi "thao tác này cần quyền gì". Nhờ vậy thêm một vai trò mới chỉ phải sửa ma trận trong `roles.mjs` thay vì rà lại hơn hai chục điểm kiểm tra rời rạc — kiểu sửa mà bỏ sót một chỗ là mở toang một cánh cửa. Giao diện cũng ẩn/hiện theo danh sách quyền do máy chủ trả về, không tự suy từ tên vai trò.
+
+### SUPERADMIN_ACCOUNTS — đường cứu
+
+```text
+SUPERADMIN_ACCOUNTS=tuantm@hoangmaistarschool.edu.vn
+```
+
+Email trong danh sách này **luôn đăng nhập được**, kể cả khi chưa có bản ghi (khi đó tự tạo với quyền cao nhất) hoặc bản ghi đã bị vô hiệu hoá (khi đó tự bật lại).
+
+Đây là lớp bảo hiểm **độc lập với dữ liệu**. Khi đã tắt việc tự tạo tài khoản, một bản ghi quản trị bị vô hiệu hoá nhầm sẽ khoá tất cả mọi người ra ngoài, và cách duy nhất còn lại là sửa trực tiếp trong MySQL. Biến môi trường không nằm trong cơ sở dữ liệu nên không thể bị chính hệ thống làm hỏng.
+
+Ba điểm cần biết:
+
+- Quyền cao nhất **chỉ** đến từ biến này, không cấp được từ giao diện. Một tài khoản bị chiếm cũng không thể tự nâng mình lên rồi khoá người khác ra ngoài.
+- Tài khoản nằm trong danh sách này hiện là **Khoá bởi cấu hình máy chủ** trên màn hình quản lý: muốn đổi thì sửa biến môi trường rồi khởi động lại dịch vụ.
+- Danh sách cứu **không** vượt qua được trường hợp email trùng một bản ghi phụ huynh. Tài khoản phụ huynh định danh bằng số điện thoại nên không thể trùng email thật; trùng được nghĩa là dữ liệu đã hỏng, và im lặng trao toàn quyền lúc đó là sai.
+
+Quên đặt biến này thì máy chủ **cảnh báo to lúc khởi động nhưng vẫn chạy** — chặn khởi động là hạ luôn cổng đăng nhập của hàng nghìn phụ huynh chỉ vì một biến bị quên. Màn hình quản lý tài khoản cũng hiện cảnh báo khi danh sách rỗng.
+
+### Màn hình quản lý
+
+Cổng Nhà trường → **Tài khoản nhà trường** (chỉ quản trị cao nhất thấy mục này).
+
+- Danh sách họ tên, email, vai trò, trạng thái, lần đăng nhập gần nhất; tìm theo tên hoặc email.
+- Thêm thủ công: email bắt buộc thuộc miền của trường. Tài khoản mới ở trạng thái **chờ đăng nhập lần đầu** — người đó đăng nhập Microsoft 365 một lần là dùng được ngay, không cần cấp mật khẩu.
+- Nhập hàng loạt từ tệp Excel/CSV ba cột (Email, Họ và tên, Vai trò): xem trước rồi mới ghi, còn dòng lỗi thì không ghi gì. Nhập lại đúng tệp đó không tạo thêm bản ghi nào.
+- Vô hiệu hoá và kích hoạt lại. **Không xoá cứng bao giờ**: nhật ký thao tác trỏ tới người thực hiện, xoá bản ghi là mất dấu vết ai đã làm gì. Vô hiệu hoá sẽ cắt phiên đang mở ngay lập tức.
+- Không tự vô hiệu hoá được tài khoản của chính mình.
+
+Nhật ký ghi lại: tạo tài khoản, đổi vai trò, vô hiệu hoá, kích hoạt lại, và mọi lần đăng nhập bị từ chối.
+
 
 ## Mã kích hoạt cho phụ huynh
 
