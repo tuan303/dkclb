@@ -35,14 +35,25 @@ after(async () => {
 
 /* ---------- Ranh giới quyền ---------- */
 
-test("giáo vụ không xuất được dữ liệu", async () => {
-  // Tệp xuất ra mang thông tin cá nhân học sinh rời khỏi hệ thống.
-  for (const [method, path] of [["GET", "/api/admin/export/collections"], ["GET", "/api/admin/reports/registrations.csv"]]) {
-    const response = await request(path, giaovuCookie, { method });
-    assert.equal(response.status, 403, `${method} ${path} phải bị từ chối`);
-  }
+test("giáo vụ không sao lưu được toàn bộ cơ sở dữ liệu", async () => {
+  // Bản sao lưu gồm cả tài khoản phụ huynh và mã kích hoạt của họ.
+  assert.equal((await request("/api/admin/export/collections", giaovuCookie)).status, 403);
   const backup = await request("/api/admin/export/backup", giaovuCookie, { method: "POST", body: "{}" });
   assert.equal(backup.status, 403);
+});
+
+test("giáo vụ tải được danh sách đăng ký để xếp lớp", async () => {
+  // Đây là việc hằng ngày của giáo vụ, không phải trích xuất dữ liệu: tệp chỉ có
+  // mã đơn, tên học sinh, lớp, CLB, lịch, trạng thái, học phí.
+  const response = await request("/api/admin/reports/registrations.csv", giaovuCookie);
+  assert.equal(response.status, 200);
+  const csv = await response.text();
+  const header = csv.split("\r\n")[0];
+  assert.match(header, /Học sinh/);
+  // Khoá lại đúng những gì KHÔNG được có trong tệp này.
+  for (const field of ["Số điện thoại", "Ngày sinh", "Mã kích hoạt", "Email"]) {
+    assert.ok(!header.includes(field), `tệp xếp lớp không được chứa cột ${field}`);
+  }
 });
 
 test("giáo vụ vẫn nhập được danh mục, xem được báo cáo và cấp được mã kích hoạt", async () => {
@@ -93,7 +104,7 @@ test("giao diện nhận được danh sách quyền để tự ẩn đúng ch�
   const me = await json(await request("/api/me", giaovuCookie));
   assert.equal(me.user.role, "giaovu");
   assert.equal(me.user.roleLabel, "Giáo vụ");
-  assert.deepEqual([...me.user.capabilities].sort(), ["bao-cao", "danh-muc", "ma-kich-hoat"]);
+  assert.deepEqual([...me.user.capabilities].sort(), ["bao-cao", "danh-muc", "danh-sach-van-hanh", "ma-kich-hoat"]);
 });
 
 /* ---------- Danh sách và tạo tài khoản ---------- */

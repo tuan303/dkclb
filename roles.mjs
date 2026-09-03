@@ -32,7 +32,13 @@ export const ASSIGNABLE_SCHOOL_ROLES = [ROLE.admin, ROLE.giaovu];
 
 export const CAP = {
   quanLyTaiKhoan: "quan-ly-tai-khoan",
+  // Sao lưu TOÀN BỘ cơ sở dữ liệu: tài khoản phụ huynh, mã kích hoạt, mọi trường
+  // cá nhân của học sinh. Khác hẳn danh sách vận hành bên dưới.
   xuatDuLieu: "xuat-du-lieu",
+  // Danh sách đăng ký để xếp lớp và điểm danh: mã đơn, tên học sinh, lớp hành
+  // chính, CLB, lịch, trạng thái, học phí. Không có số điện thoại phụ huynh,
+  // không ngày sinh, không mã học sinh. Giáo vụ cần tệp này để làm việc hằng ngày.
+  danhSachVanHanh: "danh-sach-van-hanh",
   dongBoDanhBa: "dong-bo-danh-ba",
   duyetDon: "duyet-don",
   danhMuc: "danh-muc",
@@ -42,13 +48,13 @@ export const CAP = {
 
 const ALL_CAPS = Object.values(CAP);
 
-// Giáo vụ nhập danh mục CLB, xem báo cáo, cấp mã kích hoạt cho phụ huynh.
-// KHÔNG xuất dữ liệu (tệp xuất ra mang thông tin cá nhân học sinh rời khỏi hệ
-// thống) và KHÔNG quản lý tài khoản nhà trường.
+// Giáo vụ nhập danh mục CLB, xem báo cáo, cấp mã kích hoạt cho phụ huynh, và
+// tải danh sách đăng ký để xếp lớp. KHÔNG sao lưu toàn bộ cơ sở dữ liệu và
+// KHÔNG quản lý tài khoản nhà trường.
 const MATRIX = {
   [ROLE.superadmin]: ALL_CAPS,
-  [ROLE.admin]: [CAP.xuatDuLieu, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.maKichHoat],
-  [ROLE.giaovu]: [CAP.danhMuc, CAP.baoCao, CAP.maKichHoat],
+  [ROLE.admin]: [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.maKichHoat],
+  [ROLE.giaovu]: [CAP.danhMuc, CAP.baoCao, CAP.maKichHoat, CAP.danhSachVanHanh],
   [ROLE.parent]: [],
 };
 

@@ -2133,8 +2133,10 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { id: registration.id, status: "confirmed" });
   }
 
+  // Danh sách vận hành, không phải bản trích xuất dữ liệu: giáo vụ cần nó để
+  // xếp lớp và cập nhật thông tin học sinh.
   if (method === "GET" && url.pathname === "/api/admin/reports/registrations.csv") {
-    await requireSchoolUser(req, CAP.xuatDuLieu);
+    await requireSchoolUser(req, CAP.danhSachVanHanh);
     const rows = await listRegistrations({ role: "admin" });
     const statusNames = { payment: "Chờ thanh toán", confirmed: "Đã xác nhận", waitlist: "Danh sách chờ", conflict: "Trùng lịch", submitted: "Đã gửi", cancelled: "Đã hủy" };
     const csvRows = [["Mã đơn","Học sinh","Lớp","CLB","Lịch","Trạng thái","Số tiền"], ...rows.map((row) => [row.id,row.student,row.className,row.club,row.schedule,statusNames[row.status] || row.status,row.amount])];

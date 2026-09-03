@@ -404,9 +404,12 @@ Mỗi lần từ chối đều được ghi vào nhật ký kèm email, để b�
 | --- | --- | --- |
 | **Quản trị cao nhất** | Toàn quyền, gồm quản lý tài khoản nhà trường | — |
 | **Quản trị vận hành** (`admin`) | Danh mục CLB, đợt đăng ký, duyệt đơn, đồng bộ danh bạ, xuất dữ liệu | Quản lý tài khoản nhà trường |
-| **Giáo vụ** (`giaovu`) | Nhập danh mục CLB, xem báo cáo, cấp mã kích hoạt cho phụ huynh | Xuất dữ liệu, duyệt đơn, đồng bộ danh bạ, quản lý tài khoản |
+| **Giáo vụ** (`giaovu`) | Nhập danh mục CLB, xem báo cáo, cấp mã kích hoạt cho phụ huynh, tải danh sách đăng ký để xếp lớp | Sao lưu toàn bộ CSDL, duyệt đơn, đồng bộ danh bạ, quản lý tài khoản |
 
-Giáo vụ không xuất được dữ liệu vì tệp xuất ra mang thông tin cá nhân học sinh rời khỏi hệ thống — kể cả tệp `registrations.csv` mang tên "báo cáo".
+Có hai thứ dễ bị gộp làm một nhưng khác hẳn nhau về mức nhạy cảm:
+
+- **Danh sách đăng ký** (`registrations.csv`): mã đơn, tên học sinh, lớp hành chính, CLB, lịch, trạng thái, học phí. Không số điện thoại phụ huynh, không ngày sinh, không mã học sinh. Đây là công cụ làm việc hằng ngày của giáo vụ để xếp lớp và cập nhật thông tin học sinh, nên giáo vụ tải được.
+- **Sao lưu toàn bộ cơ sở dữ liệu**: gồm cả tài khoản phụ huynh và mã kích hoạt của họ. Chỉ quản trị vận hành trở lên.
 
 Quyền kiểm tra theo **năng lực** chứ không theo tên vai trò: mỗi endpoint hỏi "thao tác này cần quyền gì". Nhờ vậy thêm một vai trò mới chỉ phải sửa ma trận trong `roles.mjs` thay vì rà lại hơn hai chục điểm kiểm tra rời rạc — kiểu sửa mà bỏ sót một chỗ là mở toang một cánh cửa. Giao diện cũng ẩn/hiện theo danh sách quyền do máy chủ trả về, không tự suy từ tên vai trò.
 

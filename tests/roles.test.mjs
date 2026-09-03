@@ -29,16 +29,21 @@ test("quản trị cao nhất có mọi quyền", () => {
 
 test("admin vận hành được hệ thống nhưng không quản lý tài khoản", () => {
   assert.equal(can(ROLE.admin, CAP.quanLyTaiKhoan), false, "đây là ranh giới chính giữa admin và quản trị cao nhất");
-  for (const capability of [CAP.xuatDuLieu, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.maKichHoat]) {
+  for (const capability of [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.maKichHoat]) {
     assert.equal(can(ROLE.admin, capability), true, `admin phải có quyền ${capability}`);
   }
 });
 
-test("giáo vụ chỉ nhập danh mục, xem báo cáo và cấp mã kích hoạt", () => {
+test("giáo vụ làm được việc hằng ngày nhưng không sao lưu và không quản lý tài khoản", () => {
   assert.equal(can(ROLE.giaovu, CAP.danhMuc), true);
   assert.equal(can(ROLE.giaovu, CAP.baoCao), true);
   assert.equal(can(ROLE.giaovu, CAP.maKichHoat), true);
-  // Tệp xuất ra mang thông tin cá nhân học sinh rời khỏi hệ thống.
+  // Danh sách đăng ký để xếp lớp: chỉ có tên học sinh, lớp, CLB, lịch, trạng
+  // thái, học phí — không số điện thoại phụ huynh, không ngày sinh.
+  assert.equal(can(ROLE.giaovu, CAP.danhSachVanHanh), true);
+
+  // Sao lưu toàn bộ cơ sở dữ liệu thì khác hẳn: gồm cả tài khoản phụ huynh và
+  // mã kích hoạt của họ.
   assert.equal(can(ROLE.giaovu, CAP.xuatDuLieu), false);
   assert.equal(can(ROLE.giaovu, CAP.quanLyTaiKhoan), false);
   assert.equal(can(ROLE.giaovu, CAP.dongBoDanhBa), false);

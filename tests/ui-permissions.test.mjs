@@ -31,7 +31,7 @@ test("mỗi mục điều hướng quản trị gắn với một quyền", () =
     ["classes", "danh-muc"],
     ["applications", "duyet-don"],
     ["finance", "duyet-don"],
-    ["reports", "xuat-du-lieu"],
+    ["reports", "danh-sach-van-hanh"],
     ["accounts", "quan-ly-tai-khoan"],
     ["settings", "ma-kich-hoat"],
   ]) {
@@ -53,6 +53,12 @@ test("không còn chỗ nào coi 'admin' là vai trò nhà trường duy nhất"
     .map((line, index) => [index + 1, line])
     .filter(([, line]) => /state\.role === "admin"|state\.role !== "admin"/.test(line));
   assert.deepEqual(offenders, [], `còn so sánh cứng với 'admin': ${JSON.stringify(offenders)}`);
+});
+
+test("bảng sao lưu toàn bộ cơ sở dữ liệu ẩn với người không có quyền", () => {
+  // Trang Báo cáo nay mở cho giáo vụ để lấy danh sách xếp lớp, nhưng bảng sao
+  // lưu nằm cùng trang đó và chứa cả tài khoản phụ huynh lẫn mã kích hoạt.
+  assert.match(app, /hasCap\("xuat-du-lieu"\) \? renderBackupPanel\(\) : ""/);
 });
 
 test("gọi endpoint đồng bộ Sheets chỉ khi có quyền", () => {

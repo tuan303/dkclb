@@ -73,7 +73,7 @@ const adminNav = [
   { id: "applications", label: "Đơn đăng ký", icon: "clipboard", badge: 12, cap: "duyet-don" },
   { id: "finance", label: "Đối soát phí", icon: "credit", cap: "duyet-don" },
   { section: "Quản trị" },
-  { id: "reports", label: "Báo cáo & xuất file", icon: "chart", cap: "xuat-du-lieu" },
+  { id: "reports", label: "Báo cáo & xuất file", icon: "chart", cap: "danh-sach-van-hanh" },
   { id: "accounts", label: "Tài khoản nhà trường", icon: "settings", cap: "quan-ly-tai-khoan" },
   { id: "structure", label: "Cấu trúc hệ thống", icon: "file" },
   { id: "settings", label: "Cấu hình & phân quyền", icon: "settings", cap: "ma-kich-hoat" },
@@ -1493,7 +1493,7 @@ function renderReports() {
     ["Tổng quan đợt đăng ký","KPI, tỷ lệ lấp đầy, lớp đầy/thiếu sĩ số"],["Danh sách theo CLB/lớp","Học sinh, lớp hành chính, lịch, phí, ghi chú"],["Danh sách chờ & gọi lại","Thứ tự chờ, lý do, phương án thay thế, người phụ trách"],["Tài chính & công nợ","Phải thu, đã thu, chờ thu, hoàn/chuyển phí"],["Vận hành lớp","Phòng, giáo viên, min/max, lớp cần mở/gộp/hủy"],["Lịch sử thay đổi","Đổi lớp, hủy, chuyển lịch, người xử lý và lý do"],
   ];
   return `<div class="demo-banner"><span><strong>Nguyên tắc bảo mật:</strong> Chỉ xuất các trường dữ liệu nằm trong phạm vi vai trò được cấp.</span><button class="button button-secondary" data-export>${icon("download")} Xuất danh sách đăng ký (CSV)</button></div>
-  ${renderBackupPanel()}
+  ${hasCap("xuat-du-lieu") ? renderBackupPanel() : ""}
   <section class="section"><div class="section-head"><div><span class="eyebrow">Đang thiết kế</span><h2>Bộ báo cáo theo vai trò</h2><p>Các mẫu báo cáo dưới đây chưa nối dữ liệu, hiện mới có xuất CSV danh sách đăng ký và sao lưu toàn bộ dữ liệu ở trên.</p></div></div>
   <div class="grid grid-3">${reports.map((r,i)=>renderModuleCard(String(i+1).padStart(2,"0"),r[0],r[1],["Excel (.xlsx)","Bộ lọc theo đợt/trạng thái"])).join("")}</div></section>`;
 }
