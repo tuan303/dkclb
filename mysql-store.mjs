@@ -238,6 +238,26 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
   }
   await applySchema();
 
+  // Bảng đã tồn tại trên máy chủ thì CREATE TABLE IF NOT EXISTS không làm gì cả,
+  // nên cột thêm sau này phải được vá riêng. Idempotent: chạy lại bao nhiêu lần
+  // cũng không sao.
+  async function ensureColumns() {
+    const wanted = [
+      ["users", "last_login_at", "VARCHAR(32) NULL"],
+    ];
+    for (const [table, column, definition] of wanted) {
+      const [rows] = await pool.query(
+        `SELECT COUNT(*) AS n FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+        [table, column],
+      );
+      if (Number(rows[0]?.n || 0) === 0) {
+        await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+      }
+    }
+  }
+  await ensureColumns();
+
   const auditId = () => `audit_${randomBytes(10).toString("hex")}`;
 
   async function insertAudit(connection, entry) {
@@ -387,27 +407,64 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       });
     },
 
-    async upsertMicrosoftUser({ identity, userId, password, timestamp }) {
-      const existing = await first(
+    /* ---------- Tài khoản nhà trường ---------- */
+
+    // Chỉ TRA CỨU, không ghi gì. Đăng nhập Microsoft không còn là dịp tạo tài
+    // khoản: trước đây bất kỳ ai thuộc miền của trường đăng nhập là tự có quyền
+    // quản trị toàn phần, và vai trò đặt tay bị ép về 'admin' ở mỗi lần đăng nhập.
+    async findSchoolUserForLogin({ objectId, email }) {
+      const row = await first(
         "SELECT * FROM users WHERE microsoft_object_id = ? OR account_index = ? LIMIT 1",
-        [identity.objectId, crypto.blindIndex(identity.email)],
+        [objectId || null, crypto.blindIndex(email)],
       );
-      if (existing) {
-        await query(
-          `UPDATE users SET account = ?, account_index = ?, display_name = ?, role = 'admin', auth_provider = 'microsoft',
-            microsoft_object_id = ?, must_change_password = 0, login_failures = 0, locked_until = NULL, active = 1
-           WHERE id = ?`,
-          [crypto.encrypt(identity.email), crypto.blindIndex(identity.email), crypto.encrypt(identity.name), identity.objectId, existing.id],
-        );
-        return asServerUser(await first("SELECT * FROM users WHERE id = ?", [existing.id]), crypto);
-      }
+      return asServerUser(row, crypto);
+    },
+
+    // KHÔNG đụng tới role và active. Đăng nhập là xác minh danh tính, không phải
+    // dịp cấp quyền — đó chính là lỗi của upsertMicrosoftUser cũ.
+    async linkMicrosoftLogin({ userId, identity, timestamp }) {
+      await query(
+        `UPDATE users SET display_name = ?, auth_provider = 'microsoft', microsoft_object_id = ?,
+          must_change_password = 0, login_failures = 0, locked_until = NULL, last_login_at = ?
+         WHERE id = ?`,
+        [crypto.encrypt(identity.name), identity.objectId || null, timestamp, userId],
+      );
+      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
+    },
+
+    async createSchoolUser({ id, account, displayName, role, password, timestamp, objectId = null, active = true }) {
       await query(
         `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
           auth_provider, microsoft_object_id, must_change_password, login_failures, active, created_at)
-         VALUES (?, ?, ?, ?, 'admin', ?, ?, 'microsoft', ?, 0, 0, 1, ?)`,
-        [userId, crypto.encrypt(identity.email), crypto.blindIndex(identity.email), crypto.encrypt(identity.name),
-          password.salt, password.hash, identity.objectId, timestamp],
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'microsoft', ?, 0, 0, ?, ?)`,
+        [id, crypto.encrypt(account), crypto.blindIndex(account), crypto.encrypt(displayName), role,
+          password.salt, password.hash, objectId, active ? 1 : 0, timestamp],
       );
+      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [id]), crypto);
+    },
+
+    // account và display_name được mã hoá nên không tìm kiếm bằng SQL LIKE được;
+    // phải giải mã rồi lọc. Chấp nhận được vì đây là vài chục tài khoản nhân sự,
+    // không phải bảng phụ huynh hàng nghìn dòng.
+    async listSchoolUsers() {
+      const rows = await query("SELECT * FROM users WHERE role <> 'parent' ORDER BY created_at ASC");
+      return rows.map((row) => asServerUser(row, crypto));
+    },
+
+    async getUserById(userId) {
+      return asServerUser(await first("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]), crypto);
+    },
+
+    async setSchoolUserRole(userId, role) {
+      await query("UPDATE users SET role = ? WHERE id = ? AND role <> 'parent'", [role, userId]);
+      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
+    },
+
+    // Không xoá cứng bao giờ: nhật ký thao tác trỏ tới actor_user_id, xoá bản ghi
+    // là mất dấu vết ai đã làm gì.
+    async setSchoolUserActive(userId, active) {
+      await query("UPDATE users SET active = ? WHERE id = ? AND role <> 'parent'", [active ? 1 : 0, userId]);
+      if (!active) await query("DELETE FROM sessions WHERE user_id = ?", [userId]);
       return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
     },
 

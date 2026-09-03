@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS users (
   locked_until          VARCHAR(32)      NULL,
   active                TINYINT(1)   NOT NULL DEFAULT 1,
   created_at            VARCHAR(32)  NOT NULL,
+  last_login_at         VARCHAR(32)      NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uk_users_account_index (account_index),
   UNIQUE KEY uk_users_microsoft_object_id (microsoft_object_id),

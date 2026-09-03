@@ -17,6 +17,13 @@ import { toErrorResponse } from "./error-reporting.mjs";
 import { loadMasterKey } from "./field-crypto.mjs";
 import { formatActivationCode, generateActivationCode, normalizeActivationCode } from "./activation-code.mjs";
 import { isUnchanged } from "./record-diff.mjs";
+import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
+import { decideSchoolLogin } from "./school-login.mjs";
+import {
+  ASSIGNABLE_SCHOOL_ROLES, CAP, ROLE, ROLE_LABELS,
+  can, effectiveRole, isSchoolEmail, isSuperadminAccount,
+  normalizeAccount, normalizeSchoolRole, parseSuperadminAccounts,
+} from "./roles.mjs";
 import {
   MAX_IMPORT_ROWS,
   analyzeCatalogImport,
@@ -36,6 +43,11 @@ const DATA_BACKEND = String(process.env.DATA_BACKEND || "sqlite").toLowerCase();
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "dkclb-2626f";
 const SHEETS_SERVICE_ACCOUNT = process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT || "nshm-sheet-reader@dkclb-2626f.iam.gserviceaccount.com";
 const MICROSOFT_REDIRECT_URI = process.env.MICROSOFT_REDIRECT_URI || `http://127.0.0.1:${PORT}/api/auth/microsoft/callback`;
+const MICROSOFT_ALLOWED_DOMAIN = process.env.MICROSOFT_ALLOWED_DOMAIN || "hoangmaistarschool.edu.vn";
+// Đường cứu độc lập với cơ sở dữ liệu. Khi đã tắt việc tự tạo tài khoản, một bản
+// ghi quản trị bị vô hiệu hoá nhầm sẽ khoá tất cả mọi người ra ngoài và chỉ cứu
+// được bằng cách sửa tay trong MySQL.
+const SUPERADMIN_ACCOUNTS = parseSuperadminAccounts(process.env.SUPERADMIN_ACCOUNTS);
 const SESSION_COOKIE = "nshm_session";
 const SESSION_MAX_AGE = 8 * 60 * 60;
 // Toàn bộ tệp giao diện nằm trong thư mục `public`. Vercel chỉ phục vụ tĩnh thư mục này,
@@ -46,6 +58,11 @@ const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-cl
 const MYSQL_URL = process.env.MYSQL_URL || "";
 // Dữ liệu mẫu chỉ được tạo khi bật rõ ràng, để môi trường thật không dính CLB minh họa.
 const SEED_DEMO_DATA = process.env.NSHM_SEED_DEMO === "1";
+
+if (!SUPERADMIN_ACCOUNTS.size) {
+  console.warn("[canh-bao] Chưa đặt SUPERADMIN_ACCOUNTS. Không ai quản lý được tài khoản nhà trường,"
+    + " và nếu bản ghi quản trị bị vô hiệu hoá thì phải sửa tay trong cơ sở dữ liệu mới vào lại được.");
+}
 
 if (!["sqlite", "firestore", "mysql"].includes(DATA_BACKEND)) {
   throw new Error("DATA_BACKEND chỉ chấp nhận 'sqlite', 'mysql' hoặc 'firestore'.");
@@ -90,7 +107,7 @@ const microsoftAuth = createMicrosoftAuth({
   clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
   clientAssertion: process.env.MICROSOFT_CLIENT_SECRET ? undefined : googleCloudAuth.getRuntimeOidcToken,
   redirectUri: MICROSOFT_REDIRECT_URI,
-  allowedDomain: process.env.MICROSOFT_ALLOWED_DOMAIN || "hoangmaistarschool.edu.vn",
+  allowedDomain: MICROSOFT_ALLOWED_DOMAIN,
 });
 
 let db = null;
@@ -99,14 +116,20 @@ const nowIso = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${randomBytes(7).toString("hex")}`;
 const sessionStorageKey = (token) => createHash("sha256").update(String(token)).digest("hex");
 const asInt = (value) => Number(value || 0);
-const publicUser = (user) => ({
-  id: user.id,
-  account: user.account,
-  displayName: user.display_name,
-  role: user.role,
-  authProvider: user.auth_provider || "local",
-  mustChangePassword: Boolean(user.must_change_password),
-});
+const publicUser = (user) => {
+  const role = effectiveRole(user, SUPERADMIN_ACCOUNTS);
+  return {
+    id: user.id,
+    account: user.account,
+    displayName: user.display_name,
+    role,
+    roleLabel: ROLE_LABELS[role] || role,
+    // Giao diện ẩn/hiện theo quyền thật của máy chủ, không tự suy từ tên vai trò.
+    capabilities: Object.values(CAP).filter((capability) => can(role, capability)),
+    authProvider: user.auth_provider || "local",
+    mustChangePassword: Boolean(user.must_change_password),
+  };
+};
 
 function hashPassword(password, salt = randomBytes(16).toString("hex")) {
   return { salt, hash: scryptSync(password, salt, 64).toString("hex") };
@@ -139,13 +162,39 @@ function ensureColumn(table, column, definition) {
   if (!columns.some((item) => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
+// Bảng users cũ có ràng buộc CHECK (role IN ('parent','admin')), nên thêm vai trò
+// 'giaovu' sẽ bị chặn. SQLite không sửa được CHECK, phải dựng lại bảng. Danh sách
+// vai trò hợp lệ nay do roles.mjs giữ — để ở hai nơi là chúng sẽ lệch nhau.
+function widenUserRoleConstraint() {
+  const definition = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
+  if (!definition?.sql?.includes("CHECK (role IN ('parent', 'admin'))")) return;
+  const columns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
+  const rebuilt = definition.sql
+    .replace("CREATE TABLE users", "CREATE TABLE users_rebuilt")
+    .replace("role TEXT NOT NULL CHECK (role IN ('parent', 'admin'))", "role TEXT NOT NULL");
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(rebuilt);
+    db.exec(`INSERT INTO users_rebuilt (${columns.join(", ")}) SELECT ${columns.join(", ")} FROM users`);
+    db.exec("DROP TABLE users");
+    db.exec("ALTER TABLE users_rebuilt RENAME TO users");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
 function initializeDatabase() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       account TEXT UNIQUE NOT NULL,
       display_name TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('parent', 'admin')),
+      role TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       auth_provider TEXT NOT NULL DEFAULT 'local',
@@ -282,6 +331,8 @@ function initializeDatabase() {
   ensureColumn("registrations", "period_id", "TEXT");
   ensureColumn("club_classes", "grades_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("users", "activation_code", "TEXT");
+  ensureColumn("users", "last_login_at", "TEXT");
+  widenUserRoleConstraint();
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_microsoft_object_id ON users(microsoft_object_id) WHERE microsoft_object_id IS NOT NULL;");
 
   const count = asInt(db.prepare("SELECT COUNT(*) AS count FROM users").get().count);
@@ -355,6 +406,9 @@ function demoSeedData({ includeAccounts = false } = {}) {
     users: [
       { id: "u_parent", account: "0901234567", displayName: "Mai Lan", role: "parent", passwordSalt: parentPassword.salt, passwordHash: parentPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
       { id: "u_admin", account: "admin@nshm.edu.vn", displayName: "Nguyễn Thu Hà", role: "admin", passwordSalt: adminPassword.salt, passwordHash: adminPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
+      // Tài khoản giáo vụ minh họa: cho thử được ranh giới quyền mà không cần
+      // dựng SSO. Chỉ tồn tại khi NSHM_SEED_DEMO=1, nền thật không bao giờ có.
+      { id: "u_giaovu", account: "giaovu@nshm.edu.vn", displayName: "Phạm Thu Trang", role: "giaovu", passwordSalt: adminPassword.salt, passwordHash: adminPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
       { id: "u_seed", account: "seed@nshm.local", displayName: "Dữ liệu hệ thống", role: "parent", passwordSalt: seedPassword.salt, passwordHash: seedPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
     ],
     students: STUDENT_SEED_ROWS.map(([id, code, name, grade, homeroom, level]) => ({
@@ -387,6 +441,7 @@ function seedDatabase() {
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
   insertUser.run("u_parent", "0901234567", "Mai Lan", "parent", parentPassword.salt, parentPassword.hash, createdAt);
   insertUser.run("u_admin", "admin@nshm.edu.vn", "Nguyễn Thu Hà", "admin", adminPassword.salt, adminPassword.hash, createdAt);
+  insertUser.run("u_giaovu", "giaovu@nshm.edu.vn", "Phạm Thu Trang", "giaovu", adminPassword.salt, adminPassword.hash, createdAt);
   insertUser.run("u_seed", "seed@nshm.local", "Dữ liệu hệ thống", "parent", seedPassword.salt, seedPassword.hash, createdAt);
 
   const insertStudent = db.prepare("INSERT INTO students (id, code, name, grade, homeroom, level) VALUES (?, ?, ?, ?, ?, ?)");
@@ -478,6 +533,19 @@ async function requireUser(req, role, allowInitialPassword = false) {
   if (user.must_change_password && !allowInitialPassword) throw httpError(403, "PASSWORD_CHANGE_REQUIRED", "Vui lòng đổi mật khẩu khởi tạo trước khi sử dụng hệ thống.");
   if (role && user.role !== role) throw httpError(403, "FORBIDDEN", "Bạn không có quyền thực hiện thao tác này.");
   return user;
+}
+
+/**
+ * Endpoint hỏi "thao tác này cần QUYỀN gì", không hỏi "vai trò nào được vào".
+ * Nhờ vậy thêm một vai trò mới chỉ phải sửa ma trận trong roles.mjs, thay vì rà
+ * lại hai chục điểm kiểm tra rời rạc — kiểu sửa mà bỏ sót một chỗ là mở toang
+ * một cánh cửa.
+ */
+async function requireSchoolUser(req, capability) {
+  const user = await requireUser(req);
+  const role = effectiveRole(user, SUPERADMIN_ACCOUNTS);
+  if (!can(role, capability)) throw httpError(403, "FORBIDDEN", "Bạn không có quyền thực hiện thao tác này.");
+  return { ...user, effectiveRole: role };
 }
 
 // `expose` đánh dấu đây là lỗi nghiệp vụ do hệ thống này tự tạo, được phép
@@ -800,6 +868,120 @@ function syncDirectoryLocal({ snapshot, actorUserId, timestamp, idFactory, sourc
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+/* ---------- Tài khoản nhà trường: tra cứu và ghi, chung cho cả ba nền ---------- */
+
+async function findSchoolUserForLogin({ objectId, email }) {
+  if (businessStore) return businessStore.findSchoolUserForLogin({ objectId, email });
+  return db.prepare("SELECT * FROM users WHERE (microsoft_object_id IS NOT NULL AND microsoft_object_id = ?) OR lower(account) = lower(?)")
+    .get(objectId || null, email) || null;
+}
+
+// Đăng nhập là xác minh danh tính, KHÔNG phải dịp cấp quyền: không đụng tới
+// role và active. Đây chính là lỗi của upsertMicrosoftUser cũ — nó ép role về
+// 'admin' ở mỗi lần đăng nhập, xoá sạch phân quyền đặt tay.
+async function linkMicrosoftLogin({ userId, identity, timestamp }) {
+  if (businessStore) return businessStore.linkMicrosoftLogin({ userId, identity, timestamp });
+  db.prepare(`UPDATE users SET display_name = ?, auth_provider = 'microsoft', microsoft_object_id = ?,
+    must_change_password = 0, login_failures = 0, locked_until = NULL, last_login_at = ? WHERE id = ?`)
+    .run(identity.name, identity.objectId || null, timestamp, userId);
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+}
+
+async function createSchoolUser({ id, account, displayName, role, timestamp, objectId = null, active = true }) {
+  // Tài khoản nhà trường đăng nhập bằng Microsoft 365 nên không có mật khẩu dùng
+  // được; đặt một chuỗi ngẫu nhiên để không tồn tại đường đăng nhập bằng mật khẩu.
+  const password = hashPassword(randomBytes(48).toString("base64url"));
+  if (businessStore) return businessStore.createSchoolUser({ id, account, displayName, role, password, timestamp, objectId, active });
+  db.prepare(`INSERT INTO users
+    (id, account, display_name, role, password_salt, password_hash, auth_provider, microsoft_object_id,
+      must_change_password, login_failures, active, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'microsoft', ?, 0, 0, ?, ?)`)
+    .run(id, account, displayName, role, password.salt, password.hash, objectId, active ? 1 : 0, timestamp);
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+}
+
+async function listSchoolUsers() {
+  if (businessStore) return businessStore.listSchoolUsers();
+  return db.prepare("SELECT * FROM users WHERE role <> 'parent' ORDER BY created_at ASC").all();
+}
+
+async function getUserById(userId) {
+  if (businessStore) return businessStore.getUserById(userId);
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(userId) || null;
+}
+
+async function setSchoolUserRole(userId, role) {
+  if (businessStore) return businessStore.setSchoolUserRole(userId, role);
+  db.prepare("UPDATE users SET role = ? WHERE id = ? AND role <> 'parent'").run(role, userId);
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+}
+
+// Không xoá cứng bao giờ: audit_logs trỏ tới actor_user_id, xoá bản ghi là mất
+// dấu vết ai đã làm gì. Vô hiệu hoá thì cắt phiên ngay để người đó không dùng
+// tiếp được phiên đang mở.
+async function setSchoolUserActive(userId, active) {
+  if (businessStore) return businessStore.setSchoolUserActive(userId, active);
+  db.prepare("UPDATE users SET active = ? WHERE id = ? AND role <> 'parent'").run(active ? 1 : 0, userId);
+  if (!active) db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+}
+
+
+function readSchoolAccountImportPayload(payload) {
+  const headers = Array.isArray(payload.headers) ? payload.headers.map((value) => String(value ?? "")) : [];
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  if (!headers.length) throw httpError(422, "IMPORT_HEADERS_REQUIRED", "Không đọc được dòng tiêu đề của tệp.");
+  if (!rows.length) throw httpError(422, "IMPORT_ROWS_REQUIRED", "Tệp không có dòng dữ liệu nào.");
+  if (rows.length > MAX_ACCOUNT_IMPORT_ROWS) throw httpError(413, "IMPORT_TOO_LARGE", `Tệp vượt quá ${MAX_ACCOUNT_IMPORT_ROWS} dòng dữ liệu.`);
+  return { headers, rows: rows.map((row) => (Array.isArray(row) ? row : [])) };
+}
+
+// Dùng chung cho thêm thủ công và nhập hàng loạt, để hai đường đi không bao giờ
+// kiểm tra khác nhau.
+async function createSchoolAccount({ email: rawEmail, displayName: rawName, role: rawRole }, actor, { source = "thu-cong" } = {}) {
+  const email = normalizeAccount(rawEmail);
+  const displayName = String(rawName || "").trim();
+  const role = normalizeSchoolRole(rawRole);
+
+  if (!isSchoolEmail(email, MICROSOFT_ALLOWED_DOMAIN)) {
+    throw httpError(422, "EMAIL_NGOAI_MIEN", `Email phải thuộc miền @${MICROSOFT_ALLOWED_DOMAIN}.`);
+  }
+  if (!displayName) throw httpError(422, "THIEU_HO_TEN", "Vui lòng nhập họ và tên.");
+  if (!role) throw httpError(422, "VAI_TRO_KHONG_HOP_LE", `Vai trò chỉ nhận: ${ASSIGNABLE_SCHOOL_ROLES.join(", ")}.`);
+
+  // Chặn cả khi email trùng một tài khoản phụ huynh: gộp hai loại tài khoản vào
+  // một bản ghi là lối vào cho việc leo thang quyền.
+  const existing = await findSchoolUserForLogin({ objectId: null, email });
+  if (existing) throw httpError(409, "TAI_KHOAN_DA_TON_TAI", "Email này đã có tài khoản trong hệ thống.");
+
+  const account = await createSchoolUser({
+    id: `u_ns_${randomBytes(10).toString("hex")}`,
+    account: email, displayName, role, timestamp: nowIso(),
+  });
+  await writeAudit({
+    actorUserId: actor.id, action: "SCHOOL_ACCOUNT_CREATED", entityType: "school_account",
+    entityId: account.id, after: { email, displayName, role, source },
+  });
+  return account;
+}
+
+function schoolUserView(user) {
+  const role = effectiveRole(user, SUPERADMIN_ACCOUNTS);
+  return {
+    id: user.id,
+    account: user.account,
+    displayName: user.display_name,
+    role,
+    roleLabel: ROLE_LABELS[role] || role,
+    // Quyền cao nhất đến từ biến môi trường nên không sửa được từ giao diện.
+    lockedByEnv: role === ROLE.superadmin,
+    active: asInt(user.active) === 1,
+    lastLoginAt: user.last_login_at || null,
+    createdAt: user.created_at || null,
+    status: asInt(user.active) !== 1 ? "vo-hieu-hoa" : user.last_login_at ? "dang-dung" : "cho-dang-nhap-lan-dau",
+  };
 }
 
 // ---- Danh mục vận hành: đợt đăng ký, CLB và lớp CLB ----
@@ -1482,23 +1664,50 @@ async function handleApi(req, res, url) {
     if (!businessStore) db.prepare("DELETE FROM oauth_states WHERE state = ?").run(state);
     if (!saved) throw httpError(401, "MICROSOFT_STATE_INVALID", "Phiên đăng nhập Microsoft 365 không hợp lệ hoặc đã hết hạn.");
     const identity = await microsoftAuth.exchangeCode({ code, state, nonce: saved.nonce, codeVerifier: saved.codeVerifier || saved.code_verifier });
-    const unusablePassword = hashPassword(randomBytes(48).toString("base64url"));
-    const userId = `u_ms_${identity.objectId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40) || randomBytes(8).toString("hex")}`;
-    let user;
-    if (businessStore) {
-      user = await businessStore.upsertMicrosoftUser({ identity, userId, password: unusablePassword, timestamp: nowIso() });
-    } else if ((user = db.prepare("SELECT * FROM users WHERE microsoft_object_id = ? OR lower(account) = lower(?)").get(identity.objectId, identity.email))) {
-      db.prepare(`UPDATE users SET account = ?, display_name = ?, role = 'admin', auth_provider = 'microsoft',
-        microsoft_object_id = ?, must_change_password = 0, login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`)
-        .run(identity.email, identity.name, identity.objectId, user.id);
-      user = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
-    } else {
-      db.prepare(`INSERT INTO users
-        (id, account, display_name, role, password_salt, password_hash, auth_provider, microsoft_object_id, created_at)
-        VALUES (?, ?, ?, 'admin', ?, ?, 'microsoft', ?, ?)`)
-        .run(userId, identity.email, identity.name, unusablePassword.salt, unusablePassword.hash, identity.objectId, nowIso());
-      user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+
+    const email = normalizeAccount(identity.email);
+    const timestamp = nowIso();
+    let user = await findSchoolUserForLogin({ objectId: identity.objectId, email });
+    const decision = decideSchoolLogin({
+      user, email, superadminAccounts: SUPERADMIN_ACCOUNTS,
+      isActive: (record) => asInt(record.active) === 1,
+    });
+
+    if (!decision.allow) {
+      // Ghi lại kèm email để bộ phận CNTT biết ai đang cần cấp quyền mà chủ động liên hệ.
+      await writeAudit({
+        actorUserId: null, action: "SSO_LOGIN_DENIED", entityType: "school_account",
+        entityId: email, after: { email, reason: decision.reason, name: identity.name || "" },
+      });
+      console.warn(`[dang-nhap] từ chối ${email}: ${decision.reason}`);
+      res.writeHead(302, { Location: `/?sso=${decision.reason}`, "Cache-Control": "no-store" });
+      return res.end();
     }
+
+    if (decision.action === "tao-moi") {
+      // Chỉ xảy ra với email trong SUPERADMIN_ACCOUNTS chưa có bản ghi.
+      const userId = `u_ms_${identity.objectId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40) || randomBytes(8).toString("hex")}`;
+      user = await createSchoolUser({
+        id: userId, account: email, displayName: identity.name || email,
+        role: decision.role, timestamp, objectId: identity.objectId,
+      });
+      await writeAudit({
+        actorUserId: user.id, action: "SCHOOL_ACCOUNT_BOOTSTRAPPED", entityType: "school_account",
+        entityId: user.id, after: { email, role: decision.role },
+        reason: "Email nằm trong SUPERADMIN_ACCOUNTS nhưng chưa có bản ghi.",
+      });
+    } else {
+      if (decision.reactivate) {
+        await setSchoolUserActive(user.id, true);
+        await writeAudit({
+          actorUserId: user.id, action: "SCHOOL_ACCOUNT_REACTIVATED", entityType: "school_account",
+          entityId: user.id, after: { email, active: true },
+          reason: "Đường cứu: email nằm trong SUPERADMIN_ACCOUNTS.",
+        });
+      }
+      user = await linkMicrosoftLogin({ userId: user.id, identity, timestamp });
+    }
+
     res.writeHead(302, { Location: "/?sso=success", "Set-Cookie": await createSession(user), "Cache-Control": "no-store" });
     return res.end();
   }
@@ -1630,22 +1839,22 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "GET" && url.pathname === "/api/admin/dashboard") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.baoCao);
     return sendJson(res, 200, { dashboard: await dashboardData() });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/integrations/google-sheets") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.dongBoDanhBa);
     return sendJson(res, 200, { integration: { ...directorySource.getStatus(), schedule: syncScheduler.getStatus() } });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/integrations/google-sheets/preview") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.dongBoDanhBa);
     return sendJson(res, 200, { preview: await directorySource.preview() });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/integrations/google-sheets/sync") {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.dongBoDanhBa);
     const { confirmation = "" } = await readJson(req);
     if (confirmation !== "SYNC_STUDENT_DIRECTORY") throw httpError(422, "SYNC_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đồng bộ danh bạ học sinh.");
     // Đi qua bộ hẹn giờ để lượt bấm tay không chồng lên lượt chạy theo lịch:
@@ -1656,12 +1865,12 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "GET" && url.pathname === "/api/admin/export/collections") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.xuatDuLieu);
     return sendJson(res, 200, { collections: BACKUP_COLLECTIONS, pageSize: BACKUP_PAGE_SIZE, schemaVersion: BACKUP_SCHEMA_VERSION });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/export/backup") {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.xuatDuLieu);
     const { confirmation = "", collection = "", after = null } = await readJson(req);
     if (confirmation !== "EXPORT_FULL_BACKUP") {
       throw httpError(422, "EXPORT_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi xuất toàn bộ dữ liệu.");
@@ -1670,8 +1879,131 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { page });
   }
 
+  /* ---------- Quản lý tài khoản nhà trường (chỉ quản trị cao nhất) ---------- */
+
+  if (method === "GET" && url.pathname === "/api/admin/school-accounts") {
+    await requireSchoolUser(req, CAP.quanLyTaiKhoan);
+    const search = normalizeAccount(url.searchParams.get("search") || "");
+    const accounts = (await listSchoolUsers()).map(schoolUserView)
+      .filter((account) => !search
+        || normalizeAccount(account.account).includes(search)
+        || normalizeAccount(account.displayName).includes(search));
+    return sendJson(res, 200, {
+      accounts,
+      roles: ASSIGNABLE_SCHOOL_ROLES.map((role) => ({ value: role, label: ROLE_LABELS[role] })),
+      domain: MICROSOFT_ALLOWED_DOMAIN,
+      // Bằng 0 nghĩa là chưa đặt SUPERADMIN_ACCOUNTS: mất đường cứu, phải cảnh báo.
+      superadminCount: SUPERADMIN_ACCOUNTS.size,
+    });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/school-accounts") {
+    const actor = await requireSchoolUser(req, CAP.quanLyTaiKhoan);
+    const body = await readJson(req);
+    const account = await createSchoolAccount(body, actor);
+    return sendJson(res, 201, { account: schoolUserView(account) });
+  }
+
+  const schoolAccountMatch = url.pathname.match(/^\/api\/admin\/school-accounts\/([^/]+)$/);
+  if (method === "PATCH" && schoolAccountMatch) {
+    const actor = await requireSchoolUser(req, CAP.quanLyTaiKhoan);
+    const target = await getUserById(schoolAccountMatch[1]);
+    if (!target || target.role === ROLE.parent) throw httpError(404, "KHONG_TIM_THAY", "Không tìm thấy tài khoản nhà trường này.");
+    const body = await readJson(req);
+
+    // Tự vô hiệu hoá chính mình là cách nhanh nhất để không còn ai quản lý được
+    // tài khoản. Đặt trước mọi kiểm tra khác để thông báo nói đúng nguyên nhân.
+    if (body.active === false && target.id === actor.id) {
+      throw httpError(409, "KHONG_TU_VO_HIEU_HOA", "Không thể tự vô hiệu hoá tài khoản của chính mình.");
+    }
+
+    // Vai trò cao nhất do biến môi trường quy định, sửa trong cơ sở dữ liệu sẽ bị
+    // ghi đè ở lần đăng nhập kế tiếp — nói thẳng thay vì để người dùng tưởng đã đổi.
+    if (isSuperadminAccount(target.account, SUPERADMIN_ACCOUNTS)) {
+      throw httpError(409, "TAI_KHOAN_KHOA_BOI_CAU_HINH",
+        "Tài khoản này nằm trong SUPERADMIN_ACCOUNTS nên quyền do cấu hình máy chủ quyết định. Hãy sửa biến môi trường rồi khởi động lại dịch vụ.");
+    }
+
+    let updated = target;
+    if (body.role !== undefined) {
+      const role = normalizeSchoolRole(body.role);
+      if (!role) throw httpError(422, "VAI_TRO_KHONG_HOP_LE", `Vai trò chỉ nhận: ${ASSIGNABLE_SCHOOL_ROLES.join(", ")}.`);
+      if (role !== target.role) {
+        updated = await setSchoolUserRole(target.id, role);
+        await writeAudit({
+          actorUserId: actor.id, action: "SCHOOL_ACCOUNT_ROLE_CHANGED", entityType: "school_account",
+          entityId: target.id, before: { role: target.role }, after: { role },
+          reason: String(body.reason || "").trim() || null,
+        });
+      }
+    }
+
+    if (body.active !== undefined) {
+      const active = Boolean(body.active);
+      if (active !== (asInt(updated.active) === 1)) {
+        updated = await setSchoolUserActive(target.id, active);
+        await writeAudit({
+          actorUserId: actor.id,
+          action: active ? "SCHOOL_ACCOUNT_REACTIVATED" : "SCHOOL_ACCOUNT_DEACTIVATED",
+          entityType: "school_account", entityId: target.id,
+          before: { active: asInt(target.active) === 1 }, after: { active },
+          reason: String(body.reason || "").trim() || null,
+        });
+      }
+    }
+
+    return sendJson(res, 200, { account: schoolUserView(updated) });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/school-accounts/import/preview") {
+    await requireSchoolUser(req, CAP.quanLyTaiKhoan);
+    const payload = await readJson(req, 4_000_000);
+    const { headers, rows } = readSchoolAccountImportPayload(payload);
+    const existing = (await listSchoolUsers()).map(schoolUserView);
+    return sendJson(res, 200, {
+      preview: analyzeSchoolAccountImport({ headers, rows, existing, domain: MICROSOFT_ALLOWED_DOMAIN }),
+    });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/school-accounts/import/commit") {
+    const actor = await requireSchoolUser(req, CAP.quanLyTaiKhoan);
+    const payload = await readJson(req, 4_000_000);
+    const { headers, rows } = readSchoolAccountImportPayload(payload);
+    const existing = (await listSchoolUsers()).map(schoolUserView);
+    const analysis = analyzeSchoolAccountImport({ headers, rows, existing, domain: MICROSOFT_ALLOWED_DOMAIN });
+    if (analysis.missing.length) throw httpError(422, "THIEU_COT", `Thiếu cột bắt buộc: ${analysis.missing.join(", ")}.`);
+    // Còn dòng lỗi thì không ghi gì: nhập nửa vời để lại một danh sách mà không
+    // ai biết đã vào tới đâu.
+    if (analysis.summary.invalid > 0) {
+      throw httpError(422, "CON_DONG_LOI", `Còn ${analysis.summary.invalid} dòng chưa hợp lệ. Hãy sửa tệp rồi kiểm tra lại.`);
+    }
+
+    const counters = { created: 0, updated: 0, unchanged: analysis.summary.unchanged };
+    for (const entry of analysis.entries) {
+      if (entry.action === "tao-moi") {
+        const account = await createSchoolAccount(
+          { email: entry.email, displayName: entry.displayName, role: entry.role },
+          actor,
+          { source: "nhap-tep" },
+        );
+        counters.created += 1;
+        void account;
+      } else if (entry.action === "cap-nhat") {
+        if (entry.truoc.role !== entry.role) await setSchoolUserRole(entry.id, entry.role);
+        if (!entry.truoc.active) await setSchoolUserActive(entry.id, true);
+        await writeAudit({
+          actorUserId: actor.id, action: "SCHOOL_ACCOUNT_IMPORT_UPDATED", entityType: "school_account",
+          entityId: entry.id, before: entry.truoc, after: { role: entry.role, displayName: entry.displayName, active: true },
+          reason: "Nhập hàng loạt từ tệp.",
+        });
+        counters.updated += 1;
+      }
+    }
+    return sendJson(res, 200, { result: { counters, summary: analysis.summary } });
+  }
+
   if (method === "POST" && url.pathname === "/api/admin/accounts/activation-codes") {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.maKichHoat);
     const { confirmation = "" } = await readJson(req);
     if (confirmation !== "ISSUE_ACTIVATION_CODES") {
       throw httpError(422, "ISSUE_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi cấp và xem danh sách mã kích hoạt.");
@@ -1680,14 +2012,14 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "GET" && url.pathname === "/api/admin/accounts/lookup") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.maKichHoat);
     const account = url.searchParams.get("account") || "";
     if (!String(account).trim()) throw httpError(400, "ACCOUNT_REQUIRED", "Vui lòng nhập số điện thoại hoặc email cần tra cứu.");
     return sendJson(res, 200, { lookup: await lookupAccount(account) });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/accounts/reset-initial-password") {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.maKichHoat);
     const { account = "", confirmation = "" } = await readJson(req);
     if (confirmation !== "RESET_INITIAL_PASSWORD") {
       throw httpError(422, "RESET_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đặt lại mật khẩu của phụ huynh.");
@@ -1696,59 +2028,59 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "GET" && url.pathname === "/api/admin/periods") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.danhMuc);
     const periods = await listPeriodRows();
     const active = await getActivePeriod();
     return sendJson(res, 200, { periods, activePeriodId: active?.id || null, serverTime: nowIso() });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/periods") {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.danhMuc);
     const period = await savePeriodRecord({ actorUserId: user.id, periodId: null, input: await readJson(req) });
     return sendJson(res, 201, { period });
   }
 
   const periodMatch = url.pathname.match(/^\/api\/admin\/periods\/([^/]+)$/);
   if (method === "PATCH" && periodMatch) {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.danhMuc);
     const period = await savePeriodRecord({ actorUserId: user.id, periodId: decodeURIComponent(periodMatch[1]), input: await readJson(req) });
     return sendJson(res, 200, { period });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/catalog") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.danhMuc);
     const [catalog, periods, active] = await Promise.all([adminCatalogData(), listPeriodRows(), getActivePeriod()]);
     return sendJson(res, 200, { ...catalog, periods, activePeriodId: active?.id || null });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/clubs") {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.danhMuc);
     const club = await saveClubRecord({ actorUserId: user.id, clubId: null, input: await readJson(req) });
     return sendJson(res, 201, { club });
   }
 
   const clubMatch = url.pathname.match(/^\/api\/admin\/clubs\/([^/]+)$/);
   if (method === "PATCH" && clubMatch) {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.danhMuc);
     const club = await saveClubRecord({ actorUserId: user.id, clubId: decodeURIComponent(clubMatch[1]), input: await readJson(req) });
     return sendJson(res, 200, { club });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/classes") {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.danhMuc);
     const clubClass = await saveClassRecord({ actorUserId: user.id, classId: null, input: await readJson(req) });
     return sendJson(res, 201, { class: clubClass });
   }
 
   const classMatch = url.pathname.match(/^\/api\/admin\/classes\/([^/]+)$/);
   if (method === "PATCH" && classMatch) {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.danhMuc);
     const clubClass = await saveClassRecord({ actorUserId: user.id, classId: decodeURIComponent(classMatch[1]), input: await readJson(req) });
     return sendJson(res, 200, { class: clubClass });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/catalog/import/preview") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.danhMuc);
     const payload = await readJson(req, 8_000_000);
     const { headers, rows } = readCatalogImportPayload(payload);
     const periodId = String(payload.periodId || "");
@@ -1769,7 +2101,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "POST" && url.pathname === "/api/admin/catalog/import/commit") {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.danhMuc);
     const payload = await readJson(req, 8_000_000);
     if (payload.confirmation !== "IMPORT_CLUB_CATALOG") {
       throw httpError(422, "IMPORT_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi ghi danh mục vào hệ thống.");
@@ -1785,7 +2117,7 @@ async function handleApi(req, res, url) {
 
   const confirmMatch = url.pathname.match(/^\/api\/admin\/registrations\/([^/]+)\/confirm-payment$/);
   if (method === "PATCH" && confirmMatch) {
-    const user = await requireUser(req, "admin");
+    const user = await requireSchoolUser(req, CAP.duyetDon);
     const timestamp = nowIso();
     if (businessStore) {
       const result = await businessStore.confirmPayment({ registrationId: confirmMatch[1], actorUserId: user.id, timestamp });
@@ -1802,7 +2134,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "GET" && url.pathname === "/api/admin/reports/registrations.csv") {
-    await requireUser(req, "admin");
+    await requireSchoolUser(req, CAP.xuatDuLieu);
     const rows = await listRegistrations({ role: "admin" });
     const statusNames = { payment: "Chờ thanh toán", confirmed: "Đã xác nhận", waitlist: "Danh sách chờ", conflict: "Trùng lịch", submitted: "Đã gửi", cancelled: "Đã hủy" };
     const csvRows = [["Mã đơn","Học sinh","Lớp","CLB","Lịch","Trạng thái","Số tiền"], ...rows.map((row) => [row.id,row.student,row.className,row.club,row.schedule,statusNames[row.status] || row.status,row.amount])];
