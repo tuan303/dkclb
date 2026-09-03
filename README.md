@@ -404,7 +404,18 @@ Mỗi lần từ chối đều được ghi vào nhật ký kèm email, để b�
 | --- | --- | --- |
 | **Quản trị cao nhất** | Toàn quyền, gồm quản lý tài khoản nhà trường | — |
 | **Quản trị vận hành** (`admin`) | Danh mục CLB, đợt đăng ký, duyệt đơn, đồng bộ danh bạ, xuất dữ liệu | Quản lý tài khoản nhà trường |
-| **Giáo vụ** (`giaovu`) | Nhập danh mục CLB, xem báo cáo, cấp mã kích hoạt cho phụ huynh, tải danh sách đăng ký để xếp lớp | Sao lưu toàn bộ CSDL, duyệt đơn, đồng bộ danh bạ, quản lý tài khoản |
+| **Giáo vụ** (`giaovu`) | Nhập danh mục CLB, xem báo cáo, tra cứu tài khoản phụ huynh, tải danh sách đăng ký để xếp lớp | Cấp lại mã kích hoạt, sao lưu toàn bộ CSDL, duyệt đơn, đồng bộ danh bạ, quản lý tài khoản |
+
+### Vì sao giáo vụ tra cứu được nhưng không cấp lại được mã kích hoạt
+
+Cấp lại mã kích hoạt **xoá mật khẩu riêng của phụ huynh** rồi trả mã mới cho người bấm nút. Ai làm được việc đó là đăng nhập được vào tài khoản phụ huynh và xem hồ sơ con họ, còn phụ huynh thật thì bị đá ra. Tệp cấp mã hàng loạt còn nặng hơn: nó chứa mã đăng nhập của cả 7.119 tài khoản.
+
+Nên hai việc được tách làm hai quyền:
+
+- **Tra cứu hỗ trợ** (giáo vụ): xem một tài khoản đang ở trạng thái nào — đang tắt, bị khoá tạm, chưa kích hoạt, đã có mật khẩu riêng, đã liên kết mấy học sinh. **Không đọc được mã.**
+- **Cấp mã kích hoạt** (quản trị vận hành trở lên): cấp lại mã cho một phụ huynh, và xuất tệp mã hàng loạt.
+
+Giáo vụ vẫn trả lời được "vì sao phụ huynh không đăng nhập được"; đến bước cần cấp mã thì chuyển cho quản trị vận hành.
 
 Có hai thứ dễ bị gộp làm một nhưng khác hẳn nhau về mức nhạy cảm:
 

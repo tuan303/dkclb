@@ -107,9 +107,17 @@ export function analyzeSchoolAccountImport({ rows = [], headers = [], existing =
       entries.push({ action: "tao-moi", row: sourceRow, email, displayName, role });
       return;
     }
+    // Tài khoản do biến môi trường quy định thì tệp không sửa được. Đây là một
+    // hành động RIÊNG chứ không phải dòng lỗi: đánh là lỗi sẽ chặn cả tệp
+    // (máy chủ từ chối khi còn dòng lỗi), ép người dùng xoá tay một dòng mỗi lần.
+    if (current.lockedByEnv) {
+      summary.skipped += 1;
+      entries.push({ action: "bo-qua", row: sourceRow, email, displayName, role, id: current.id, lyDo: "khoa-boi-cau-hinh" });
+      return;
+    }
     // So sánh trên bản đã chuẩn hoá: không có gì đổi thì đừng ghi, để nhật ký
     // thao tác không đầy những dòng "đã cập nhật" mà thực ra chẳng đổi gì.
-    const unchanged = current.role === role && String(current.displayName || "") === displayName && current.active !== false;
+    const unchanged = current.role === role && String(current.displayName || "") === displayName;
     if (unchanged) {
       summary.unchanged += 1;
       entries.push({ action: "khong-doi", row: sourceRow, email, displayName, role, id: current.id });
@@ -118,7 +126,7 @@ export function analyzeSchoolAccountImport({ rows = [], headers = [], existing =
     summary.update += 1;
     entries.push({
       action: "cap-nhat", row: sourceRow, email, displayName, role, id: current.id,
-      truoc: { role: current.role, displayName: current.displayName || "", active: current.active !== false },
+      truoc: { role: current.role, displayName: current.displayName || "" },
     });
   });
 
@@ -136,5 +144,5 @@ export function analyzeSchoolAccountImport({ rows = [], headers = [], existing =
 }
 
 function emptySummary() {
-  return { create: 0, update: 0, unchanged: 0, invalid: 0 };
+  return { create: 0, update: 0, unchanged: 0, skipped: 0, invalid: 0 };
 }

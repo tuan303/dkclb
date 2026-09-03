@@ -33,7 +33,7 @@ test("mỗi mục điều hướng quản trị gắn với một quyền", () =
     ["finance", "duyet-don"],
     ["reports", "danh-sach-van-hanh"],
     ["accounts", "quan-ly-tai-khoan"],
-    ["settings", "ma-kich-hoat"],
+    ["settings", "tra-cuu-ho-tro"],
   ]) {
     const line = nav.split("\n").find((row) => row.includes(`id: "${id}"`));
     assert.ok(line, `thiếu mục điều hướng ${id}`);

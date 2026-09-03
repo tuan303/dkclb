@@ -76,7 +76,7 @@ const adminNav = [
   { id: "reports", label: "Báo cáo & xuất file", icon: "chart", cap: "danh-sach-van-hanh" },
   { id: "accounts", label: "Tài khoản nhà trường", icon: "settings", cap: "quan-ly-tai-khoan" },
   { id: "structure", label: "Cấu trúc hệ thống", icon: "file" },
-  { id: "settings", label: "Cấu hình & phân quyền", icon: "settings", cap: "ma-kich-hoat" },
+  { id: "settings", label: "Cấu hình & phân quyền", icon: "settings", cap: "tra-cuu-ho-tro" },
 ];
 
 const pageMeta = {
@@ -1642,6 +1642,7 @@ function renderSchoolAccounts() {
       <div class="kpi-item"><span>Tạo mới</span><strong>${preview.summary.create}</strong></div>
       <div class="kpi-item"><span>Cập nhật</span><strong>${preview.summary.update}</strong></div>
       <div class="kpi-item"><span>Không đổi</span><strong>${preview.summary.unchanged}</strong></div>
+      <div class="kpi-item"><span>Bỏ qua</span><strong>${preview.summary.skipped || 0}</strong></div>
       <div class="kpi-item"><span>Dòng lỗi</span><strong>${preview.summary.invalid}</strong></div>
     </div>
     ${preview.missing?.length ? `<div class="inline-alert">Thiếu cột bắt buộc: ${preview.missing.map(escapeHtml).join(", ")}.</div>` : ""}
@@ -1650,6 +1651,7 @@ function renderSchoolAccounts() {
     <div class="sync-verdict ${preview.readyToCommit ? "ready" : "blocked"}">${preview.readyToCommit
       ? `✓ Sẵn sàng ghi ${preview.summary.create} tài khoản mới và cập nhật ${preview.summary.update} tài khoản.`
       : "Chưa ghi được: hãy sửa các dòng lỗi trong tệp rồi chọn lại."}</div>
+    ${preview.summary.skipped ? `<div class="info-note"><strong>${preview.summary.skipped} dòng bị bỏ qua</strong> vì tài khoản đó do biến môi trường SUPERADMIN_ACCOUNTS quy định. Muốn đổi thì sửa cấu hình máy chủ rồi khởi động lại dịch vụ.</div>` : ""}
     ${preview.readyToCommit ? `<div class="sync-actions"><button class="button button-primary" data-account-import-commit>Ghi vào hệ thống</button><button class="button button-secondary" data-account-import-cancel>Bỏ qua</button></div>` : ""}
   </div>`;
 

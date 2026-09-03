@@ -43,6 +43,12 @@ export const CAP = {
   duyetDon: "duyet-don",
   danhMuc: "danh-muc",
   baoCao: "bao-cao",
+  // Tra cứu vì sao một phụ huynh không đăng nhập được: chỉ đọc trạng thái, KHÔNG
+  // thấy mã kích hoạt.
+  traCuuHoTro: "tra-cuu-ho-tro",
+  // Cấp lại mã kích hoạt, và tải tệp mã của toàn bộ phụ huynh. Đây thực chất là
+  // quyền ĐĂNG NHẬP THAY một phụ huynh bất kỳ: cấp lại mã sẽ xoá mật khẩu riêng
+  // của họ rồi trả mã mới cho người gọi. Vì vậy nó không đi chung với tra cứu.
   maKichHoat: "ma-kich-hoat",
 };
 
@@ -53,8 +59,8 @@ const ALL_CAPS = Object.values(CAP);
 // KHÔNG quản lý tài khoản nhà trường.
 const MATRIX = {
   [ROLE.superadmin]: ALL_CAPS,
-  [ROLE.admin]: [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.maKichHoat],
-  [ROLE.giaovu]: [CAP.danhMuc, CAP.baoCao, CAP.maKichHoat, CAP.danhSachVanHanh],
+  [ROLE.admin]: [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.maKichHoat],
+  [ROLE.giaovu]: [CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.danhSachVanHanh],
   [ROLE.parent]: [],
 };
 

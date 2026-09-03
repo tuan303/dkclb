@@ -236,12 +236,21 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
     const missing = expected.filter((table) => !present.has(table));
     if (missing.length) throw storeError(`Schema MySQL thiếu bảng: ${missing.join(", ")}.`);
   }
-  await applySchema();
+  // Khởi tạo hỏng mà không đóng pool là mỗi lần thử lại rò một kết nối, giữ tới
+  // hết wait_timeout. Kho dữ liệu khởi tạo lười nên mỗi request lỗi lại thử lại
+  // một lần — đủ để làm cạn max_connections của MySQL.
+  try {
+    await applySchema();
+  } catch (error) {
+    await pool.end().catch(() => {});
+    throw error;
+  }
 
   // Bảng đã tồn tại trên máy chủ thì CREATE TABLE IF NOT EXISTS không làm gì cả,
   // nên cột thêm sau này phải được vá riêng. Idempotent: chạy lại bao nhiêu lần
   // cũng không sao.
   async function ensureColumns() {
+    await pool.query("SET SESSION lock_wait_timeout = 10").catch(() => {});
     const wanted = [
       ["users", "last_login_at", "VARCHAR(32) NULL"],
     ];
@@ -256,7 +265,12 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       }
     }
   }
-  await ensureColumns();
+  try {
+    await ensureColumns();
+  } catch (error) {
+    await pool.end().catch(() => {});
+    throw error;
+  }
 
   const auditId = () => `audit_${randomBytes(10).toString("hex")}`;
 
@@ -453,6 +467,11 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
 
     async getUserById(userId) {
       return asServerUser(await first("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]), crypto);
+    },
+
+    async setSchoolUserDisplayName(userId, displayName) {
+      await query("UPDATE users SET display_name = ? WHERE id = ? AND role <> 'parent'", [crypto.encrypt(displayName), userId]);
+      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
     },
 
     async setSchoolUserRole(userId, role) {

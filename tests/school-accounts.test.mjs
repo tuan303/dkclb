@@ -56,10 +56,18 @@ test("giáo vụ tải được danh sách đăng ký để xếp lớp", async 
   }
 });
 
-test("giáo vụ vẫn nhập được danh mục, xem được báo cáo và cấp được mã kích hoạt", async () => {
+test("giáo vụ vẫn nhập được danh mục, xem được báo cáo và tra cứu được tài khoản", async () => {
   assert.equal((await request("/api/admin/catalog", giaovuCookie)).status, 200);
   assert.equal((await request("/api/admin/dashboard", giaovuCookie)).status, 200);
   assert.equal((await request("/api/admin/accounts/lookup?account=0901234567", giaovuCookie)).status, 200);
+});
+
+test("giáo vụ không cấp lại được mã kích hoạt cho phụ huynh", async () => {
+  // Cấp lại mã sẽ xoá mật khẩu riêng của phụ huynh rồi trả mã mới cho người gọi.
+  const response = await request("/api/admin/accounts/reset-initial-password", giaovuCookie, {
+    method: "POST", body: JSON.stringify({ account: "0901234567" }),
+  });
+  assert.equal(response.status, 403);
 });
 
 test("giáo vụ không quản lý được tài khoản nhà trường", async () => {
@@ -104,7 +112,7 @@ test("giao diện nhận được danh sách quyền để tự ẩn đúng ch�
   const me = await json(await request("/api/me", giaovuCookie));
   assert.equal(me.user.role, "giaovu");
   assert.equal(me.user.roleLabel, "Giáo vụ");
-  assert.deepEqual([...me.user.capabilities].sort(), ["bao-cao", "danh-muc", "danh-sach-van-hanh", "ma-kich-hoat"]);
+  assert.deepEqual([...me.user.capabilities].sort(), ["bao-cao", "danh-muc", "danh-sach-van-hanh", "tra-cuu-ho-tro"]);
 });
 
 /* ---------- Danh sách và tạo tài khoản ---------- */

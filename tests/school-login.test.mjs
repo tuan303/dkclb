@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DENIAL, DENIAL_MESSAGE, decideSchoolLogin } from "../school-login.mjs";
-import { ROLE, parseSuperadminAccounts } from "../roles.mjs";
+import { ROLE, effectiveRole, parseSuperadminAccounts } from "../roles.mjs";
 
 const SUPERS = parseSuperadminAccounts("tuantm@hoangmaistarschool.edu.vn");
 const NONE = parseSuperadminAccounts("");
@@ -55,11 +55,23 @@ test("admin đang hoạt động vào bình thường", () => {
 
 /* ---------- Đường cứu bằng biến môi trường ---------- */
 
-test("email trong danh sách cứu chưa có bản ghi thì được tạo với quyền cao nhất", () => {
+test("email trong danh sách cứu chưa có bản ghi thì được tạo với vai trò 'admin'", () => {
   const result = decide(null, "tuantm@hoangmaistarschool.edu.vn");
   assert.equal(result.allow, true);
   assert.equal(result.action, "tao-moi");
-  assert.equal(result.role, ROLE.superadmin);
+  // KHÔNG ghi 'superadmin' xuống cơ sở dữ liệu: effectiveRole chỉ nâng chứ không
+  // hạ, nên một bản ghi 'superadmin' sẽ giữ toàn quyền vĩnh viễn kể cả sau khi
+  // email đã bị gỡ khỏi SUPERADMIN_ACCOUNTS — tức gỡ khỏi biến không thu hồi được quyền.
+  assert.equal(result.role, ROLE.admin);
+  assert.notEqual(result.role, ROLE.superadmin);
+});
+
+test("gỡ email khỏi biến môi trường thì thu hồi được quyền cao nhất", () => {
+  // Người này từng được nhánh cứu tạo bản ghi. Sau khi gỡ khỏi biến, họ phải trở
+  // về đúng vai trò lưu trong cơ sở dữ liệu.
+  const bootstrapped = { account: "tuantm@hoangmaistarschool.edu.vn", role: ROLE.admin, active: 1 };
+  assert.equal(effectiveRole(bootstrapped, SUPERS), ROLE.superadmin);
+  assert.equal(effectiveRole(bootstrapped, NONE), ROLE.admin);
 });
 
 test("email trong danh sách cứu bị vô hiệu hoá nhầm vẫn vào được và được bật lại", () => {

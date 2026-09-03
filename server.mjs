@@ -912,6 +912,12 @@ async function getUserById(userId) {
   return db.prepare("SELECT * FROM users WHERE id = ?").get(userId) || null;
 }
 
+async function setSchoolUserDisplayName(userId, displayName) {
+  if (businessStore) return businessStore.setSchoolUserDisplayName(userId, displayName);
+  db.prepare("UPDATE users SET display_name = ? WHERE id = ? AND role <> 'parent'").run(displayName, userId);
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+}
+
 async function setSchoolUserRole(userId, role) {
   if (businessStore) return businessStore.setSchoolUserRole(userId, role);
   db.prepare("UPDATE users SET role = ? WHERE id = ? AND role <> 'parent'").run(role, userId);
@@ -928,6 +934,13 @@ async function setSchoolUserActive(userId, active) {
   return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
 }
 
+
+function assertSchoolAccountWritable(target) {
+  if (isSuperadminAccount(target.account, SUPERADMIN_ACCOUNTS)) {
+    throw httpError(409, "TAI_KHOAN_KHOA_BOI_CAU_HINH",
+      "Tài khoản này nằm trong SUPERADMIN_ACCOUNTS nên quyền do cấu hình máy chủ quyết định. Hãy sửa biến môi trường rồi khởi động lại dịch vụ.");
+  }
+}
 
 function readSchoolAccountImportPayload(payload) {
   const headers = Array.isArray(payload.headers) ? payload.headers.map((value) => String(value ?? "")) : [];
@@ -975,8 +988,10 @@ function schoolUserView(user) {
     displayName: user.display_name,
     role,
     roleLabel: ROLE_LABELS[role] || role,
-    // Quyền cao nhất đến từ biến môi trường nên không sửa được từ giao diện.
-    lockedByEnv: role === ROLE.superadmin,
+    // Suy từ BIẾN MÔI TRƯỜNG, đúng bằng điều kiện mà lá chắn ở máy chủ dùng.
+    // Suy từ vai trò sẽ lệch: một bản ghi role='superadmin' còn sót lại sẽ được
+    // giao diện khoá và khuyên "sửa biến môi trường", trong khi máy chủ vẫn cho sửa.
+    lockedByEnv: isSuperadminAccount(user.account, SUPERADMIN_ACCOUNTS),
     active: asInt(user.active) === 1,
     lastLoginAt: user.last_login_at || null,
     createdAt: user.created_at || null,
@@ -1289,7 +1304,10 @@ function readCatalogImportPayload(payload) {
 
 // Trả về đúng những gì bộ phận IT cần để trả lời "vì sao phụ huynh không đăng nhập được",
 // không trả về salt hay hash.
-async function lookupAccount(rawAccount) {
+// canSeeCode: chỉ người có quyền cấp mã mới đọc được mã. Mã kích hoạt CHÍNH LÀ
+// mật khẩu của phụ huynh, nên trả nó cho người chỉ có quyền tra cứu là trao luôn
+// quyền đăng nhập thay họ.
+async function lookupAccount(rawAccount, { canSeeCode = false } = {}) {
   const input = String(rawAccount || "").trim();
   const normalized = toVietnameseLocalPhone(input) || input.toLowerCase();
   const user = businessStore
@@ -1331,7 +1349,9 @@ async function lookupAccount(rawAccount) {
     mustChangePassword: Boolean(user.must_change_password),
     // Chỉ trả mã khi tài khoản còn CHƯA kích hoạt: đã đặt mật khẩu riêng rồi thì
     // không còn mã nào để đọc, và cũng không được phép đọc mật khẩu của phụ huynh.
-    activationCode: usesActivationCode(user) ? formatActivationCode(user.activation_code) : null,
+    activationCode: canSeeCode && usesActivationCode(user) ? formatActivationCode(user.activation_code) : null,
+    // Người tra cứu vẫn cần biết tài khoản đang ở trạng thái nào, chỉ là không đọc được mã.
+    chuaKichHoat: usesActivationCode(user),
     loginFailures: asInt(user.login_failures),
     lockedUntil: locked ? user.locked_until : null,
     createdAt: user.created_at,
@@ -1344,6 +1364,7 @@ async function lookupAccount(rawAccount) {
   else if (account.authProvider !== "local") diagnosis = "Tài khoản này đăng nhập bằng Microsoft 365, không dùng mật khẩu riêng.";
   else if (locked) diagnosis = `Đang tạm khóa 15 phút do đăng nhập sai ${account.loginFailures} lần. Hết khóa lúc ${account.lockedUntil} (giờ UTC).`;
   else if (account.activationCode) diagnosis = `Tài khoản chưa kích hoạt. Mã kích hoạt hiện tại là ${account.activationCode}; phụ huynh nhập mã này rồi đặt mật khẩu riêng.`;
+  else if (account.chuaKichHoat) diagnosis = "Tài khoản chưa kích hoạt và đã có mã. Nhờ quản trị vận hành đọc lại mã hoặc cấp mã mới cho phụ huynh.";
   else if (account.mustChangePassword) diagnosis = "Tài khoản chưa kích hoạt nhưng không còn mã. Hãy cấp mã kích hoạt mới bằng nút bên dưới.";
   else diagnosis = "Phụ huynh đã đổi sang mật khẩu riêng. Nếu quên thì cấp mã kích hoạt mới bằng nút bên dưới.";
   if (!students.length) diagnosis += " Lưu ý: tài khoản chưa liên kết học sinh nào nên sau khi vào sẽ không thấy con.";
@@ -1919,10 +1940,7 @@ async function handleApi(req, res, url) {
 
     // Vai trò cao nhất do biến môi trường quy định, sửa trong cơ sở dữ liệu sẽ bị
     // ghi đè ở lần đăng nhập kế tiếp — nói thẳng thay vì để người dùng tưởng đã đổi.
-    if (isSuperadminAccount(target.account, SUPERADMIN_ACCOUNTS)) {
-      throw httpError(409, "TAI_KHOAN_KHOA_BOI_CAU_HINH",
-        "Tài khoản này nằm trong SUPERADMIN_ACCOUNTS nên quyền do cấu hình máy chủ quyết định. Hãy sửa biến môi trường rồi khởi động lại dịch vụ.");
-    }
+    assertSchoolAccountWritable(target);
 
     let updated = target;
     if (body.role !== undefined) {
@@ -1978,22 +1996,31 @@ async function handleApi(req, res, url) {
       throw httpError(422, "CON_DONG_LOI", `Còn ${analysis.summary.invalid} dòng chưa hợp lệ. Hãy sửa tệp rồi kiểm tra lại.`);
     }
 
-    const counters = { created: 0, updated: 0, unchanged: analysis.summary.unchanged };
+    const counters = { created: 0, updated: 0, unchanged: analysis.summary.unchanged, skipped: analysis.summary.skipped };
     for (const entry of analysis.entries) {
       if (entry.action === "tao-moi") {
-        const account = await createSchoolAccount(
+        await createSchoolAccount(
           { email: entry.email, displayName: entry.displayName, role: entry.role },
           actor,
           { source: "nhap-tep" },
         );
         counters.created += 1;
-        void account;
       } else if (entry.action === "cap-nhat") {
+        // Cùng một lá chắn với nhánh PATCH. Hai đường ghi vào cùng một bảng mà
+        // chỉ một đường có lá chắn thì lá chắn đó vô nghĩa.
+        const target = await getUserById(entry.id);
+        if (!target) continue;
+        assertSchoolAccountWritable(target);
+
         if (entry.truoc.role !== entry.role) await setSchoolUserRole(entry.id, entry.role);
-        if (!entry.truoc.active) await setSchoolUserActive(entry.id, true);
+        if (entry.truoc.displayName !== entry.displayName) await setSchoolUserDisplayName(entry.id, entry.displayName);
+        // KHÔNG đụng tới trạng thái hoạt động: bật lại tài khoản của người đã
+        // nghỉ việc là việc phải làm có chủ ý, không phải tác dụng phụ của nhập tệp.
         await writeAudit({
-          actorUserId: actor.id, action: "SCHOOL_ACCOUNT_IMPORT_UPDATED", entityType: "school_account",
-          entityId: entry.id, before: entry.truoc, after: { role: entry.role, displayName: entry.displayName, active: true },
+          actorUserId: actor.id,
+          action: entry.truoc.role !== entry.role ? "SCHOOL_ACCOUNT_ROLE_CHANGED" : "SCHOOL_ACCOUNT_IMPORT_UPDATED",
+          entityType: "school_account", entityId: entry.id,
+          before: entry.truoc, after: { role: entry.role, displayName: entry.displayName },
           reason: "Nhập hàng loạt từ tệp.",
         });
         counters.updated += 1;
@@ -2002,6 +2029,8 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { result: { counters, summary: analysis.summary } });
   }
 
+  // Tệp này chứa mã đăng nhập của TOÀN BỘ phụ huynh: cầm nó là vào được mọi
+  // tài khoản. Chỉ quản trị vận hành trở lên.
   if (method === "POST" && url.pathname === "/api/admin/accounts/activation-codes") {
     const user = await requireSchoolUser(req, CAP.maKichHoat);
     const { confirmation = "" } = await readJson(req);
@@ -2012,12 +2041,16 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "GET" && url.pathname === "/api/admin/accounts/lookup") {
-    await requireSchoolUser(req, CAP.maKichHoat);
+    const actor = await requireSchoolUser(req, CAP.traCuuHoTro);
     const account = url.searchParams.get("account") || "";
     if (!String(account).trim()) throw httpError(400, "ACCOUNT_REQUIRED", "Vui lòng nhập số điện thoại hoặc email cần tra cứu.");
-    return sendJson(res, 200, { lookup: await lookupAccount(account) });
+    return sendJson(res, 200, {
+      lookup: await lookupAccount(account, { canSeeCode: can(actor.effectiveRole, CAP.maKichHoat) }),
+    });
   }
 
+  // Cấp lại mã sẽ XOÁ mật khẩu riêng của phụ huynh rồi trả mã mới cho người gọi,
+  // tức là quyền đăng nhập thay họ. Không đi chung với quyền tra cứu.
   if (method === "POST" && url.pathname === "/api/admin/accounts/reset-initial-password") {
     const user = await requireSchoolUser(req, CAP.maKichHoat);
     const { account = "", confirmation = "" } = await readJson(req);
@@ -2183,6 +2216,14 @@ export function createAppServer() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  if (DATA_BACKEND !== "sqlite") {
+    try {
+      await ensureBusinessStore();
+    } catch (error) {
+      console.error(`[khoi-dong] Không kết nối được kho dữ liệu (${DATA_BACKEND}): ${error.message}`);
+      process.exit(1);
+    }
+  }
   const server = createAppServer();
   if (SYNC_SCHEDULE_ENABLED) {
     syncScheduler.start();

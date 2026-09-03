@@ -36,8 +36,13 @@ export function decideSchoolLogin({ user, email, superadminAccounts, isActive = 
     // Chỉ email trong danh sách cứu mới được tạo bản ghi. Đây là lối duy nhất
     // còn lại để vào hệ thống khi bản ghi quản trị bị vô hiệu hoá nhầm — nếu
     // không thì phải sửa tay trong cơ sở dữ liệu mới cứu được.
+    // Ghi 'admin' chứ KHÔNG ghi 'superadmin': effectiveRole chỉ NÂNG chứ không
+    // HẠ, nên một bản ghi role='superadmin' sẽ giữ toàn quyền vĩnh viễn kể cả
+    // sau khi email đã bị gỡ khỏi SUPERADMIN_ACCOUNTS — tức là gỡ khỏi biến môi
+    // trường không còn thu hồi được quyền. Người này vẫn được nâng lên quyền cao
+    // nhất chừng nào email còn trong biến, nên đường cứu không mất gì.
     return rescue
-      ? { allow: true, action: "tao-moi", role: ROLE.superadmin }
+      ? { allow: true, action: "tao-moi", role: ROLE.admin }
       : { allow: false, reason: DENIAL.noAccount };
   }
 
