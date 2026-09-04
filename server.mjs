@@ -35,7 +35,11 @@ import {
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const LOCAL_ENV_FILE = join(ROOT, ".env");
-if (existsSync(LOCAL_ENV_FILE)) loadEnvFile(LOCAL_ENV_FILE);
+// Bộ kiểm thử dựng máy chủ ngay trong thư mục repo, nên trên máy chủ của trường
+// nó sẽ nạp luôn .env production: credential Microsoft thật, cấu hình Google
+// Sheets thật. Kiểm thử phải chạy trên cấu hình của chính nó, không thì kết quả
+// đổi theo từng máy và tệ hơn là có thể chạm vào dịch vụ thật.
+if (!process.env.NSHM_IGNORE_ENV_FILE && existsSync(LOCAL_ENV_FILE)) loadEnvFile(LOCAL_ENV_FILE);
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "127.0.0.1";
 const DB_FILE = process.env.DATA_FILE || join(ROOT, "data", "nshm-clubs.sqlite");

@@ -59,7 +59,10 @@ export async function startTestServer({
 
   const child = spawn(process.execPath, ["server.mjs"], {
     cwd: new URL("../..", import.meta.url),
-    env: { ...process.env, ...env, ...storageEnv, PORT: "0" },
+    // NSHM_IGNORE_ENV_FILE: cách ly khỏi .env của máy đang chạy. Không có nó thì
+    // chạy `npm test` trên máy chủ trường sẽ dựng máy chủ thử nghiệm mang cấu
+    // hình production.
+    env: { ...process.env, NSHM_IGNORE_ENV_FILE: "1", ...env, ...storageEnv, PORT: "0" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
