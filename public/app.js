@@ -164,18 +164,26 @@ function applyDemoVisibility() {
   }
 }
 
-function showLogin(message = "") {
-  showScreen("login");
-  $(".login-role-tabs").classList.remove("hidden");
-  $("#password-change-panel").classList.add("hidden");
+// Một nguồn sự thật duy nhất cho việc màn hình đăng nhập hiện gì theo cổng đang
+// chọn. Cả lúc mở màn hình lẫn lúc bấm đổi cổng đều gọi hàm này.
+function applyLoginRoleView() {
   const parent = selectedLoginRole === "parent";
   $("#local-login-fields").classList.toggle("hidden", !parent);
   $("#login-submit").classList.toggle("hidden", !parent);
   $("#microsoft-login").classList.toggle("hidden", parent);
   $("#credential-box").classList.toggle("hidden", !parent || !state.demoAccounts);
+  // Khối liên hệ Phòng Tuyển sinh chỉ có nghĩa với phụ huynh.
+  $("#login-help")?.classList.toggle("hidden", !parent);
   $("#login-intro").textContent = parent
-    ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường. Lần đầu, mật khẩu chính là số điện thoại đó và bạn sẽ được yêu cầu đổi ngay."
-    : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
+    ? "Đăng nhập bằng số điện thoại đã đăng ký với nhà trường để chọn câu lạc bộ cho con. Lần đầu, mật khẩu chính là số điện thoại đó và bạn sẽ được yêu cầu đổi ngay."
+    : "Cán bộ nhà trường đăng nhập bằng tài khoản Microsoft 365 @hoangmaistarschool.edu.vn đã được cấp quyền.";
+}
+
+function showLogin(message = "") {
+  showScreen("login");
+  $(".login-role-tabs").classList.remove("hidden");
+  $("#password-change-panel").classList.add("hidden");
+  applyLoginRoleView();
   $("#login-error").textContent = message;
 }
 
@@ -187,6 +195,7 @@ function showInitialPasswordChange(user) {
   $("#login-submit").classList.add("hidden");
   $("#microsoft-login").classList.add("hidden");
   $("#credential-box").classList.add("hidden");
+  $("#login-help")?.classList.add("hidden");
   $("#password-change-panel").classList.remove("hidden");
   $("#login-intro").textContent = `Xin chào ${user.displayName}. Đây là lần đăng nhập đầu tiên của tài khoản.`;
   $("#login-error").textContent = "";
@@ -1964,14 +1973,7 @@ function bindLoginEvents() {
   $$("[data-login-role]").forEach((button) => button.addEventListener("click", () => {
     selectedLoginRole = button.dataset.loginRole;
     $$("[data-login-role]").forEach((item) => item.classList.toggle("active", item === button));
-    const parent = selectedLoginRole === "parent";
-    $("#local-login-fields").classList.toggle("hidden", !parent);
-    $("#login-submit").classList.toggle("hidden", !parent);
-    $("#microsoft-login").classList.toggle("hidden", parent);
-    $("#credential-box").classList.toggle("hidden", !parent || !state.demoAccounts);
-    $("#login-intro").textContent = parent
-      ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường. Lần đầu, mật khẩu chính là số điện thoại đó và bạn sẽ được yêu cầu đổi ngay."
-      : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
+    applyLoginRoleView();
     $("#login-account").value = "0901234567";
     $("#login-password").value = "123456";
     $("#credential-hint").textContent = "Phụ huynh: 0901234567 / 123456";
