@@ -175,7 +175,7 @@ function applyLoginRoleView() {
   // Khối liên hệ Phòng Tuyển sinh chỉ có nghĩa với phụ huynh.
   $("#login-help")?.classList.toggle("hidden", !parent);
   $("#login-intro").textContent = parent
-    ? "Đăng nhập bằng số điện thoại đã đăng ký với nhà trường để chọn câu lạc bộ cho con. Lần đầu, mật khẩu chính là số điện thoại đó và bạn sẽ được yêu cầu đổi ngay."
+    ? "Đăng nhập bằng số điện thoại đã đăng ký với nhà trường để chọn câu lạc bộ cho con."
     : "Cán bộ nhà trường đăng nhập bằng tài khoản Microsoft 365 @hoangmaistarschool.edu.vn đã được cấp quyền.";
 }
 

@@ -46,7 +46,10 @@
 
     <section id="login-screen" class="login-screen">
       <div class="login-showcase">
-        <div class="login-brand"><span class="brand-mark">★</span><div><strong>NSHM Clubs</strong><small>Cổng đăng ký ngoại khóa</small></div></div>
+        <div class="login-brand">
+          <img class="brand-logo" src="./logo-nshm.png?v=20260904-1" width="1746" height="354" alt="Trường Ngôi Sao Hoàng Mai" />
+          <small>CỔNG ĐĂNG KÝ CLB NGOẠI KHÓA</small>
+        </div>
         <div class="login-message">
           <span class="eyebrow">Câu lạc bộ ngoại khóa · Năm học 2026 – 2027</span>
           <h1>Khám phá năng khiếu.<br />Rèn luyện mỗi ngày.<br />Tự tin trưởng thành.</h1>
@@ -66,7 +69,7 @@
         <form id="login-form" class="login-card">
           <span class="eyebrow">Cổng đăng ký ngoại khóa</span>
           <h2>Đăng nhập để đăng ký</h2>
-          <p id="login-intro" class="login-intro">Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường.</p>
+          <p id="login-intro" class="login-intro">Đăng nhập bằng số điện thoại đã đăng ký với nhà trường để chọn câu lạc bộ cho con.</p>
           <div class="login-role-tabs" role="group" aria-label="Chọn cổng đăng nhập">
             <button type="button" class="login-role active" data-login-role="parent">Phụ huynh</button>
             <button type="button" class="login-role" data-login-role="admin">Nhà trường</button>
@@ -81,7 +84,11 @@
           <div id="credential-box" class="demo-credentials"><strong>Tài khoản minh họa</strong><span id="credential-hint">Phụ huynh: 0901234567 / 123456</span></div>
           <div id="login-help" class="login-help">
             Không đăng nhập được, hoặc chưa thấy tên con trong danh sách? Liên hệ Phòng Tuyển sinh:
-            <strong>1900 888689</strong> (bấm phím 1) · <a href="mailto:tuyensinh@hoangmaistarschool.edu.vn">tuyensinh@hoangmaistarschool.edu.vn</a>
+            <ul class="login-help-list">
+              <li>Hotline <strong>1900 888689</strong> (bấm phím 1)</li>
+              <li>Zalo <a href="https://zalo.me/ngoisaohoangmai" target="_blank" rel="noopener noreferrer">zalo.me/ngoisaohoangmai</a></li>
+              <li>Email <a href="mailto:tuyensinh@hoangmaistarschool.edu.vn">tuyensinh@hoangmaistarschool.edu.vn</a></li>
+            </ul>
           </div>
           <div id="password-change-panel" class="password-change-panel hidden">
             <strong>Đổi mật khẩu khởi tạo</strong>
@@ -97,11 +104,8 @@
     <div id="app-shell" class="app-shell hidden" hidden>
       <aside id="sidebar" class="sidebar" aria-label="Điều hướng chính">
         <div class="brand">
-          <div class="brand-mark" aria-hidden="true"><span>★</span></div>
-          <div>
-            <strong>NSHM Clubs</strong>
-            <small>Cổng ngoại khóa</small>
-          </div>
+          <img class="brand-logo" src="./logo-nshm.png?v=20260904-1" width="1746" height="354" alt="Trường Ngôi Sao Hoàng Mai" />
+          <small>Cổng đăng ký CLB ngoại khóa</small>
         </div>
 
         <div class="role-switcher">

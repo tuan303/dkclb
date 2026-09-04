@@ -36,7 +36,7 @@ test("màn hình đăng nhập chỉ có MỘT nơi quyết định hiện gì t
   const calls = script.split("applyLoginRoleView()").length - 1;
   assert.ok(calls >= 3, `applyLoginRoleView phải được gọi ở cả hai đường, thấy ${calls - 1} lời gọi`);
 
-  const introCount = script.split("Lần đầu, mật khẩu chính là số điện thoại đó").length - 1;
+  const introCount = script.split("để chọn câu lạc bộ cho con").length - 1;
   assert.equal(introCount, 1, "câu giới thiệu chỉ được viết một lần");
 });
 
@@ -52,3 +52,4 @@ test("màn hình đăng nhập nói đúng thông điệp tuyển sinh câu lạ
   assert.match(html, /1900 888689/);
   assert.match(html, /tuyensinh@hoangmaistarschool.edu.vn/);
 });
+
