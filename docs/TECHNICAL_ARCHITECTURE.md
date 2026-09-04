@@ -56,7 +56,7 @@ flowchart LR
 - Tài khoản nhà trường không xoá cứng, chỉ vô hiệu hoá; vô hiệu hoá cắt phiên đang mở ngay lập tức.
 
 - Mật khẩu do người dùng đặt được băm bằng `scrypt` với salt riêng.
-- Tài khoản phụ huynh vừa đồng bộ không lưu salt/hash mà giữ một **mã kích hoạt dùng một lần** (8 ký tự ngẫu nhiên, bỏ `0/O` và `1/I/L`), so sánh bằng `timingSafeEqual`. Không dùng số điện thoại làm mật khẩu đầu tiên vì số điện thoại chính là tên tài khoản, ai biết số của một phụ huynh cũng vào xem được hồ sơ con họ. Nhánh mã kích hoạt chỉ áp dụng khi tài khoản chưa có hash; đặt mật khẩu riêng là nhánh đó tắt hẳn, có kiểm thử chặn hồi quy.
+- Tài khoản phụ huynh vừa đồng bộ không lưu salt/hash: **mật khẩu khởi tạo chính là số điện thoại**, so sánh bằng `timingSafeEqual`, bắt buộc đổi ngay lần đầu. Đây là quyết định của nhà trường với đánh đổi đã biết — số điện thoại cũng là tên tài khoản nên ai biết số đều vào được cho tới khi phụ huynh đổi; lý do chọn là phát 7.119 mã giấy trước ngày mở đăng ký bất khả thi. Nhánh này chỉ áp dụng khi tài khoản chưa có hash; đặt mật khẩu riêng là nhánh đó tắt hẳn, có kiểm thử chặn hồi quy. Mã kích hoạt vẫn cấp được như phương án thay thế, và khi đã cấp thì hệ thống chấp nhận cả mã lẫn số điện thoại.
 - Phiên dùng token ngẫu nhiên 256 bit; Production chỉ lưu SHA-256 của token trong Firestore.
 - Cookie phiên có `HttpOnly`, `Secure`, `SameSite=Lax` và thời hạn 8 giờ ở Production.
 - Kiểm tra vai trò và phạm vi học sinh được thực hiện ở API.

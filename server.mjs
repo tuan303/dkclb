@@ -157,8 +157,29 @@ function timingSafeEqualText(left, right) {
 // Tài khoản vừa tạo chưa có mật khẩu riêng thì đăng nhập bằng mã kích hoạt dùng
 // một lần. Ngay khi phụ huynh đặt mật khẩu riêng, hệ thống lưu hash scrypt, xóa
 // mã kích hoạt, và nhánh này không còn được dùng cho tài khoản đó nữa.
+// Tài khoản chưa từng đặt mật khẩu riêng. Theo yêu cầu nhà trường, mật khẩu
+// mặc định là CHÍNH SỐ ĐIỆN THOẠI, và phải đổi ngay lần đăng nhập đầu tiên.
+//
+// Đánh đổi đã biết và được nhà trường chấp nhận: số điện thoại vừa là tên tài
+// khoản vừa là mật khẩu, nên ai biết số của một phụ huynh đều đăng nhập được cho
+// tới khi người đó đổi. Lý do chọn: phát 7.119 mã giấy trước ngày mở đăng ký là
+// bất khả thi. Bù lại bằng bắt buộc đổi ngay lần đầu và khoá tạm sau 5 lần sai.
+function usesInitialCredential(user) {
+  return Boolean(user?.must_change_password) && !user?.password_hash;
+}
+
+// Vẫn chấp nhận mã kích hoạt nếu tài khoản đã được cấp một mã. Trường đã sinh mã
+// cho toàn bộ tài khoản trước khi đổi phương án; chuyển hẳn sang số điện thoại mà
+// không nhận mã nữa sẽ làm chết mọi mã đã in và phát ra.
+function initialCredentialValid(user, password) {
+  const raw = String(password || "");
+  if (timingSafeEqualText(raw.trim(), String(user.account || "").trim())) return true;
+  if (!user.activation_code) return false;
+  return timingSafeEqualText(normalizeActivationCode(raw), normalizeActivationCode(user.activation_code));
+}
+
 function usesActivationCode(user) {
-  return Boolean(user?.must_change_password) && !user?.password_hash && Boolean(user?.activation_code);
+  return usesInitialCredential(user) && Boolean(user?.activation_code);
 }
 
 function ensureColumn(table, column, definition) {
@@ -1367,10 +1388,10 @@ async function lookupAccount(rawAccount, { canSeeCode = false } = {}) {
   else if (account.role !== "parent") diagnosis = "Số này đang gắn với tài khoản nhà trường, không đăng nhập được ở cổng Phụ huynh.";
   else if (account.authProvider !== "local") diagnosis = "Tài khoản này đăng nhập bằng Microsoft 365, không dùng mật khẩu riêng.";
   else if (locked) diagnosis = `Đang tạm khóa 15 phút do đăng nhập sai ${account.loginFailures} lần. Hết khóa lúc ${account.lockedUntil} (giờ UTC).`;
-  else if (account.activationCode) diagnosis = `Tài khoản chưa kích hoạt. Mã kích hoạt hiện tại là ${account.activationCode}; phụ huynh nhập mã này rồi đặt mật khẩu riêng.`;
-  else if (account.chuaKichHoat) diagnosis = "Tài khoản chưa kích hoạt và đã có mã. Nhờ quản trị vận hành đọc lại mã hoặc cấp mã mới cho phụ huynh.";
-  else if (account.mustChangePassword) diagnosis = "Tài khoản chưa kích hoạt nhưng không còn mã. Hãy cấp mã kích hoạt mới bằng nút bên dưới.";
-  else diagnosis = "Phụ huynh đã đổi sang mật khẩu riêng. Nếu quên thì cấp mã kích hoạt mới bằng nút bên dưới.";
+  else if (account.activationCode) diagnosis = `Tài khoản chưa kích hoạt. Phụ huynh đăng nhập bằng chính số điện thoại, hoặc bằng mã đã cấp: ${account.activationCode}. Sau đó bắt buộc đặt mật khẩu riêng.`;
+  else if (account.chuaKichHoat) diagnosis = "Tài khoản chưa kích hoạt. Phụ huynh đăng nhập bằng chính số điện thoại của mình, hoặc bằng mã đã được cấp, rồi đặt mật khẩu riêng.";
+  else if (account.mustChangePassword) diagnosis = "Tài khoản chưa kích hoạt. Phụ huynh đăng nhập bằng chính số điện thoại của mình rồi đặt mật khẩu riêng.";
+  else diagnosis = "Phụ huynh đã đổi sang mật khẩu riêng. Nếu quên thì bấm đặt lại — mật khẩu trở về chính số điện thoại và phải đổi ngay lần sau.";
   if (!students.length) diagnosis += " Lưu ý: tài khoản chưa liên kết học sinh nào nên sau khi vào sẽ không thấy con.";
 
   return { input, normalized, found: true, account, students, directory, diagnosis };
@@ -1389,25 +1410,27 @@ async function resetInitialPassword({ actorUserId, rawAccount }) {
   if (user.role !== "parent") throw httpError(409, "ACCOUNT_NOT_PARENT", "Chỉ đặt lại được mật khẩu của tài khoản phụ huynh.");
   if (user.auth_provider !== "local") throw httpError(409, "ACCOUNT_NOT_LOCAL", "Tài khoản này đăng nhập bằng Microsoft 365.");
 
-  // Sinh mã mới mỗi lần đặt lại: mã cũ hết hiệu lực ngay, kể cả khi đã lỡ phát ra ngoài.
-  const activationCode = generateActivationCode();
-  if (businessStore) await businessStore.setActivationCode(user.id, activationCode);
+  // Đưa về đúng trạng thái mà đồng bộ tạo ra: mật khẩu khởi tạo là số điện thoại,
+  // bắt buộc đổi ngay lần đăng nhập kế tiếp. Xoá luôn mã kích hoạt cũ nếu có —
+  // để một tài khoản chỉ có đúng một cách vào, không để lại lối cũ còn hiệu lực.
+  if (businessStore) await businessStore.setActivationCode(user.id, null);
   else {
-    db.prepare(`UPDATE users SET password_salt = '', password_hash = '', activation_code = ?,
+    db.prepare(`UPDATE users SET password_salt = '', password_hash = '', activation_code = NULL,
       must_change_password = 1, login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`)
-      .run(activationCode, user.id);
+      .run(user.id);
   }
   await writeAudit({
     actorUserId,
-    action: "RESET_ACTIVATION_CODE",
+    action: "RESET_INITIAL_PASSWORD",
     entityType: "user",
     entityId: user.id,
     // Không bao giờ ghi mã vào nhật ký: nhật ký được xuất ra ngoài khi sao lưu.
     before: { mustChangePassword: Boolean(user.must_change_password), loginFailures: asInt(user.login_failures), lockedUntil: user.locked_until || null },
-    after: { mustChangePassword: true, loginFailures: 0, lockedUntil: null, activationCodeIssued: true },
+    after: { mustChangePassword: true, loginFailures: 0, lockedUntil: null, initialPasswordRestored: true },
     reason: "Hỗ trợ phụ huynh không đăng nhập được",
   });
-  return { account: normalized, mustChangePassword: true, activationCode: formatActivationCode(activationCode) };
+  // Không trả mật khẩu về: nó chính là số điện thoại người gọi vừa nhập vào.
+  return { account: normalized, mustChangePassword: true, initialPassword: "so-dien-thoai" };
 }
 
 // ---- Xuất toàn bộ dữ liệu ----
@@ -1641,8 +1664,8 @@ async function handleApi(req, res, url) {
     if (user?.locked_until && user.locked_until > nowIso()) {
       throw httpError(429, "ACCOUNT_TEMPORARILY_LOCKED", "Tài khoản tạm khóa do đăng nhập sai nhiều lần. Vui lòng thử lại sau 15 phút.");
     }
-    const passwordValid = user?.auth_provider === "local" && (usesActivationCode(user)
-      ? timingSafeEqualText(normalizeActivationCode(password), normalizeActivationCode(user.activation_code))
+    const passwordValid = user?.auth_provider === "local" && (usesInitialCredential(user)
+      ? initialCredentialValid(user, password)
       : verifyPassword(String(password), user.password_salt, user.password_hash));
     if (!user || !passwordValid) {
       if (user) {

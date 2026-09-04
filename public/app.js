@@ -174,7 +174,7 @@ function showLogin(message = "") {
   $("#microsoft-login").classList.toggle("hidden", parent);
   $("#credential-box").classList.toggle("hidden", !parent || !state.demoAccounts);
   $("#login-intro").textContent = parent
-    ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường. Lần đầu dùng mã kích hoạt nhà trường cấp."
+    ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường. Lần đầu, mật khẩu chính là số điện thoại đó và bạn sẽ được yêu cầu đổi ngay."
     : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
   $("#login-error").textContent = message;
 }
@@ -1244,9 +1244,9 @@ async function runAccountLookup(button) {
 }
 
 async function runPasswordReset(account, button) {
-  if (!window.confirm(`Cấp mã kích hoạt mới cho ${account}?\n\nMã cũ sẽ hết hiệu lực ngay lập tức.`)) return;
+  if (!window.confirm(`Đặt lại mật khẩu cho ${account}?\n\nMật khẩu trở về chính số điện thoại và phụ huynh phải đổi ngay lần đăng nhập kế tiếp. Mã kích hoạt cũ (nếu có) sẽ hết hiệu lực.`)) return;
   button.disabled = true;
-  button.textContent = "Đang cấp mã…";
+  button.textContent = "Đang đặt lại…";
   try {
     const { result } = await api("/admin/accounts/reset-initial-password", {
       method: "POST",
@@ -1254,10 +1254,11 @@ async function runPasswordReset(account, button) {
     });
     state.accountLookup = (await api(`/admin/accounts/lookup?account=${encodeURIComponent(account)}`)).lookup;
     renderPage();
-    toast(`Mã kích hoạt mới của ${account} là ${result.activationCode}.`, "success");
+    void result;
+    toast(`Đã đặt lại. Mật khẩu của ${account} nay chính là số điện thoại đó, và phải đổi ngay lần đăng nhập kế tiếp.`, "success");
   } catch (error) {
     button.disabled = false;
-    button.textContent = "Cấp mã kích hoạt mới";
+    button.textContent = "Đặt lại về mật khẩu khởi tạo";
     toast(error.message, "error");
   }
 }
@@ -1969,7 +1970,7 @@ function bindLoginEvents() {
     $("#microsoft-login").classList.toggle("hidden", parent);
     $("#credential-box").classList.toggle("hidden", !parent || !state.demoAccounts);
     $("#login-intro").textContent = parent
-      ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường. Lần đầu dùng mã kích hoạt nhà trường cấp."
+      ? "Phụ huynh đăng nhập bằng số điện thoại đã đăng ký với nhà trường. Lần đầu, mật khẩu chính là số điện thoại đó và bạn sẽ được yêu cầu đổi ngay."
       : "Cán bộ nhà trường sử dụng tài khoản Microsoft 365 thuộc tên miền @hoangmaistarschool.edu.vn.";
     $("#login-account").value = "0901234567";
     $("#login-password").value = "123456";

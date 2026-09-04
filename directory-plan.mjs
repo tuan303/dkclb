@@ -71,11 +71,14 @@ export function planDirectoryWrites({
       const userId = idFactory("u_parent");
       user = { id: userId, account: guardian.account, accountLower, role: "parent" };
       usersByAccount.set(accountLower, user);
-      // Chưa có mật khẩu riêng: đăng nhập lần đầu bằng mã kích hoạt dùng một lần,
-      // nhà trường in ra và phát cho phụ huynh.
+      // Mật khẩu khởi tạo là CHÍNH SỐ ĐIỆN THOẠI, bắt buộc đổi ngay lần đầu.
+      // Không lưu hash: băm 7.119 tài khoản bằng scrypt ở mỗi lần đồng bộ sẽ mất
+      // hàng chục phút, mà lịch chạy 15 phút một lần. So khớp trực tiếp bằng
+      // timingSafeEqual, và số điện thoại vốn đã là tên tài khoản nên băm nó
+      // cũng không bảo vệ thêm được gì.
       writes.push({ collection: "users", id: userId, data: {
         account: guardian.account, accountLower, displayName: guardian.displayName || "Phụ huynh học sinh", role: "parent",
-        passwordSalt: null, passwordHash: null, activationCode: codeFactory(), authProvider: "local",
+        passwordSalt: null, passwordHash: null, activationCode: null, authProvider: "local",
         mustChangePassword: true, loginFailures: 0, lockedUntil: null, active: true, createdAt: timestamp,
       } });
       counters.parentsCreated += 1;

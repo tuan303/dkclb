@@ -516,7 +516,8 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       await query(
         `UPDATE users SET password_salt = NULL, password_hash = NULL, activation_code = ?,
           must_change_password = 1, login_failures = 0, locked_until = NULL, active = 1 WHERE id = ?`,
-        [crypto.encrypt(code), userId],
+        // code=null nghĩa là đưa về mật khẩu khởi tạo (số điện thoại), không phải cấp mã mới.
+        [code === null ? null : crypto.encrypt(code), userId],
       );
     },
 

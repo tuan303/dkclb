@@ -17,6 +17,23 @@ before(async () => {
 
 after(async () => server.stop());
 
+// Đặt lại đưa tài khoản về mật khẩu là số điện thoại. Muốn có MÃ kích hoạt thì
+// phải đi qua đường cấp hàng loạt — nơi duy nhất còn sinh mã.
+async function capMaChoTaiKhoan(account) {
+  await request("/api/admin/accounts/reset-initial-password", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({ account, confirmation: "RESET_INITIAL_PASSWORD" }),
+  });
+  const { result } = await (await request("/api/admin/accounts/activation-codes", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({ confirmation: "ISSUE_ACTIVATION_CODES" }),
+  })).json();
+  const row = result.rows.find((item) => item.account === account);
+  assert.ok(row?.activationCode, `không cấp được mã cho ${account}`);
+  return row.activationCode;
+}
+
+
 test("chỉ quản trị mới tra cứu được tài khoản", async () => {
   const anonymous = await fetch(`${baseUrl}/api/admin/accounts/lookup?account=0901234567`);
   assert.equal(anonymous.status, 401);
@@ -75,7 +92,7 @@ test("tài khoản bị khóa do sai nhiều lần được nêu rõ trong kết
   assert.match(lookup.diagnosis, /tạm khóa/);
 });
 
-test("cấp mã kích hoạt mới mở khóa tài khoản và bắt đặt mật khẩu", async () => {
+test("đặt lại đưa tài khoản về mật khẩu là số điện thoại và bắt đổi ngay", async () => {
   const withoutConfirmation = await request("/api/admin/accounts/reset-initial-password", adminCookie, {
     method: "POST",
     body: JSON.stringify({ account: "0901234567" }),
@@ -88,14 +105,14 @@ test("cấp mã kích hoạt mới mở khóa tài khoản và bắt đặt mậ
   });
   assert.equal(reset.status, 200);
   const { result } = await reset.json();
-  assert.match(result.activationCode, /^[0-9A-Z]{4}-[0-9A-Z]{4}$/, "phải trả mã để nhà trường phát cho phụ huynh");
+  // Không trả mật khẩu về: nó chính là số điện thoại người gọi vừa nhập.
+  assert.equal(result.activationCode ?? null, null);
+  assert.equal(result.initialPassword, "so-dien-thoai");
 
-  // Mật khẩu cũ hết hiệu lực; số điện thoại KHÔNG còn dùng làm mật khẩu được nữa.
+  // Mật khẩu riêng cũ hết hiệu lực; số điện thoại trở thành mật khẩu khởi tạo.
   assert.equal((await login("0901234567", "123456")).status, 401);
-  assert.equal((await login("0901234567", "0901234567")).status, 401, "biết số điện thoại không đủ để đăng nhập");
-
-  const newPassword = await login("0901234567", result.activationCode);
-  assert.equal(newPassword.status, 200, "khóa 15 phút phải được gỡ sau khi cấp mã mới");
+  const newPassword = await login("0901234567", "0901234567");
+  assert.equal(newPassword.status, 200, "khóa 15 phút phải được gỡ sau khi đặt lại");
 
   const cookie = newPassword.headers.get("set-cookie").split(";")[0];
   const me = await (await request("/api/me", cookie)).json();
@@ -113,11 +130,7 @@ test("cấp mã kích hoạt mới mở khóa tài khoản và bắt đặt mậ
 });
 
 test("đặt mật khẩu riêng là mã kích hoạt hết hiệu lực ngay", async () => {
-  const reset = await request("/api/admin/accounts/reset-initial-password", adminCookie, {
-    method: "POST",
-    body: JSON.stringify({ account: "0901234567", confirmation: "RESET_INITIAL_PASSWORD" }),
-  });
-  const code = (await reset.json()).result.activationCode;
+  const code = await capMaChoTaiKhoan("0901234567");
   const initial = await login("0901234567", code);
   assert.equal(initial.status, 200);
   const cookie = initial.headers.get("set-cookie").split(";")[0];
@@ -146,33 +159,24 @@ test("đặt mật khẩu riêng là mã kích hoạt hết hiệu lực ngay", 
 });
 
 test("tra cứu cho quản trị thấy mã kích hoạt của tài khoản chưa dùng", async () => {
-  const reset = await request("/api/admin/accounts/reset-initial-password", adminCookie, {
-    method: "POST",
-    body: JSON.stringify({ account: "0901234567", confirmation: "RESET_INITIAL_PASSWORD" }),
-  });
-  const code = (await reset.json()).result.activationCode;
+  const code = await capMaChoTaiKhoan("0901234567");
 
   const { lookup } = await (await request("/api/admin/accounts/lookup?account=0901234567", adminCookie)).json();
   assert.equal(lookup.account.activationCode, code, "nhà trường phải đọc lại được mã để phát cho phụ huynh");
   assert.match(lookup.diagnosis, /chưa kích hoạt/);
 
-  // Cấp mã mới thì mã cũ hết hiệu lực ngay, kể cả khi đã lỡ phát ra ngoài.
-  const again = await request("/api/admin/accounts/reset-initial-password", adminCookie, {
+  // Đặt lại xoá mã và đưa về mật khẩu là số điện thoại: một tài khoản chỉ còn
+  // đúng một lối vào, không để lại mã cũ còn hiệu lực.
+  await request("/api/admin/accounts/reset-initial-password", adminCookie, {
     method: "POST",
     body: JSON.stringify({ account: "0901234567", confirmation: "RESET_INITIAL_PASSWORD" }),
   });
-  const newCode = (await again.json()).result.activationCode;
-  assert.notEqual(newCode, code);
-  assert.equal((await login("0901234567", code)).status, 401, "mã cũ phải hết hiệu lực");
-  assert.equal((await login("0901234567", newCode)).status, 200);
+  assert.equal((await login("0901234567", code)).status, 401, "mã cũ phải hết hiệu lực sau khi đặt lại");
+  assert.equal((await login("0901234567", "0901234567")).status, 200, "số điện thoại là mật khẩu khởi tạo");
 });
 
 test("mã kích hoạt không bao giờ bị ghi vào nhật ký thao tác", async () => {
-  const reset = await request("/api/admin/accounts/reset-initial-password", adminCookie, {
-    method: "POST",
-    body: JSON.stringify({ account: "0901234567", confirmation: "RESET_INITIAL_PASSWORD" }),
-  });
-  const code = (await reset.json()).result.activationCode;
+  const code = await capMaChoTaiKhoan("0901234567");
 
   // Nhật ký được xuất ra ngoài khi sao lưu, nên không được chứa mã đăng nhập.
   const rows = [];
@@ -187,7 +191,7 @@ test("mã kích hoạt không bao giờ bị ghi vào nhật ký thao tác", asy
   } while (after);
 
   const serialized = JSON.stringify(rows);
-  assert.ok(rows.some((row) => row.action === "RESET_ACTIVATION_CODE"), "phải có bản ghi nhật ký cho lần cấp mã");
+  assert.ok(rows.some((row) => row.action === "RESET_INITIAL_PASSWORD"), "phải có bản ghi nhật ký cho lần đặt lại");
   assert.ok(!serialized.includes(code.replace("-", "")), "nhật ký không được chứa mã kích hoạt");
   assert.ok(!serialized.includes(code), "nhật ký không được chứa mã kích hoạt");
 });
@@ -227,11 +231,7 @@ test("cấp mã hàng loạt chỉ sinh mã cho tài khoản chưa có, chạy l
 });
 
 test("tài khoản đã đặt mật khẩu riêng không nằm trong danh sách cấp mã", async () => {
-  const reset = await request("/api/admin/accounts/reset-initial-password", adminCookie, {
-    method: "POST",
-    body: JSON.stringify({ account: "0901234567", confirmation: "RESET_INITIAL_PASSWORD" }),
-  });
-  const code = (await reset.json()).result.activationCode;
+  const code = await capMaChoTaiKhoan("0901234567");
   const cookie = (await login("0901234567", code)).headers.get("set-cookie").split(";")[0];
   await request("/api/auth/change-initial-password", cookie, {
     method: "POST",

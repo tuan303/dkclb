@@ -60,7 +60,7 @@ npm run check
 | Nhà trường · quản trị | `admin@nshm.edu.vn` | `Admin@123` |
 | Nhà trường · giáo vụ | `giaovu@nshm.edu.vn` | `Admin@123` |
 
-Các tài khoản này chỉ dùng cho demo. Luồng production dùng mã kích hoạt dùng một lần cho phụ huynh và Microsoft 365 SSO cho nhà trường.
+Các tài khoản này chỉ dùng cho demo. Luồng production: phụ huynh đăng nhập bằng số điện thoại (mật khẩu khởi tạo cũng là số đó, bắt buộc đổi ngay lần đầu), nhà trường dùng Microsoft 365 SSO.
 
 ## Cấu hình Microsoft 365
 
@@ -168,7 +168,7 @@ Nút **Kiểm tra kết nối** chỉ đọc metadata, tiêu đề và tối đa
 
 ### Tài khoản phụ huynh sinh ra từ đồng bộ
 
-Tài khoản PH mới lấy số điện thoại làm tên đăng nhập theo quy tắc `912345678` → `0912345678`, và nhận một **mã kích hoạt dùng một lần** thay cho mật khẩu đầu tiên (xem mục mã kích hoạt bên dưới). Các lần đồng bộ sau không đặt lại mật khẩu đã đổi.
+Tài khoản PH mới lấy số điện thoại làm tên đăng nhập theo quy tắc `912345678` → `0912345678`, và **mật khẩu khởi tạo chính là số điện thoại đó**, bắt buộc đổi ngay lần đăng nhập đầu tiên (xem mục mật khẩu khởi tạo bên dưới). Các lần đồng bộ sau không đặt lại mật khẩu đã đổi.
 
 ### Biến môi trường
 
@@ -455,23 +455,36 @@ Cổng Nhà trường → **Tài khoản nhà trường** (chỉ quản trị ca
 Nhật ký ghi lại: tạo tài khoản, đổi vai trò, vô hiệu hoá, kích hoạt lại, và mọi lần đăng nhập bị từ chối.
 
 
-## Mã kích hoạt cho phụ huynh
+## Mật khẩu khởi tạo của phụ huynh
 
-Tài khoản phụ huynh mới **không dùng số điện thoại làm mật khẩu đầu tiên** nữa. Số điện thoại không phải bí mật: ai biết số của một phụ huynh cũng đăng nhập được và xem hồ sơ con họ cho tới khi phụ huynh đó đổi mật khẩu.
+**Mật khẩu lần đầu chính là số điện thoại** — trùng với tên tài khoản — và hệ thống bắt buộc đổi ngay ở lần đăng nhập đầu tiên.
 
-Thay vào đó mỗi tài khoản nhận một **mã kích hoạt dùng một lần**, 8 ký tự sinh ngẫu nhiên, in ra dạng `ABCD-EFGH`. Bảng chữ cái bỏ hẳn `0/O` và `1/I/L` để phụ huynh không đọc nhầm khi nhìn mã in trên giấy.
+Đây là quyết định của nhà trường, với đánh đổi đã biết rõ. Số điện thoại không phải bí mật: nó lưu hành trong nhóm lớp, nhóm Zalo, sổ liên lạc. Ai biết số của một phụ huynh đều đăng nhập được vào tài khoản đó **cho tới khi người đó đổi mật khẩu** — và phụ huynh không bao giờ đăng nhập thì cửa sổ đó mở vô thời hạn. Đổi lại, phát 7.119 mã giấy trước ngày mở đăng ký là bất khả thi về vận hành.
 
-### Phát mã cho phụ huynh
+Ba lá chắn còn lại phải chắc, và đều có kiểm thử khoá riêng:
 
-Cổng Nhà trường → **Cấu hình & phân quyền → Cấp & in mã kích hoạt**. Hệ thống sinh mã cho những tài khoản chưa có và tải về một file CSV gồm số điện thoại, tên phụ huynh, danh sách con và mã. Nút này **chỉ sinh mã cho tài khoản chưa có mã**, nên bấm lại nhiều lần không làm hỏng những mã đã in và phát.
+- **Bắt buộc đổi ngay lần đầu.** Chưa đổi thì không dùng được gì ngoài màn hình đổi mật khẩu.
+- **Đặt mật khẩu riêng xong là lối vào bằng số điện thoại tắt hẳn.** Không còn hai cách vào song song.
+- **Sai 5 lần thì khoá tạm 15 phút**, kể cả sau đó gõ đúng.
 
-File CSV chứa mã đăng nhập của phụ huynh: chỉ in và phát trực tiếp, không gửi qua kênh công khai. Mỗi lần lấy danh sách đều ghi vào nhật ký thao tác.
+Mật khẩu khởi tạo **không lưu hash**: băm 7.119 tài khoản bằng scrypt ở mỗi lần đồng bộ sẽ mất hàng chục phút, mà lịch chạy 15 phút một lần. So khớp trực tiếp bằng `timingSafeEqual`, và số điện thoại vốn đã là tên tài khoản nên băm nó cũng không bảo vệ thêm được gì. Ngay khi phụ huynh đặt mật khẩu riêng, hệ thống lưu hash `scrypt` và nhánh so khớp trực tiếp tắt hẳn cho tài khoản đó.
 
-Muốn cấp lại cho một phụ huynh cụ thể thì tra cứu số điện thoại rồi bấm **Cấp mã kích hoạt mới**; mã cũ hết hiệu lực ngay lập tức.
+### Khi phụ huynh quên mật khẩu
 
-### Vòng đời của mã
+Cổng Nhà trường → **Cấu hình & phân quyền → Tra cứu tài khoản phụ huynh** → **Đặt lại về mật khẩu khởi tạo**. Mật khẩu trở về chính số điện thoại, khoá tạm được gỡ, và phụ huynh phải đổi ngay lần đăng nhập kế tiếp.
 
-Mã hết hiệu lực ngay khi phụ huynh đặt mật khẩu riêng — kiểm thử khóa chặt đúng điểm này. Ở nền MySQL mã được **lưu mã hóa chứ không băm**, vì nhà trường buộc phải đọc lại được để in; băm thì mất khả năng đó mà không bảo vệ thêm được gì khi toàn bộ trường nhạy cảm đã mã hóa. Mã **không bao giờ** được ghi vào nhật ký thao tác, vì nhật ký nằm trong bản sao lưu xuất ra ngoài.
+Quyền này thuộc nhóm **cấp mã kích hoạt** (quản trị vận hành trở lên), không phải nhóm tra cứu — vì đặt lại sẽ xoá mật khẩu riêng của phụ huynh, tức là quyền đăng nhập thay họ.
+
+### Mã kích hoạt — phương án thay thế, không còn là mặc định
+
+Hệ thống vẫn cấp được **mã kích hoạt ngẫu nhiên** 8 ký tự (dạng `ABCD-EFGH`, bảng chữ cái bỏ `0/O` và `1/I/L` để không đọc nhầm trên giấy) qua **Cấp & in mã kích hoạt**. Dùng khi nhà trường muốn onboarding chặt hơn cho một nhóm nào đó.
+
+Hai điều cần biết:
+
+- Tài khoản đã có mã thì **chấp nhận cả mã lẫn số điện thoại**. Cấp mã là thêm một cách vào, không phải đóng cách cũ — vì số điện thoại là mức bảo mật sàn mà nhà trường đã chọn.
+- **Đặt lại về mật khẩu khởi tạo sẽ xoá mã**, để một tài khoản chỉ còn đúng một lối vào.
+
+Mã **không bao giờ** được ghi vào nhật ký thao tác, vì nhật ký nằm trong bản sao lưu xuất ra ngoài. Có kiểm thử khoá điều này.
 
 ## Phụ huynh không đăng nhập được
 
