@@ -496,9 +496,13 @@ Cổng Nhà trường → **Cấu hình & phân quyền → Tra cứu tài kho�
 
 Khi phụ huynh quên mật khẩu, bấm **Cấp mã kích hoạt mới**: hệ thống sinh một mã dùng một lần, xóa mật khẩu cũ, gỡ khóa tạm, và phụ huynh bắt buộc đặt mật khẩu riêng ngay lần đăng nhập kế tiếp. Mã cũ hết hiệu lực ngay. Quản trị không tự đặt mật khẩu và hệ thống không bao giờ hiển thị mật khẩu hiện tại. Thao tác ghi audit log kèm người thực hiện, nhưng **không ghi mã** vì nhật ký nằm trong bản sao lưu xuất ra ngoài.
 
-## Khi sửa tệp trong `public/`
+## Khi sửa tệp trong `public/` (không còn phải làm gì)
 
-`index.html` được máy chủ đặt `max-age=0, must-revalidate` nên luôn tải bản mới, nhưng `app.js`, `styles.css` và `sheet-reader.js` được cache 4 giờ trong trình duyệt. **Mỗi lần sửa các tệp này phải nâng số phiên bản `?v=` trong `index.html`**, nếu không người dùng vẫn chạy mã cũ tới 4 giờ sau khi deploy. Quy ước hiện dùng là `?v=YYYYMMDD-n`.
+`index.html` được phục vụ với `Cache-Control: no-cache` nên luôn tải bản mới, còn `app.js`, `styles.css` và logo thì trình duyệt giữ lại. Trước đây phải tự tay nâng `?v=` trong `index.html` mỗi lần sửa — và đã quên một lần, khiến người dùng thấy CSS cũ không có quy tắc cho logo (ảnh hiện ở kích thước gốc 1746px) cùng với `app.js` cũ còn hiển thị câu đã xoá.
+
+Nay máy chủ tự thay `?v=` bằng **vân tay nội dung của chính tệp đó** khi phục vụ `index.html`. Sửa tệp nào thì chỉ tệp đó được làm mới; các tệp còn lại giữ nguyên cache. Giá trị `?v=` viết trong `index.html` chỉ là chỗ giữ chỗ, không cần cập nhật.
+
+Kiểm chứng bằng `tests/cache-bust.test.mjs`.
 
 ## Ranh giới tệp công khai
 

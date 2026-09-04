@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -2210,13 +2210,45 @@ async function handleApi(req, res, url) {
 
 const mimeTypes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png" };
 
+// Số phiên bản ?v= trong index.html trước đây phải sửa tay mỗi lần đổi giao diện.
+// Quên một lần là người dùng chạy mã cũ tới 4 giờ sau khi deploy — đã xảy ra thật:
+// CSS cũ không có quy tắc cho logo nên ảnh hiện ở kích thước gốc 1746px, và app.js
+// cũ vẫn còn câu đã được xoá. Nay máy chủ tự thay ?v= bằng vân tay nội dung của
+// CHÍNH tệp đó, nên không còn bước nào để quên, và sửa một tệp không làm hỏng
+// cache của những tệp còn lại.
+const assetFingerprints = new Map();
+const ASSET_REFERENCE = /\.\/([\w.-]+)\?v=[\w.-]+/g;
+
+async function fingerprintOf(name) {
+  if (!PUBLIC_FILES.has(name)) return null;
+  const filePath = resolve(PUBLIC_DIR, name);
+  if (!existsSync(filePath)) return null;
+  const { mtimeMs, size } = statSync(filePath);
+  const cached = assetFingerprints.get(name);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.hash;
+  const hash = createHash("sha256").update(await readFile(filePath)).digest("hex").slice(0, 12);
+  assetFingerprints.set(name, { mtimeMs, size, hash });
+  return hash;
+}
+
+async function stampAssetVersions(html) {
+  const names = new Set([...html.matchAll(ASSET_REFERENCE)].map((match) => match[1]));
+  const hashes = new Map();
+  for (const name of names) {
+    const hash = await fingerprintOf(name);
+    if (hash) hashes.set(name, hash);
+  }
+  return html.replace(ASSET_REFERENCE, (whole, name) => (hashes.has(name) ? `./${name}?v=${hashes.get(name)}` : whole));
+}
+
 async function serveStatic(req, res, url) {
   const requested = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
   const safePath = normalize(requested).replace(/^(\.\.[/\\])+/, "");
   if (!PUBLIC_FILES.has(safePath.replaceAll("\\", "/"))) throw httpError(404, "NOT_FOUND", "Không tìm thấy tệp.");
   const filePath = resolve(PUBLIC_DIR, safePath);
   if (!filePath.startsWith(resolve(PUBLIC_DIR)) || !existsSync(filePath) || filePath.includes(`${join(ROOT, "data")}`)) throw httpError(404, "NOT_FOUND", "Không tìm thấy tệp.");
-  const content = await readFile(filePath);
+  const raw = await readFile(filePath);
+  const content = safePath === "index.html" ? Buffer.from(await stampAssetVersions(raw.toString("utf8")), "utf8") : raw;
   res.writeHead(200, { "Content-Type": mimeTypes[extname(filePath)] || "application/octet-stream", "Content-Length": content.length, "Cache-Control": "no-cache" });
   res.end(content);
 }

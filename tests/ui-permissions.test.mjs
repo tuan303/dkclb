@@ -75,9 +75,11 @@ test("hàm chọn nhiều phần tử không bị viết nhầm thành chọn m�
   assert.deepEqual(broken, [], `gọi .forEach trên kết quả chọn một phần tử: ${JSON.stringify(broken)}`);
 });
 
-test("phiên bản tài nguyên được nâng cùng lần sửa giao diện", () => {
-  // app.js và styles.css được cache 4 giờ; quên nâng là người dùng chạy mã cũ.
-  const versions = [...html.matchAll(/\?v=([0-9]{8}-[0-9]+)/g)].map((match) => match[1]);
-  assert.ok(versions.length >= 3, "không tìm thấy tham số phiên bản trong index.html");
-  assert.equal(new Set(versions).size, 1, `các tệp đang mang phiên bản khác nhau: ${[...new Set(versions)].join(", ")}`);
+test("mọi tệp giao diện đều đi qua cơ chế đánh vân tay", () => {
+  // Máy chủ thay ?v= bằng vân tay nội dung tệp, nên tệp nào thiếu tham số đó sẽ
+  // không bao giờ được làm mới cache khi sửa. Cơ chế thật kiểm ở cache-bust.test.mjs.
+  const thieu = [...html.matchAll(/(?:src|href)="\.\/([\w.-]+\.(?:js|css|png))(\?[^"]*)?"/g)]
+    .filter((match) => !match[2]?.includes("v="))
+    .map((match) => match[1]);
+  assert.deepEqual(thieu, [], `tệp thiếu tham số phiên bản: ${thieu.join(", ")}`);
 });
