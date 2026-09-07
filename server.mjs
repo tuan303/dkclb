@@ -1786,6 +1786,49 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { user: publicUser(updatedUser) });
   }
 
+  // Đổi mật khẩu khi đang dùng hệ thống, khác với lần đổi bắt buộc ở trên. Ở đây
+  // BẮT BUỘC nhập mật khẩu hiện tại: nếu không, ai mượn được máy đang mở sẵn phiên
+  // là đổi khoá và chiếm luôn tài khoản của phụ huynh.
+  //
+  // Chỉ mở cho phụ huynh. Nhân sự nhà trường đăng nhập bằng Microsoft 365, mật
+  // khẩu do hệ thống của trường giữ, ứng dụng này không có gì để đổi.
+  if (method === "POST" && url.pathname === "/api/auth/change-password") {
+    const user = await requireUser(req, "parent");
+    const { currentPassword = "", newPassword = "" } = await readJson(req);
+    if (user.auth_provider !== "local") {
+      throw httpError(400, "SSO_ACCOUNT", "Tài khoản này đăng nhập bằng Microsoft 365, đổi mật khẩu tại hệ thống tài khoản của nhà trường.");
+    }
+    if (user.locked_until && user.locked_until > nowIso()) {
+      throw httpError(429, "ACCOUNT_TEMPORARILY_LOCKED", "Tài khoản tạm khóa do nhập sai nhiều lần. Vui lòng thử lại sau 15 phút.");
+    }
+    // Tài khoản còn must_change_password không tới được đây: requireUser đã đẩy về
+    // luồng đổi bắt buộc. Nên tới đây mật khẩu hiện tại luôn là hash scrypt.
+    if (!verifyPassword(String(currentPassword), user.password_salt, user.password_hash)) {
+      // Đếm chung bộ đếm với đăng nhập, nếu không đây thành lối dò mật khẩu không
+      // giới hạn cho bất kỳ ai mượn được một phiên đang mở.
+      const failures = asInt(user.login_failures) + 1;
+      const lockedUntil = failures >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null;
+      if (businessStore) await businessStore.recordLoginFailure(user.id, failures, lockedUntil);
+      else db.prepare("UPDATE users SET login_failures = ?, locked_until = ? WHERE id = ?").run(failures, lockedUntil, user.id);
+      throw httpError(401, "INVALID_CURRENT_PASSWORD", "Mật khẩu hiện tại không đúng.");
+    }
+    const password = String(newPassword);
+    const validation = validatePasswordPolicy(password, user.account);
+    if (!validation.valid) throw httpError(422, validation.code, validation.message);
+    if (verifyPassword(password, user.password_salt, user.password_hash)) {
+      throw httpError(422, "PASSWORD_UNCHANGED", "Mật khẩu mới phải khác mật khẩu hiện tại.");
+    }
+    const secured = hashPassword(password);
+    const changedUser = businessStore ? await businessStore.updatePassword(user.id, secured) : (() => {
+      db.prepare("UPDATE users SET password_salt = ?, password_hash = ?, activation_code = NULL, must_change_password = 0, login_failures = 0, locked_until = NULL WHERE id = ?")
+        .run(secured.salt, secured.hash, user.id);
+      return db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
+    })();
+    // Ghi việc đã xảy ra, tuyệt đối không ghi mật khẩu vào nhật ký.
+    await writeAudit({ actorUserId: user.id, action: "CHANGE_OWN_PASSWORD", entityType: "user", entityId: user.id });
+    return sendJson(res, 200, { user: publicUser(changedUser) });
+  }
+
   if (method === "GET" && url.pathname === "/api/me") return sendJson(res, 200, { user: publicUser(await requireUser(req, undefined, true)) });
 
   if (method === "GET" && url.pathname === "/api/students") {

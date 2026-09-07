@@ -128,10 +128,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .nav-link .icon { width: 18px; height: 18px; }
 .nav-link span { flex: 1; font-size: 13px; font-weight: 500; }
 .nav-badge { display: grid; min-width: 22px; height: 22px; place-items: center; padding: 0 6px; color: #fff; border-radius: 99px; background: #e75d76; font-size: 10px; }
-.sidebar-note { display: flex; gap: 10px; padding: 13px; color: #a9afd4; border: 1px solid rgba(255,255,255,.1); border-radius: 13px; background: rgba(255,255,255,.045); }
-.sidebar-note .icon { flex: 0 0 18px; color: #54ce5e; }
-.sidebar-note strong { color: #e9ecff; font-size: 12px; }
-.sidebar-note p { margin: 2px 0 0; font-size: 10px; line-height: 1.45; }
 
 .sidebar-overlay, .drawer-overlay { position: fixed; inset: 0; z-index: 25; visibility: hidden; opacity: 0; background: rgba(9, 21, 38, .46); transition: .2s ease; }
 .main-area { width: calc(100% - 260px); min-width: 0; margin-left: 260px; }

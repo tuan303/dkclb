@@ -59,6 +59,8 @@ const parentNav = [
   { id: "clubs", label: "Khám phá CLB", icon: "grid" },
   { id: "registrations", label: "Đăng ký của tôi", icon: "clipboard", badge: 1 },
   { id: "schedule", label: "Lịch học", icon: "calendar" },
+  { section: "Tài khoản" },
+  { id: "account", label: "Đổi mật khẩu", icon: "settings" },
   { section: "Hỗ trợ" },
   { id: "support", label: "Yêu cầu hỗ trợ", icon: "help" },
 ];
@@ -82,6 +84,7 @@ const adminNav = [
 const pageMeta = {
   home: ["Tổng quan", "Học kỳ I · 2026–2027"], clubs: ["Khám phá câu lạc bộ", "Dành cho phụ huynh"],
   registrations: ["Đăng ký của tôi", "Theo dõi trạng thái"], schedule: ["Lịch học", "Lịch cá nhân của học sinh"],
+  account: ["Tài khoản của tôi", "Bảo mật đăng nhập"],
   support: ["Yêu cầu hỗ trợ", "Trung tâm trợ giúp"], dashboard: ["Dashboard vận hành", "Cập nhật lúc 16:00 · 18/08/2026"],
   campaigns: ["Đợt đăng ký", "Học kỳ I · 2026–2027"], classes: ["CLB & lịch học", "Quản lý danh mục và quota"],
   applications: ["Đơn đăng ký", "158 bản ghi trong đợt hiện tại"], finance: ["Đối soát phí", "Dữ liệu minh họa"],
@@ -331,7 +334,7 @@ function renderHeader() {
 function renderPage() {
   const pages = {
     home: renderParentHome, clubs: renderClubsPage, registrations: renderRegistrations,
-    schedule: renderSchedule, support: renderSupport, dashboard: renderAdminDashboard,
+    schedule: renderSchedule, account: renderAccount, support: renderSupport, dashboard: renderAdminDashboard,
     campaigns: renderCampaigns, classes: renderClasses, applications: renderApplications,
     finance: renderFinance, reports: renderReports, structure: renderStructure, settings: renderSettings,
     accounts: renderSchoolAccounts,
@@ -607,6 +610,22 @@ function renderSupport() {
     <textarea id="support-message" style="width:100%;min-height:140px;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px" placeholder="Mô tả yêu cầu và thời gian có thể liên hệ..."></textarea>
     <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="button button-primary" data-send-support>Gửi yêu cầu</button></div>
   </div></section><aside class="panel"><div class="panel-head"><div><h3>Kênh hỗ trợ</h3><p>Giờ làm việc 08:00–17:00</p></div></div><div class="panel-body"><div class="attention-list"><div class="attention-item"><span class="attention-dot" style="background:var(--blue)"></span><div class="attention-copy"><strong>Hotline CLB</strong><span>024 7300 6688</span></div></div><div class="attention-item"><span class="attention-dot" style="background:var(--aqua)"></span><div class="attention-copy"><strong>Email</strong><span>clb@nshm.edu.vn</span></div></div><div class="attention-item"><span class="attention-dot" style="background:var(--gold)"></span><div class="attention-copy"><strong>Thời gian phản hồi</strong><span>Trong 01 ngày làm việc</span></div></div></div></div></aside></div>`;
+}
+
+// Trang tự đổi mật khẩu của phụ huynh. Chỉ có trong parentNav nên nhân sự nhà
+// trường không thấy: họ đăng nhập bằng Microsoft 365, mật khẩu không nằm ở đây.
+function renderAccount() {
+  return `<div class="dashboard-layout"><section class="panel"><div class="panel-head"><div><h3>Đổi mật khẩu</h3><p>Mật khẩu dùng để đăng nhập cổng đăng ký CLB ngoại khóa.</p></div></div><div class="panel-body">
+    <label class="form-field"><span>Mật khẩu hiện tại</span><input id="account-current-password" type="password" maxlength="128" autocomplete="current-password" /></label>
+    <label class="form-field"><span>Mật khẩu mới</span><input id="account-new-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" /></label>
+    <label class="form-field"><span>Nhập lại mật khẩu mới</span><input id="account-confirm-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" /></label>
+    <div id="account-password-error" class="form-error" role="alert"></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="button button-primary" id="account-password-submit">Lưu mật khẩu mới</button></div>
+  </div></section><aside class="panel"><div class="panel-head"><div><h3>Thông tin đăng nhập</h3><p>Tài khoản gắn với số điện thoại đã đăng ký với nhà trường.</p></div></div><div class="panel-body">
+    <div class="attention-list"><div class="attention-item"><span class="attention-dot" style="background:var(--blue)"></span><div class="attention-copy"><strong>Tài khoản</strong><span>${escapeHtml(state.me?.account || "")}</span></div></div></div>
+    <div class="info-note" style="margin-top:12px"><strong>Yêu cầu mật khẩu:</strong> ít nhất 8 ký tự, gồm chữ hoa, chữ thường, số và ký tự đặc biệt; không được chứa số điện thoại.</div>
+    <div class="info-note" style="margin-top:9px"><strong>Quên mật khẩu:</strong> liên hệ Phòng Tuyển sinh 1900 888689 (bấm phím 1) để được cấp lại.</div>
+  </div></aside></div>`;
 }
 
 function renderAdminDashboard() {
@@ -2031,6 +2050,38 @@ function bindPageEvents() {
   $$('[data-detail]').forEach(el => el.addEventListener("click", () => showDetail(el.dataset.detail)));
   $$('[data-open-cart]').forEach(el => el.addEventListener("click", openCart));
   $$('[data-toast]').forEach(el => el.addEventListener("click", () => toast(el.dataset.toast)));
+  $("#account-password-submit")?.addEventListener("click", async () => {
+    const box = $("#account-password-error");
+    const current = $("#account-current-password").value;
+    const password = $("#account-new-password").value;
+    box.textContent = "";
+    // Kiểm tại chỗ hai ô nhập giống nhau; mọi luật còn lại do máy chủ quyết, để
+    // giao diện không bao giờ nói khác luật thật.
+    if (password !== $("#account-confirm-password").value) {
+      box.textContent = "Hai mật khẩu mới chưa trùng khớp.";
+      return;
+    }
+    const button = $("#account-password-submit");
+    button.disabled = true;
+    try {
+      const payload = await api("/auth/change-password", {
+        method: "POST", body: JSON.stringify({ currentPassword: current, newPassword: password }),
+      });
+      state.me = payload.user;
+      $$("#account-current-password, #account-new-password, #account-confirm-password").forEach((input) => { input.value = ""; });
+      toast("Đã đổi mật khẩu. Lần đăng nhập sau hãy dùng mật khẩu mới.", "success");
+    } catch (error) {
+      box.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+  // Bàn phím điện thoại có nút "Go"; không nối phím Enter thì bấm vào không có gì
+  // xảy ra và phụ huynh tưởng trang hỏng.
+  $$("#account-current-password, #account-new-password, #account-confirm-password")
+    .forEach((input) => input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); $("#account-password-submit").click(); }
+    }));
   $("#club-search")?.addEventListener("input", (event) => { state.filters.search = event.target.value; const cursor = event.target.selectionStart; renderPage(); $("#club-search")?.focus(); $("#club-search")?.setSelectionRange(cursor,cursor); });
   $("#category-filter")?.addEventListener("change", e => { state.filters.category = e.target.value; renderPage(); });
   $("#availability-filter")?.addEventListener("change", e => { state.filters.availability = e.target.value; renderPage(); });
