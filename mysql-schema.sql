@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
   account               VARCHAR(512) NOT NULL,
   account_index         VARCHAR(190) NOT NULL,
   display_name          VARCHAR(768) NOT NULL,
+  email                 VARCHAR(512)     NULL,
   role                  VARCHAR(16)  NOT NULL,
   password_salt         VARCHAR(64)      NULL,
   password_hash         VARCHAR(191)     NULL,

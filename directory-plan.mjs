@@ -78,12 +78,17 @@ export function planDirectoryWrites({
       // cũng không bảo vệ thêm được gì.
       writes.push({ collection: "users", id: userId, data: {
         account: guardian.account, accountLower, displayName: guardian.displayName || "Phụ huynh học sinh", role: "parent",
+        email: guardian.email || null,
         passwordSalt: null, passwordHash: null, activationCode: null, authProvider: "local",
         mustChangePassword: true, loginFailures: 0, lockedUntil: null, active: true, createdAt: timestamp,
       } });
       counters.parentsCreated += 1;
     } else {
+      // CHỈ ghi email khi nguồn thật sự có. Ba file danh bạ do ba giáo vụ quản;
+      // nếu một file thiếu cột email thì đưa null vào đây sẽ XOÁ email mà file kia
+      // vừa mang lại, và mỗi 15 phút hai file lại ghi đè lẫn nhau.
       const data = { accountLower, active: true };
+      if (guardian.email) data.email = guardian.email;
       if (isUnchanged(user, data)) counters.parentsUnchanged += 1;
       else {
         writes.push({ collection: "users", id: user.id, data });

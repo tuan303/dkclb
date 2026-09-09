@@ -16,7 +16,23 @@ const FIELD_ALIASES = {
   fatherPhone: ["sdt bo", "so dien thoai bo", "dien thoai bo", "dt bo", "sdt cha", "so dien thoai cha", "dien thoai cha"],
   motherName: ["ho ten me", "ho va ten me", "ten me"],
   motherPhone: ["sdt me", "so dien thoai me", "dien thoai me", "dt me"],
+  // Cột email trong file danh bạ của trường tên là "Email bố" / "Email mẹ";
+  // normalizeHeader bỏ dấu và hạ chữ thường nên khớp thành "email bo" / "email me".
+  // KHÔNG đưa vào REQUIRED_FIELDS: thiếu email thì đồng bộ vẫn phải chạy.
+  fatherEmail: ["email bo", "mail bo", "email cha", "mail cha"],
+  motherEmail: ["email me", "mail me"],
 };
+
+// Chỉ nhận chuỗi trông như địa chỉ email. Nhà trường gõ tay 7.119 dòng nên có ô
+// ghi "không có", có ô để trống, có ô ghi số điện thoại. Nhận bừa thì cột Email
+// trong phần mềm đầy rác mà không ai biết rác từ đâu ra.
+function cleanEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email.includes("@") || email.includes(" ")) return "";
+  const [tenNguoi, tenMien] = email.split("@");
+  if (!tenNguoi || !tenMien || !tenMien.includes(".")) return "";
+  return email;
+}
 
 const REQUIRED_FIELDS = ["studentCode", "studentName", "dateOfBirth", "className"];
 
@@ -88,13 +104,18 @@ export function buildGuardianAccounts(rows, mapping) {
     for (const [phoneField, relationship] of [["fatherPhone", "Bố"], ["motherPhone", "Mẹ"]]) {
       const account = toVietnameseLocalPhone(cell(row, mapping[phoneField]));
       if (!account) continue;
+      const laBo = phoneField === "fatherPhone";
       const current = guardians.get(account) || {
         account,
         initialPassword: account,
         mustChangePassword: true,
-        displayName: cell(row, mapping[phoneField === "fatherPhone" ? "fatherName" : "motherName"]) || "Phụ huynh học sinh",
+        displayName: cell(row, mapping[laBo ? "fatherName" : "motherName"]) || "Phụ huynh học sinh",
+        email: "",
         students: [],
       };
+      // Email lấy đúng bên của số điện thoại: SĐT bố đi với email bố. Giữ giá trị
+      // gặp trước để kết quả không đổi giữa các lần chạy, giống cách xử lý tên.
+      if (!current.email) current.email = cleanEmail(cell(row, mapping[laBo ? "fatherEmail" : "motherEmail"]));
       const existingStudent = current.students.find((student) => student.studentCode === studentCode);
       if (!existingStudent) {
         current.students.push({ studentCode, relationship });

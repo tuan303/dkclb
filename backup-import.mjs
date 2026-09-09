@@ -76,12 +76,13 @@ export function validateBackup(backup) {
 
 const INSERTS = {
   users: {
-    sql: `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
+    sql: `INSERT INTO users (id, account, account_index, display_name, email, role, password_salt, password_hash,
       auth_provider, microsoft_object_id, must_change_password, login_failures, locked_until, active, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     values: (row, crypto) => [
       row.id, crypto.encrypt(row.account), crypto.blindIndex(row.accountLower || row.account),
-      crypto.encrypt(text(row.displayName, 190) || "Người dùng"), row.role || "parent",
+      crypto.encrypt(text(row.displayName, 190) || "Người dùng"),
+      crypto.encrypt(text(row.email, 190) || null), row.role || "parent",
       text(row.passwordSalt, 64), text(row.passwordHash, 191), row.authProvider || "local",
       text(row.microsoftObjectId, 64), bit(row.mustChangePassword), int(row.loginFailures),
       text(row.lockedUntil, 32), row.active === false ? 0 : 1, row.createdAt || new Date().toISOString(),

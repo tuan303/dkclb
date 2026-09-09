@@ -87,14 +87,14 @@ const CATALOG_SELECT = `SELECT cc.id, cc.club_id, c.code, c.name, cc.name AS cla
 // Mỗi nhóm dữ liệu xuất ra đúng hình dạng chung của bản sao lưu, không phụ thuộc nền lưu trữ.
 const EXPORT_QUERIES = {
   users: {
-    sql: `SELECT id, account, display_name, role, password_salt, password_hash, activation_code, auth_provider,
+    sql: `SELECT id, account, display_name, email, role, password_salt, password_hash, activation_code, auth_provider,
       microsoft_object_id, must_change_password, login_failures, locked_until, active, created_at FROM users`,
     // Bản sao lưu chứa dữ liệu đã giải mã, để nạp được sang hệ thống dùng khóa khác.
     // Bản thân tệp sao lưu được bảo vệ bằng mật khẩu riêng khi tải về.
     map: (row, crypto) => ({
       id: row.id, account: crypto.decrypt(row.account),
       accountLower: String(crypto.decrypt(row.account) || "").toLowerCase(),
-      displayName: crypto.decrypt(row.display_name),
+      displayName: crypto.decrypt(row.display_name), email: crypto.decrypt(row.email) || null,
       role: row.role, passwordSalt: row.password_salt || null, passwordHash: row.password_hash || null,
       activationCode: crypto.decrypt(row.activation_code),
       authProvider: row.auth_provider, microsoftObjectId: row.microsoft_object_id || null,
@@ -254,6 +254,10 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
     await pool.query("SET SESSION lock_wait_timeout = 10").catch(() => {});
     const wanted = [
       ["users", "last_login_at", "VARCHAR(32) NULL"],
+      // Email là dữ liệu cá nhân nên mã hóa từng trường như account. KHÔNG chỉ mục
+      // mù (không có luồng nào tra theo email) và TUYỆT ĐỐI không UNIQUE: hai vợ
+      // chồng khai chung một email là chuyện thường.
+      ["users", "email", "VARCHAR(512) NULL"],
     ];
     for (const [table, column, definition] of wanted) {
       const [rows] = await pool.query(
@@ -821,7 +825,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
 
       const [studentRow, parentRows, auditRows] = await Promise.all([
         first("SELECT id, code, name, date_of_birth, grade, homeroom, level, status FROM students WHERE id = ?", [registration.studentId]),
-        query(`SELECT u.id, u.account, u.display_name, ps.relationship
+        query(`SELECT u.id, u.account, u.display_name, u.email, ps.relationship
                FROM parent_students ps JOIN users u ON u.id = ps.parent_user_id
                WHERE ps.student_id = ?`, [registration.studentId]),
         query(`SELECT a.id, a.action, a.before_json, a.after_json, a.reason, a.created_at, u.display_name AS actor_name
@@ -839,7 +843,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         } : null,
         parents: parentRows.map((row) => ({
           id: row.id, name: crypto.decrypt(row.display_name), account: crypto.decrypt(row.account),
-          relationship: row.relationship || null,
+          email: crypto.decrypt(row.email) || null, relationship: row.relationship || null,
         })),
         history: auditRows.map((row) => ({
           id: row.id, action: row.action, actorName: row.actor_name ? crypto.decrypt(row.actor_name) : null,
@@ -890,7 +894,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
     async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded }) {
       const [studentRows, userRows, links] = await Promise.all([
         query("SELECT id, code, name, date_of_birth, grade, homeroom, level, status FROM students"),
-        query("SELECT id, account, role, active FROM users"),
+        query("SELECT id, account, role, active, email FROM users"),
         query("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students"),
       ]);
       // So sánh phải làm trên bản rõ, nếu không thì mỗi lần mã hóa ra chuỗi khác nhau
@@ -904,7 +908,10 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         })),
         users: userRows.map((row) => {
           const account = crypto.decrypt(row.account);
-          return { id: row.id, account, accountLower: String(account || "").toLowerCase(), role: row.role, active: toBool(row.active) };
+          return {
+            id: row.id, account, accountLower: String(account || "").toLowerCase(),
+            role: row.role, active: toBool(row.active), email: crypto.decrypt(row.email) || null,
+          };
         }),
         links,
         timestamp,
@@ -929,15 +936,18 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
             const data = write.data;
             if (data.account) {
               await connection.query(
-                `INSERT INTO users (id, account, account_index, display_name, role, password_salt, password_hash,
+                `INSERT INTO users (id, account, account_index, display_name, email, role, password_salt, password_hash,
                   activation_code, auth_provider, must_change_password, login_failures, locked_until, active, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 1, ?)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 1, ?)
                  ON DUPLICATE KEY UPDATE active = 1`,
                 [write.id, crypto.encrypt(data.account), crypto.blindIndex(data.account),
-                  crypto.encrypt(data.displayName), data.role,
+                  crypto.encrypt(data.displayName), crypto.encrypt(data.email || null), data.role,
                   data.passwordSalt || null, data.passwordHash || null, crypto.encrypt(data.activationCode || null),
                   data.authProvider || "local", data.mustChangePassword ? 1 : 0, data.createdAt],
               );
+            } else if (data.email) {
+              await connection.query("UPDATE users SET active = 1, email = ? WHERE id = ?",
+                [crypto.encrypt(data.email), write.id]);
             } else {
               await connection.query("UPDATE users SET active = 1 WHERE id = ?", [write.id]);
             }

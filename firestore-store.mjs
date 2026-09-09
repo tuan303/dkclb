@@ -499,7 +499,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           student: studentSnapshot.exists ? { id: studentSnapshot.id, ...studentSnapshot.data() } : null,
           parents: parentDocuments.filter((document) => document.exists).map((document) => ({
             id: document.id, name: document.data().displayName, account: document.data().account,
-            relationship: relationships.get(document.id) || null,
+            email: document.data().email || null, relationship: relationships.get(document.id) || null,
           })),
           history: snapshotRows(auditSnapshot)
             .map((row) => ({

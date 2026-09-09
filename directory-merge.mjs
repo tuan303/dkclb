@@ -54,7 +54,7 @@ export function mergeDirectorySnapshots(results = []) {
       for (const guardian of result.snapshot.guardians || []) {
         const current = guardiansByAccount.get(guardian.account);
         if (!current) {
-          guardiansByAccount.set(guardian.account, { ...guardian, students: [...(guardian.students || [])] });
+          guardiansByAccount.set(guardian.account, { ...guardian, email: guardian.email || "", students: [...(guardian.students || [])] });
           source.guardians += 1;
           continue;
         }
@@ -65,6 +65,8 @@ export function mergeDirectorySnapshots(results = []) {
           else if (known.relationship !== link.relationship) known.relationship = "Bố/Mẹ";
         }
         if (!current.displayName && guardian.displayName) current.displayName = guardian.displayName;
+        // Cùng một phụ huynh có con ở hai cấp: lấy email từ file nào khai trước.
+        if (!current.email && guardian.email) current.email = guardian.email;
       }
     }
 

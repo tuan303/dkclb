@@ -220,6 +220,7 @@ function initializeDatabase() {
       id TEXT PRIMARY KEY,
       account TEXT UNIQUE NOT NULL,
       display_name TEXT NOT NULL,
+      email TEXT,
       role TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       password_hash TEXT NOT NULL,
@@ -343,6 +344,7 @@ function initializeDatabase() {
 
   ensureColumn("users", "auth_provider", "TEXT NOT NULL DEFAULT 'local'");
   ensureColumn("users", "microsoft_object_id", "TEXT");
+  ensureColumn("users", "email", "TEXT");
   ensureColumn("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("users", "login_failures", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("users", "locked_until", "TEXT");
@@ -864,7 +866,7 @@ function syncDirectoryLocal({ snapshot, actorUserId, timestamp, idFactory, sourc
   const plan = planDirectoryWrites({
     snapshot,
     students: db.prepare("SELECT id, code, name, date_of_birth AS dateOfBirth, grade, homeroom, level, status FROM students").all(),
-    users: db.prepare("SELECT id, account, lower(account) AS accountLower, role, active FROM users").all()
+    users: db.prepare("SELECT id, account, lower(account) AS accountLower, role, active, email FROM users").all()
       .map((row) => ({ ...row, active: asInt(row.active) === 1 })),
     links: db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students").all(),
     timestamp, idFactory, allSourcesLoaded,
@@ -884,16 +886,19 @@ function syncDirectoryLocal({ snapshot, actorUserId, timestamp, idFactory, sourc
       } else if (write.collection === "users") {
         // Bản ghi chỉ có accountLower/active là lệnh bật lại tài khoản đang tắt.
         if (!data.account) {
-          db.prepare("UPDATE users SET active = 1 WHERE id = ?").run(write.id);
+          // Email tới sau khi tài khoản đã tồn tại là chuyện bình thường: cột email
+          // vừa được thêm vào file danh bạ. Chỉ ghi khi nguồn có giá trị.
+          if (data.email) db.prepare("UPDATE users SET active = 1, email = ? WHERE id = ?").run(data.email, write.id);
+          else db.prepare("UPDATE users SET active = 1 WHERE id = ?").run(write.id);
           continue;
         }
         // Chưa có mật khẩu riêng: salt/hash để trống, lần đầu đăng nhập bằng mã kích hoạt.
         db.prepare(`INSERT INTO users
-          (id, account, display_name, role, password_salt, password_hash, activation_code,
+          (id, account, display_name, email, role, password_salt, password_hash, activation_code,
             auth_provider, must_change_password, login_failures, locked_until, active, created_at)
-          VALUES (?, ?, ?, ?, '', '', ?, ?, ?, 0, NULL, 1, ?)
+          VALUES (?, ?, ?, ?, ?, '', '', ?, ?, ?, 0, NULL, 1, ?)
           ON CONFLICT(id) DO UPDATE SET active = 1`)
-          .run(write.id, data.account, data.displayName, data.role, data.activationCode,
+          .run(write.id, data.account, data.displayName, data.email || null, data.role, data.activationCode,
             data.authProvider || "local", data.mustChangePassword ? 1 : 0, data.createdAt);
       } else if (write.collection === "parentStudents") {
         db.prepare(`INSERT INTO parent_students (parent_user_id, student_id, relationship) VALUES (?, ?, ?)
@@ -1477,11 +1482,11 @@ const parseJsonField = (value, fallback) => {
 function sqliteBackupData() {
   const all = (sql) => db.prepare(sql).all();
   return {
-    users: all(`SELECT id, account, display_name, role, password_salt, password_hash, auth_provider,
+    users: all(`SELECT id, account, display_name, email, role, password_salt, password_hash, auth_provider,
       microsoft_object_id, must_change_password, login_failures, locked_until, active, created_at FROM users`)
       .map((row) => ({
         id: row.id, account: row.account, accountLower: String(row.account || "").toLowerCase(),
-        displayName: row.display_name, role: row.role,
+        displayName: row.display_name, email: row.email || null, role: row.role,
         passwordSalt: row.password_salt || null, passwordHash: row.password_hash || null,
         authProvider: row.auth_provider, microsoftObjectId: row.microsoft_object_id || null,
         mustChangePassword: asBool(row.must_change_password), loginFailures: asInt(row.login_failures),
@@ -2268,7 +2273,7 @@ async function handleApi(req, res, url) {
           registration,
           student: db.prepare(`SELECT id, code, name, date_of_birth AS dateOfBirth, grade, homeroom, level, status
             FROM students WHERE id = ?`).get(registration.studentId) || null,
-          parents: db.prepare(`SELECT u.id, u.account, u.display_name AS name, ps.relationship
+          parents: db.prepare(`SELECT u.id, u.account, u.display_name AS name, u.email, ps.relationship
             FROM parent_students ps JOIN users u ON u.id = ps.parent_user_id
             WHERE ps.student_id = ?`).all(registration.studentId),
           history: db.prepare(`SELECT a.id, a.action, a.before_json, a.after_json, a.reason, a.created_at AS createdAt,
