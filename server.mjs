@@ -382,14 +382,14 @@ function seedPeriodWindow(now = Date.now()) {
 }
 
 const STUDENT_SEED_ROWS = [
-  ["hs01", "NSHM260301", "Nguyễn Minh An", 3, "3A2", "Tiểu học"],
-  ["hs02", "NSHM260601", "Nguyễn Gia Hân", 6, "6A1", "THCS"],
-  ["hs03", "NSHM260311", "Lê Minh Khang", 3, "3A1", "Tiểu học"],
-  ["hs04", "NSHM260203", "Trần Bảo Ngọc", 2, "2A3", "Tiểu học"],
-  ["hs05", "NSHM260622", "Phạm Anh Tú", 6, "6A2", "THCS"],
-  ["hs06", "NSHM260411", "Nguyễn Hà My", 4, "4A1", "Tiểu học"],
-  ["hs07", "NSHM260344", "Đỗ Gia Linh", 3, "3A4", "Tiểu học"],
-  ["hs08", "NSHM260522", "Vũ Minh Quân", 5, "5A2", "Tiểu học"],
+  ["hs01", "NSHM260301", "Nguyễn Minh An", "12/04/2017", 3, "3A2", "Tiểu học"],
+  ["hs02", "NSHM260601", "Nguyễn Gia Hân", "03/09/2014", 6, "6A1", "THCS"],
+  ["hs03", "NSHM260311", "Lê Minh Khang", "27/11/2017", 3, "3A1", "Tiểu học"],
+  ["hs04", "NSHM260203", "Trần Bảo Ngọc", "08/02/2018", 2, "2A3", "Tiểu học"],
+  ["hs05", "NSHM260622", "Phạm Anh Tú", "19/06/2014", 6, "6A2", "THCS"],
+  ["hs06", "NSHM260411", "Nguyễn Hà My", "30/01/2016", 4, "4A1", "Tiểu học"],
+  ["hs07", "NSHM260344", "Đỗ Gia Linh", "15/08/2017", 3, "3A4", "Tiểu học"],
+  ["hs08", "NSHM260522", "Vũ Minh Quân", "22/05/2015", 5, "5A2", "Tiểu học"],
 ];
 
 const REGISTRATION_SEED_ROWS = [
@@ -436,8 +436,8 @@ function demoSeedData({ includeAccounts = false } = {}) {
       { id: "u_giaovu", account: "giaovu@nshm.edu.vn", displayName: "Phạm Thu Trang", role: "giaovu", passwordSalt: adminPassword.salt, passwordHash: adminPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
       { id: "u_seed", account: "seed@nshm.local", displayName: "Dữ liệu hệ thống", role: "parent", passwordSalt: seedPassword.salt, passwordHash: seedPassword.hash, authProvider: "local", mustChangePassword: false, createdAt },
     ],
-    students: STUDENT_SEED_ROWS.map(([id, code, name, grade, homeroom, level]) => ({
-      id, code, name, dateOfBirth: null, grade, homeroom, level, status: "active",
+    students: STUDENT_SEED_ROWS.map(([id, code, name, dateOfBirth, grade, homeroom, level]) => ({
+      id, code, name, dateOfBirth, grade, homeroom, level, status: "active",
     })),
     parentStudents: [
       { parentUserId: "u_parent", studentId: "hs01", relationship: "Mẹ" },
@@ -469,7 +469,7 @@ function seedDatabase() {
   insertUser.run("u_giaovu", "giaovu@nshm.edu.vn", "Phạm Thu Trang", "giaovu", adminPassword.salt, adminPassword.hash, createdAt);
   insertUser.run("u_seed", "seed@nshm.local", "Dữ liệu hệ thống", "parent", seedPassword.salt, seedPassword.hash, createdAt);
 
-  const insertStudent = db.prepare("INSERT INTO students (id, code, name, grade, homeroom, level) VALUES (?, ?, ?, ?, ?, ?)");
+  const insertStudent = db.prepare("INSERT INTO students (id, code, name, date_of_birth, grade, homeroom, level) VALUES (?, ?, ?, ?, ?, ?, ?)");
   STUDENT_SEED_ROWS.forEach((row) => insertStudent.run(...row));
   db.prepare("INSERT INTO parent_students VALUES (?, ?, ?)").run("u_parent", "hs01", "Mẹ");
   db.prepare("INSERT INTO parent_students VALUES (?, ?, ?)").run("u_parent", "hs02", "Mẹ");
@@ -760,23 +760,42 @@ async function validateRegistration(user, studentId, clubIds) {
   };
 }
 
-async function listRegistrations(user, status) {
+// "16:49 - 07/09/2026". Ghép từ formatToParts chứ không phó mặc cho định dạng mặc
+// định của vi-VN: mỗi phiên bản Node/ICU lại xếp ngày giờ một kiểu, mà đây là cột
+// giáo vụ đọc hằng ngày nên thứ tự phải cố định.
+function formatRegistrationTimestamp(value) {
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime())) return "";
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Ho_Chi_Minh", hour12: false,
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(time).map((part) => [part.type, part.value]));
+  return `${parts.hour}:${parts.minute} - ${parts.day}/${parts.month}/${parts.year}`;
+}
+
+async function listRegistrations(user, status, { includeStudentIdentity = false } = {}) {
   const rows = await rawRegistrationRows({ parentUserId: user.role === "parent" ? user.id : undefined, status });
   const hydrated = businessStore ? await businessStore.hydrateRegistrations(rows) : rows.map((registration) => {
     const clubClass = db.prepare("SELECT cc.room, cc.teacher, cc.name AS className, cc.club_id AS clubId FROM club_classes cc WHERE cc.id = ?").get(registration.classId) || {};
     return {
       registration,
-      student: db.prepare("SELECT name, homeroom FROM students WHERE id = ?").get(registration.studentId) || {},
+      student: db.prepare("SELECT name, homeroom, code, date_of_birth AS dateOfBirth FROM students WHERE id = ?").get(registration.studentId) || {},
       clubClass,
       club: (clubClass.clubId ? db.prepare("SELECT id, name FROM clubs WHERE id = ?").get(clubClass.clubId) : null) || {},
     };
   });
   return hydrated.map(({ registration, student, clubClass, club }) => {
+    // Vắng mặt hẳn chứ không phải chuỗi rỗng: kiểm thử khẳng định được "không có
+    // trường này", còn chuỗi rỗng thì không phân biệt được với dữ liệu thiếu.
+    const studentIdentity = includeStudentIdentity
+      ? { studentCode: student.code || "", dateOfBirth: student.dateOfBirth || null }
+      : {};
     return {
       id: registration.id,
       groupId: registration.groupId,
       studentId: registration.studentId,
       student: student.name || registration.studentId,
+      ...studentIdentity,
       className: student.homeroom || "—",
       clubId: club.id || registration.classId,
       club: club.name || registration.classId,
@@ -791,7 +810,7 @@ async function listRegistrations(user, status) {
       createdAt: registration.createdAt,
       room: clubClass.room || "—",
       teacher: clubClass.teacher || "—",
-      date: new Intl.DateTimeFormat("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(registration.createdAt)),
+      date: formatRegistrationTimestamp(registration.createdAt),
     };
   });
 }
@@ -1859,7 +1878,14 @@ async function handleApi(req, res, url) {
 
   if (method === "GET" && url.pathname === "/api/registrations") {
     const user = await requireUser(req);
-    return sendJson(res, 200, { registrations: await listRegistrations(user, url.searchParams.get("status")) });
+    // Phụ huynh chỉ nhận đơn của chính con mình, và mã học sinh với ngày sinh của
+    // con thì họ đã xem được qua /api/students. Người của nhà trường thì phải có
+    // quyền duyệt đơn — đúng quyền đang chắn trang "Đơn đăng ký".
+    const includeStudentIdentity = user.role === "parent"
+      || can(effectiveRole(user, SUPERADMIN_ACCOUNTS), CAP.duyetDon);
+    return sendJson(res, 200, {
+      registrations: await listRegistrations(user, url.searchParams.get("status"), { includeStudentIdentity }),
+    });
   }
 
   if (method === "POST" && url.pathname === "/api/registrations/validate") {

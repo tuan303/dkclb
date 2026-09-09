@@ -647,7 +647,7 @@ function renderAdminDashboard() {
         ${attention("var(--blue)","Đơn mới","Chờ xử lý", countByStatus("submitted"))}
       </div></div></div>
     </section>
-    <section class="section panel"><div class="panel-head"><div><h3>Đơn đăng ký gần đây</h3><p>Dữ liệu cập nhật theo thời gian thực</p></div><button class="button button-secondary" data-go="applications">Xem tất cả ${icon("arrow")}</button></div>${renderApplicationTable(adminApplications.slice(0,5))}</section>`;
+    <section class="section panel"><div class="panel-head"><div><h3>Đơn đăng ký gần đây</h3><p>Dữ liệu cập nhật theo thời gian thực</p></div><button class="button button-secondary" data-go="applications">Xem tất cả ${icon("arrow")}</button></div>${renderApplicationTable(adminApplications.slice(0,5), { rutGon: true })}</section>`;
 }
 
 const countByStatus = (status) => adminApplications.filter((row) => row.status === status).length;
@@ -1502,15 +1502,52 @@ function renderApplications() {
   const filtered = state.adminStatus === "all" ? adminApplications : adminApplications.filter(a => a.status === state.adminStatus);
   const tabs = [["all","Tất cả"],["submitted","Đã gửi"],["payment","Chờ phí"],["confirmed","Đã xác nhận"],["waitlist","DS chờ"],["conflict","Trùng lịch"]];
   return `<section class="section" style="margin-top:0"><div class="section-head"><div><span class="eyebrow">Quản lý tập trung</span><h2>Danh sách đăng ký</h2><p>Lọc, xử lý ngoại lệ và theo dõi lịch sử trạng thái.</p></div><button class="button button-secondary" data-export>${icon("download")} Xuất CSV</button></div>
-  <div class="filters"><label class="search-field">${icon("search")}<input id="admin-search" placeholder="Tìm mã đơn, học sinh, CLB..." /></label><div class="status-tabs">${tabs.map(([id,label]) => `<button class="status-tab ${state.adminStatus === id ? "active" : ""}" data-status-tab="${id}">${label}</button>`).join("")}</div></div></section>
+  <div class="filters"><label class="search-field">${icon("search")}<input id="admin-search" placeholder="Tìm mã đơn, mã học sinh, tên học sinh, CLB..." /></label><div class="status-tabs">${tabs.map(([id,label]) => `<button class="status-tab ${state.adminStatus === id ? "active" : ""}" data-status-tab="${id}">${label}</button>`).join("")}</div></div></section>
   <section class="section panel"><div class="panel-head"><div><h3>${filtered.length} đơn hiển thị</h3><p>${escapeHtml(pageContext("applications", ""))}</p></div></div><div id="applications-table">${renderApplicationTable(filtered)}</div></section>`;
 }
 
-function renderApplicationTable(rows) {
-  return `<div class="table-wrap"><table class="data-table"><thead><tr><th>Mã đơn</th><th>Học sinh</th><th>CLB</th><th>Thời gian</th><th>Trạng thái</th><th>Phí</th><th>Thao tác</th></tr></thead><tbody>${rows.map(row => {
-    const [label,color] = statusMap[row.status];
-    return `<tr data-row-text="${(row.id+row.student+row.club).toLowerCase()}"><td><strong>${row.id}</strong></td><td><div class="student-cell"><span class="mini-avatar">${row.student.split(" ").slice(-2).map(s=>s[0]).join("")}</span><div><strong>${row.student}</strong><span>${row.className}</span></div></div></td><td>${escapeHtml(row.club)}${row.classLabel ? `<br><span style="color:var(--muted)">${escapeHtml(row.classLabel)}</span>` : ""}</td><td>${row.date}</td><td><span class="badge badge-${color}">${label}</span></td><td>${formatMoney(row.amount)}</td><td>${row.status === "payment" ? `<button class="table-action" data-confirm-payment="${row.id}">Xác nhận phí</button>` : `<button class="table-action" data-toast="Demo: mở chi tiết ${row.id}.">Chi tiết</button>`}</td></tr>`;
-  }).join("") || `<tr><td colspan="7"><div class="empty-state">Không có dữ liệu phù hợp.</div></td></tr>`}</tbody></table></div>`;
+// Ngày sinh đến từ Google Sheets nên là chuỗi thô do nhà trường gõ, thường đã là
+// dd/mm/yyyy. Chỉ đổi khi thấy dạng ISO; còn lại giữ nguyên, vì đoán sai định dạng
+// một ngày sinh còn tệ hơn hiện đúng thứ người ta đã nhập.
+const formatDateOfBirth = (value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return iso ? `${iso[3]}/${iso[2]}/${iso[1]}` : raw;
+};
+
+// Cùng một hàm bảng phục vụ hai chỗ: trang "Đơn đăng ký" (đủ tám cột theo yêu cầu
+// của nhà trường) và ô "Đơn đăng ký gần đây" trên Dashboard. Dashboard mở cho giáo
+// vụ bằng quyền bao-cao, mà phạm vi của giáo vụ trong roles.mjs KHÔNG gồm mã học
+// sinh và ngày sinh — nên hai cột đó phải đánh dấu là riêng của trang đơn. Máy chủ
+// cũng đã cắt hai trường này theo quyền; ẩn ở đây chỉ là lớp thứ hai.
+function renderApplicationTable(rows, { rutGon = false } = {}) {
+  const cot = [
+    { title: "Mã đơn", cell: (row) => `<strong>${escapeHtml(row.id)}</strong>` },
+    { title: "Ngày đăng ký", cell: (row) => escapeHtml(row.date) },
+    { title: "Mã học sinh", rieng: true, cell: (row) => (row.studentCode ? escapeHtml(row.studentCode) : "—") },
+    { title: "Học sinh", cell: (row) => `<div class="student-cell"><span class="mini-avatar">${escapeHtml(row.student.split(" ").slice(-2).map((part) => part[0]).join(""))}</span><div><strong>${escapeHtml(row.student)}</strong><span>${escapeHtml(row.className)}</span></div></div>` },
+    { title: "Ngày sinh", rieng: true, cell: (row) => escapeHtml(formatDateOfBirth(row.dateOfBirth)) },
+    { title: "CLB", cell: (row) => `${escapeHtml(row.club)}${row.classLabel ? `<br><span style="color:var(--muted)">${escapeHtml(row.classLabel)}</span>` : ""}` },
+    { title: "Trạng thái", cell: (row) => { const [label, color] = statusMap[row.status]; return `<span class="badge badge-${color}">${label}</span>`; } },
+    // Số tiền đi kèm ngay trên nút: bảng này không còn cột Phí, mà xác nhận một
+    // khoản thu trong khi không nhìn thấy số tiền là chỗ dễ sai nhất của cả trang.
+    { title: "Thao tác", cell: (row) => (row.status === "payment"
+      ? `<button class="table-action" data-confirm-payment="${escapeHtml(row.id)}">Xác nhận ${formatMoney(row.amount)}</button>`
+      : `<button class="table-action" data-toast="Demo: mở chi tiết ${escapeHtml(row.id)}.">Chi tiết</button>`) },
+  ].filter((item) => !(rutGon && item.rieng));
+
+  const body = rows.map((row) => {
+    // Ô tìm kiếm lọc theo chuỗi này, nên mã học sinh phải có mặt — giáo vụ tra
+    // theo mã nhiều hơn theo tên.
+    const searchText = `${row.id} ${row.student} ${row.studentCode || ""} ${row.club}`.toLowerCase();
+    return `<tr data-row-text="${escapeHtml(searchText)}">${cot.map((item) => `<td>${item.cell(row)}</td>`).join("")}</tr>`;
+  }).join("");
+
+  return `<div class="table-wrap"><table class="data-table">
+    <thead><tr>${cot.map((item) => `<th>${item.title}</th>`).join("")}</tr></thead>
+    <tbody>${body || `<tr><td colspan="${cot.length}"><div class="empty-state">Không có dữ liệu phù hợp.</div></td></tr>`}</tbody>
+  </table></div>`;
 }
 
 function renderFinance() {

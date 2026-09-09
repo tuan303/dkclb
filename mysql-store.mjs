@@ -701,13 +701,18 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       const studentIds = [...new Set(rows.map((row) => row.studentId).filter(Boolean))];
       const classIds = [...new Set(rows.map((row) => row.classId).filter(Boolean))];
       const [studentRows, classes] = await Promise.all([
-        studentIds.length ? query("SELECT id, name, homeroom FROM students WHERE id IN (?)", [studentIds]) : [],
+        studentIds.length ? query("SELECT id, name, homeroom, code, date_of_birth FROM students WHERE id IN (?)", [studentIds]) : [],
         classIds.length
           ? query(`SELECT cc.id, cc.room, cc.teacher, cc.name AS className, cc.club_id AS clubId, c.name AS clubName
               FROM club_classes cc JOIN clubs c ON c.id = cc.club_id WHERE cc.id IN (?)`, [classIds])
           : [],
       ]);
-      const students = studentRows.map((row) => ({ ...row, name: crypto.decrypt(row.name) }));
+      const students = studentRows.map((row) => ({
+        ...row,
+        name: crypto.decrypt(row.name),
+        code: crypto.decrypt(row.code),
+        dateOfBirth: crypto.decrypt(row.date_of_birth) || null,
+      }));
       const studentMap = new Map(students.map((row) => [row.id, row]));
       const classMap = new Map(classes.map((row) => [row.id, row]));
       return rows.map((registration) => {
