@@ -2437,6 +2437,18 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     syncScheduler.start();
     console.log(`Tự đồng bộ danh sách học sinh mỗi ${Math.round(SYNC_INTERVAL_MS / 60000)} phút.`);
   }
+  // Không có nhánh này thì cổng bị chiếm sẽ ném lỗi 'error' không ai bắt, tiến
+  // trình chết CÂM: người vận hành thấy lệnh chạy xong, không báo gì, mà site nằm.
+  // Đã xảy ra thật hai lần khi bật lại mà tiến trình cũ chưa nhả cổng.
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(`[khoi-dong] Cổng ${PORT} đang bị một tiến trình khác giữ, máy chủ không khởi động được.`);
+      console.error(`[khoi-dong] Xem ai đang giữ: Get-NetTCPConnection -LocalPort ${PORT} -State Listen | Select-Object OwningProcess`);
+    } else {
+      console.error(`[khoi-dong] Không mở được cổng ${PORT} trên ${HOST}: ${error.message}`);
+    }
+    process.exit(1);
+  });
   // PORT=0 để hệ điều hành cấp cổng trống; in ra cổng thật để bộ kiểm thử bám vào.
   server.listen(PORT, HOST, () => console.log(`NSHM Clubs running at http://${HOST}:${server.address().port}`));
 }
