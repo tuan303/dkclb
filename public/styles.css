@@ -481,6 +481,31 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* Biểu mẫu quản trị danh mục: đợt đăng ký, CLB và lớp */
 .modal.modal-wide { width: min(720px, 100%); }
+/* Popup chi tiết đơn đăng ký: ba tab, lưới trường chỉ đọc, dòng thời gian lịch sử. */
+.row-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.detail-tabs { display: flex; gap: 4px; padding: 0 22px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.detail-tab { padding: 11px 13px; color: var(--muted); border: 0; border-bottom: 2px solid transparent; background: none; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.detail-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+.detail-grid { display: grid; gap: 13px 18px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.detail-status { grid-column: 1 / -1; margin-top: 0; }
+.detail-field { display: grid; gap: 3px; min-width: 0; }
+.detail-field span { color: var(--muted); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.detail-field strong { overflow-wrap: anywhere; font-size: 12px; font-weight: 600; }
+.history-list { display: grid; gap: 11px; }
+.history-item { display: grid; gap: 3px 13px; grid-template-columns: 128px 1fr; padding: 11px 13px; border: 1px solid var(--line); border-radius: 11px; background: #fbfbfe; }
+.history-when { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.history-body { display: grid; gap: 3px; min-width: 0; }
+.history-body strong { font-size: 12px; }
+.history-change { color: var(--blue); font-size: 11px; font-weight: 600; }
+.history-actor { color: var(--muted); font-size: 10px; }
+.history-reason { margin: 3px 0 0; font-size: 10px; }
+@media (max-width: 620px) {
+  .history-item { grid-template-columns: 1fr; }
+  /* Ba tab phải lọt hết trên một màn hình điện thoại: tab thứ ba nằm ngoài mép thì
+     người dùng không biết là có nó, vì không có dấu hiệu nào bảo phải cuộn ngang. */
+  .detail-tabs { padding: 0 12px; }
+  .detail-tab { padding: 10px 6px; font-size: 10px; }
+}
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
 .form-grid .form-field { margin-top: 12px; }
 .form-grid .form-span-2 { grid-column: 1 / -1; }

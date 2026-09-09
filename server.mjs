@@ -17,6 +17,7 @@ import { toErrorResponse } from "./error-reporting.mjs";
 import { loadMasterKey } from "./field-crypto.mjs";
 import { formatActivationCode, generateActivationCode, normalizeActivationCode } from "./activation-code.mjs";
 import { isUnchanged } from "./record-diff.mjs";
+import { ASSIGNABLE_STATUSES, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, statusLabel } from "./registration-status.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
 import {
@@ -644,7 +645,7 @@ async function clubRows(studentId, periodId = null) {
     enrollmentCounts = await businessStore.getEnrollmentCounts();
   } else {
     const counts = db.prepare(`SELECT cc.id, cc.enrolled_base + COALESCE(SUM(
-      CASE WHEN r.status IN ('submitted','payment','confirmed') THEN 1 ELSE 0 END), 0) AS enrolled
+      CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS enrolled
       FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`).all();
     enrollmentCounts = Object.fromEntries(counts.map((row) => [row.id, asInt(row.enrolled)]));
   }
@@ -715,7 +716,7 @@ async function validateRegistration(user, studentId, clubIds) {
     }
   }
   const existing = (await rawRegistrationRows({ studentId }))
-    .filter((registration) => ["submitted", "payment", "confirmed"].includes(registration.status))
+    .filter((registration) => SEAT_HOLDING_STATUSES.includes(registration.status))
     .map((registration) => {
       const known = available.get(registration.classId);
       return {
@@ -1146,7 +1147,7 @@ async function adminCatalogData() {
       emoji: club.emoji, visual: club.visual, grades: JSON.parse(club.gradesJson), sortOrder: asInt(club.sortOrder), active: club.active === 1,
     }));
   const counts = Object.fromEntries(db.prepare(`SELECT cc.id,
-    COALESCE(SUM(CASE WHEN r.status IN ('submitted','payment','confirmed') THEN 1 ELSE 0 END), 0) AS activeRegistrations
+    COALESCE(SUM(CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS activeRegistrations
     FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`).all()
     .map((row) => [row.id, asInt(row.activeRegistrations)]));
   const classes = db.prepare(`SELECT id, club_id AS clubId, period_id AS periodId, name, day_of_week AS dayOfWeek,
@@ -1544,7 +1545,7 @@ function sqliteBackupData() {
         reason: row.reason || null, createdAt: row.created_at,
       })),
     classCounters: all(`SELECT cc.id, cc.enrolled_base + COALESCE(SUM(
-      CASE WHEN r.status IN ('submitted','payment','confirmed') THEN 1 ELSE 0 END), 0) AS enrolled
+      CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS enrolled
       FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`)
       .map((row) => ({ id: row.id, classId: row.id, enrolledCount: asInt(row.enrolled), updatedAt: nowIso() })),
   };
@@ -2244,6 +2245,85 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { result: await commitCatalogImport({ actorUserId: user.id, analysis, periodId }) });
   }
 
+  // Chi tiết một đơn: học sinh, bố/mẹ, và lịch sử thay đổi của chính đơn đó.
+  // Lọc CỨNG entity_type = 'registration': audit_logs còn chứa nhật ký tài khoản
+  // nhà trường và cả email bị từ chối đăng nhập, không được để lọt qua đây.
+  const detailMatch = url.pathname.match(/^\/api\/admin\/registrations\/([^/]+)$/);
+  if (method === "GET" && detailMatch) {
+    await requireSchoolUser(req, CAP.duyetDon);
+    const registrationId = decodeURIComponent(detailMatch[1]);
+    const detail = businessStore
+      ? await businessStore.registrationDetail(registrationId)
+      : (() => {
+        const registration = db.prepare(`SELECT r.id, r.group_id AS groupId, r.student_id AS studentId, r.class_id AS classId,
+            r.status, r.fee_snapshot AS feeSnapshot, r.schedule_snapshot AS scheduleSnapshot,
+            r.created_at AS createdAt, r.updated_at AS updatedAt,
+            cc.name AS classLabel, cc.room, cc.teacher, c.name AS clubName
+          FROM registrations r
+          LEFT JOIN club_classes cc ON cc.id = r.class_id
+          LEFT JOIN clubs c ON c.id = cc.club_id
+          WHERE r.id = ?`).get(registrationId);
+        if (!registration) return null;
+        return {
+          registration,
+          student: db.prepare(`SELECT id, code, name, date_of_birth AS dateOfBirth, grade, homeroom, level, status
+            FROM students WHERE id = ?`).get(registration.studentId) || null,
+          parents: db.prepare(`SELECT u.id, u.account, u.display_name AS name, ps.relationship
+            FROM parent_students ps JOIN users u ON u.id = ps.parent_user_id
+            WHERE ps.student_id = ?`).all(registration.studentId),
+          history: db.prepare(`SELECT a.id, a.action, a.before_json, a.after_json, a.reason, a.created_at AS createdAt,
+              u.display_name AS actorName
+            FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_user_id
+            WHERE a.entity_type = 'registration' AND a.entity_id = ?
+            ORDER BY a.created_at DESC, a.id DESC`).all(String(registrationId))
+            .map((row) => ({
+              id: row.id, action: row.action, actorName: row.actorName || null,
+              before: parseJsonField(row.before_json, null), after: parseJsonField(row.after_json, null),
+              reason: row.reason || null, createdAt: row.createdAt,
+            })),
+        };
+      })();
+    if (!detail) throw httpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
+    return sendJson(res, 200, {
+      detail: {
+        ...detail,
+        registration: { ...detail.registration, statusLabel: statusLabel(detail.registration.status) },
+      },
+    });
+  }
+
+  // Đổi trạng thái thủ công theo vòng đời nhà trường đặt ra.
+  //
+  // KHÔNG chặn theo ma trận bước chuyển. Vòng đời thật có đủ tình huống lùi lại:
+  // giáo vụ bấm nhầm, phụ huynh chuyển khoản rồi đòi hoàn, lớp lùi khai giảng rồi
+  // lại mở. Chặn cứng sẽ khóa tay người dùng vào đúng lúc họ cần sửa. Đổi lại,
+  // MỌI lần đổi đều vào nhật ký kèm người bấm, để tab Lịch sử thay đổi trả lời
+  // được câu "ai đổi cái này, lúc nào".
+  const statusMatch = url.pathname.match(/^\/api\/admin\/registrations\/([^/]+)\/status$/);
+  if (method === "PATCH" && statusMatch) {
+    const user = await requireSchoolUser(req, CAP.duyetDon);
+    const registrationId = decodeURIComponent(statusMatch[1]);
+    const { status = "", reason = null } = await readJson(req);
+    const next = String(status);
+    if (!ASSIGNABLE_STATUSES.includes(next)) {
+      throw httpError(422, "STATUS_INVALID", "Trạng thái không nằm trong vòng đời đơn đăng ký.");
+    }
+    const timestamp = nowIso();
+    if (businessStore) {
+      const result = await businessStore.changeRegistrationStatus({ registrationId, status: next, actorUserId: user.id, timestamp, reason });
+      return sendJson(res, 200, { ...result, statusLabel: statusLabel(next) });
+    }
+    const registration = db.prepare("SELECT id, status FROM registrations WHERE id = ?").get(registrationId);
+    if (!registration) throw httpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
+    if (registration.status === next) return sendJson(res, 200, { id: registrationId, status: next, changed: false, statusLabel: statusLabel(next) });
+    db.prepare("UPDATE registrations SET status = ?, updated_at = ? WHERE id = ?").run(next, timestamp, registrationId);
+    await writeAudit({
+      actorUserId: user.id, action: "CHANGE_REGISTRATION_STATUS", entityType: "registration", entityId: registrationId,
+      before: { status: registration.status }, after: { status: next }, reason,
+    });
+    return sendJson(res, 200, { id: registrationId, status: next, changed: true, statusLabel: statusLabel(next) });
+  }
+
   const confirmMatch = url.pathname.match(/^\/api\/admin\/registrations\/([^/]+)\/confirm-payment$/);
   if (method === "PATCH" && confirmMatch) {
     const user = await requireSchoolUser(req, CAP.duyetDon);
@@ -2267,8 +2347,8 @@ async function handleApi(req, res, url) {
   if (method === "GET" && url.pathname === "/api/admin/reports/registrations.csv") {
     await requireSchoolUser(req, CAP.danhSachVanHanh);
     const rows = await listRegistrations({ role: "admin" });
-    const statusNames = { payment: "Chờ thanh toán", confirmed: "Đã xác nhận", waitlist: "Danh sách chờ", conflict: "Trùng lịch", submitted: "Đã gửi", cancelled: "Đã hủy" };
-    const csvRows = [["Mã đơn","Học sinh","Lớp","CLB","Lịch","Trạng thái","Số tiền"], ...rows.map((row) => [row.id,row.student,row.className,row.club,row.schedule,statusNames[row.status] || row.status,row.amount])];
+
+    const csvRows = [["Mã đơn","Học sinh","Lớp","CLB","Lịch","Trạng thái","Số tiền"], ...rows.map((row) => [row.id,row.student,row.className,row.club,row.schedule,statusLabel(row.status),row.amount])];
     const csv = "\uFEFF" + csvRows.map((row) => row.map((value) => `"${String(value).replaceAll('"','""')}"`).join(",")).join("\r\n");
     res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="NSHM_Danh_sach_dang_ky.csv"', "Content-Length": Buffer.byteLength(csv) });
     return res.end(csv);

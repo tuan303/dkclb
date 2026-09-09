@@ -9,9 +9,10 @@ import { createPool } from "mysql2/promise";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { planDirectoryWrites } from "./directory-plan.mjs";
+import { SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL } from "./registration-status.mjs";
 import { createFieldCrypto } from "./field-crypto.mjs";
 
-const ACTIVE_STATUSES = ["submitted", "payment", "confirmed"];
+const ACTIVE_STATUSES = SEAT_HOLDING_STATUSES;
 
 function createHttpError(status, code, message, details) {
   const error = new Error(message);
@@ -176,7 +177,7 @@ const EXPORT_QUERIES = {
   // Số chỗ ở MySQL luôn tính từ dữ liệu thật nên không có bảng riêng; xuất ra để
   // bản sao lưu giữ đủ hình dạng chung với các nền khác.
   classCounters: {
-    sql: `SELECT cc.id, cc.enrolled_base + COALESCE(SUM(CASE WHEN r.status IN ('submitted','payment','confirmed')
+    sql: `SELECT cc.id, cc.enrolled_base + COALESCE(SUM(CASE WHEN r.status IN (${SEAT_HOLDING_SQL})
       THEN 1 ELSE 0 END), 0) AS enrolled
       FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id
       GROUP BY cc.id, cc.enrolled_base`,
@@ -575,7 +576,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
 
     async getEnrollmentCounts() {
       const rows = await query(`SELECT cc.id, cc.enrolled_base + COALESCE(SUM(
-        CASE WHEN r.status IN ('submitted','payment','confirmed') THEN 1 ELSE 0 END), 0) AS enrolled
+        CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS enrolled
         FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id
         GROUP BY cc.id, cc.enrolled_base`);
       return Object.fromEntries(rows.map((row) => [row.id, toInt(row.enrolled)]));
@@ -609,7 +610,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
           teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active
           FROM club_classes ORDER BY sort_order, day_of_week, start_time`),
         query(`SELECT class_id, COUNT(*) AS active_count FROM registrations
-          WHERE status IN ('submitted','payment','confirmed') GROUP BY class_id`),
+          WHERE status IN (${SEAT_HOLDING_SQL}) GROUP BY class_id`),
       ]);
       const activeRegistrations = Object.fromEntries(countRows.map((row) => [row.class_id, toInt(row.active_count)]));
       const enrolled = Object.fromEntries(classRows.map((row) => [row.id, toInt(row.enrolled_base) + (activeRegistrations[row.id] || 0)]));
@@ -801,6 +802,70 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         [request.id, request.parentUserId, request.registrationId || null, request.topic, request.message,
           request.status || "open", request.createdAt],
       );
+    },
+
+    // Chi tiết một đơn cho màn hình quản trị: học sinh, bố/mẹ, và lịch sử thay đổi.
+    // Gộp một lượt gọi thay vì ba, và lấy thẳng từ máy chủ chứ không tin vào bản
+    // ghi mà trình duyệt đang giữ — bảng ngoài có thể đã cũ vài phút.
+    async registrationDetail(registrationId) {
+      const registration = await first(
+        `SELECT r.id, r.group_id AS groupId, r.student_id AS studentId, r.class_id AS classId, r.status,
+           r.fee_snapshot AS feeSnapshot, r.schedule_snapshot AS scheduleSnapshot,
+           r.created_at AS createdAt, r.updated_at AS updatedAt,
+           cc.name AS classLabel, cc.room, cc.teacher, c.name AS clubName
+         FROM registrations r
+         LEFT JOIN club_classes cc ON cc.id = r.class_id
+         LEFT JOIN clubs c ON c.id = cc.club_id
+         WHERE r.id = ?`, [registrationId]);
+      if (!registration) return null;
+
+      const [studentRow, parentRows, auditRows] = await Promise.all([
+        first("SELECT id, code, name, date_of_birth, grade, homeroom, level, status FROM students WHERE id = ?", [registration.studentId]),
+        query(`SELECT u.id, u.account, u.display_name, ps.relationship
+               FROM parent_students ps JOIN users u ON u.id = ps.parent_user_id
+               WHERE ps.student_id = ?`, [registration.studentId]),
+        query(`SELECT a.id, a.action, a.before_json, a.after_json, a.reason, a.created_at, u.display_name AS actor_name
+               FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_user_id
+               WHERE a.entity_type = 'registration' AND a.entity_id = ?
+               ORDER BY a.created_at DESC, a.id DESC`, [String(registrationId)]),
+      ]);
+
+      return {
+        registration,
+        student: studentRow ? {
+          id: studentRow.id, code: crypto.decrypt(studentRow.code), name: crypto.decrypt(studentRow.name),
+          dateOfBirth: crypto.decrypt(studentRow.date_of_birth) || null, grade: toInt(studentRow.grade),
+          homeroom: studentRow.homeroom, level: studentRow.level, status: studentRow.status,
+        } : null,
+        parents: parentRows.map((row) => ({
+          id: row.id, name: crypto.decrypt(row.display_name), account: crypto.decrypt(row.account),
+          relationship: row.relationship || null,
+        })),
+        history: auditRows.map((row) => ({
+          id: row.id, action: row.action, actorName: row.actor_name ? crypto.decrypt(row.actor_name) : null,
+          before: row.before_json ? JSON.parse(row.before_json) : null,
+          after: row.after_json ? JSON.parse(row.after_json) : null,
+          reason: row.reason || null, createdAt: row.created_at,
+        })),
+      };
+    },
+
+    // Đổi trạng thái thủ công. Khóa dòng trước khi đọc để hai giáo vụ bấm cùng lúc
+    // không ghi đè nhau, và ghi nhật ký TRONG cùng giao dịch — nếu tách ra thì có
+    // lúc trạng thái đã đổi mà lịch sử không có dòng nào.
+    async changeRegistrationStatus({ registrationId, status, actorUserId, timestamp, reason = null }) {
+      return withTransaction(async (connection) => {
+        const [rows] = await connection.query("SELECT id, status FROM registrations WHERE id = ? FOR UPDATE", [registrationId]);
+        const registration = rows[0];
+        if (!registration) throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
+        if (registration.status === status) return { id: registrationId, status, changed: false };
+        await connection.query("UPDATE registrations SET status = ?, updated_at = ? WHERE id = ?", [status, timestamp, registrationId]);
+        await insertAudit(connection, {
+          actorUserId, action: "CHANGE_REGISTRATION_STATUS", entityType: "registration", entityId: registrationId,
+          before: { status: registration.status }, after: { status }, reason, createdAt: timestamp,
+        });
+        return { id: registrationId, status, changed: true };
+      });
     },
 
     async confirmPayment({ registrationId, actorUserId, timestamp }) {

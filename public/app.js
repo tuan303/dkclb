@@ -93,11 +93,32 @@ const pageMeta = {
   accounts: ["Tài khoản nhà trường", "Chỉ quản trị cao nhất truy cập được"],
 };
 
+// Bản sao của registration-status.mjs cho phía trình duyệt: app.js được nạp bằng
+// thẻ <script> thường nên không import được. Kiểm thử tests/vong-doi-don.test.mjs
+// so hai bảng với nhau, sửa một bên quên bên kia là test đỏ ngay.
+const LIFECYCLE_STATUSES = ["submitted", "waitlist", "payment", "confirmed", "dang_hoc", "hoc_xong"];
+const EXCEPTION_STATUSES = ["lui_khai_giang", "khong_khai_giang", "cancelled", "hoan_phi"];
+const SEAT_HOLDING_STATUSES = ["submitted", "payment", "confirmed", "dang_hoc", "hoc_xong", "lui_khai_giang"];
+
 const statusMap = {
-  draft: ["Bản nháp", "blue"], submitted: ["Đã gửi", "blue"], payment: ["Chờ thanh toán", "gold"],
-  confirmed: ["Đã xác nhận", "green"], waitlist: ["Danh sách chờ", "purple"], conflict: ["Trùng lịch", "red"],
-  cancelled: ["Đã hủy", "red"],
+  submitted: ["Đăng ký", "blue"],
+  waitlist: ["Xếp chờ", "purple"],
+  payment: ["Chờ thanh toán", "gold"],
+  confirmed: ["Đã đóng phí", "green"],
+  dang_hoc: ["Đang học", "green"],
+  hoc_xong: ["Học xong", "blue"],
+  lui_khai_giang: ["Lùi khai giảng", "gold"],
+  khong_khai_giang: ["Không khai giảng", "red"],
+  cancelled: ["Lớp hủy", "red"],
+  hoan_phi: ["Hoàn phí", "red"],
+  draft: ["Bản nháp", "blue"],
+  conflict: ["Trùng lịch", "red"],
 };
+
+// Rã mảng thẳng từ statusMap[status] sẽ ném TypeError khi gặp một trạng thái chưa
+// khai — và ba chỗ trong tệp này từng làm đúng như vậy, nghĩa là một đơn mang
+// trạng thái mới đủ làm trắng cả trang. Đi qua hàm này thì tệ nhất chỉ là nhãn xấu.
+const statusBadge = (status) => statusMap[status] || [String(status || "—"), "blue"];
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -464,7 +485,7 @@ function renderRegistrations() {
   const rows = currentRegistrations.map((registration) => {
     // Đơn tham chiếu tới ca học (classId); danh mục cũng được đánh mã theo ca.
     const club = clubs.find(c => c.id === registration.classId);
-    const [label, color] = statusMap[registration.status];
+    const [label, color] = statusBadge(registration.status);
     const room = registration.room && registration.room !== "—" ? registration.room : club?.room || "";
     const teacher = registration.teacher && registration.teacher !== "—" ? registration.teacher : club?.teacher || "";
     return `<div class="application-card"><div class="application-icon">${icon("clipboard")}</div>
@@ -474,10 +495,10 @@ function renderRegistrations() {
       <div class="application-meta"><span class="badge badge-${color}">${label}</span><strong>${formatMoney(registration.amount || club?.fee || 0)}</strong></div></div>`;
   }).join("");
   return `
-    <div class="kpi-strip"><div class="kpi-item"><span>Tổng đăng ký</span><strong>${currentRegistrations.length}</strong></div><div class="kpi-item"><span>Đã xác nhận</span><strong>${currentRegistrations.filter(r => r.status === "confirmed").length}</strong></div><div class="kpi-item"><span>Chờ thanh toán</span><strong>${currentRegistrations.filter(r => r.status === "payment").length}</strong></div><div class="kpi-item"><span>Danh sách chờ</span><strong>${currentRegistrations.filter(r => r.status === "waitlist").length}</strong></div></div>
+    <div class="kpi-strip"><div class="kpi-item"><span>Tổng đăng ký</span><strong>${currentRegistrations.length}</strong></div><div class="kpi-item"><span>Đã đóng phí</span><strong>${currentRegistrations.filter(r => r.status === "confirmed").length}</strong></div><div class="kpi-item"><span>Đang học</span><strong>${currentRegistrations.filter(r => r.status === "dang_hoc").length}</strong></div><div class="kpi-item"><span>Xếp chờ</span><strong>${currentRegistrations.filter(r => r.status === "waitlist").length}</strong></div></div>
     <section class="section"><div class="section-head"><div><span class="eyebrow">Theo dõi theo thời gian thực</span><h2>Đăng ký của ${student().name}</h2><p>Trạng thái được cập nhật sau khi nhà trường xử lý hoặc đối soát phí.</p></div><button class="button button-primary" data-go="clubs">+ Đăng ký thêm</button></div>
     <div class="grid">${rows || `<div class="panel empty-state"><div class="empty-icon">${icon("clipboard")}</div><h3>Chưa có đăng ký</h3><p>Khám phá danh mục CLB phù hợp để bắt đầu.</p></div>`}</div></section>
-    <section class="section"><div class="info-note"><strong>Quy ước trạng thái:</strong> “Đã gửi” chưa đồng nghĩa với có tên trong danh sách chính thức. Đăng ký chỉ được chốt khi đạt điều kiện xác nhận/đối soát theo quy định của nhà trường.</div></section>`;
+    <section class="section"><div class="info-note"><strong>Quy ước trạng thái:</strong> “Đăng ký” chưa đồng nghĩa với có tên trong danh sách chính thức. Đăng ký chỉ được chốt khi đạt điều kiện xác nhận/đối soát theo quy định của nhà trường.</div></section>`;
 }
 
 /* ---------- Cổng phụ huynh: đợt đăng ký, hạn nộp và thời khóa biểu ---------- */
@@ -533,7 +554,12 @@ function renderPeriodNotice() {
 const STATUS_GUIDE = {
   submitted: "Đơn đã được ghi nhận, nhà trường đang xử lý.",
   payment: "Vui lòng hoàn tất học phí theo hướng dẫn của nhà trường để được xác nhận chính thức.",
-  confirmed: "Đã có tên trong danh sách chính thức của lớp.",
+  confirmed: "Đã đóng phí và có tên trong danh sách chính thức của lớp.",
+  dang_hoc: "Lớp đã khai giảng, con đang theo học.",
+  hoc_xong: "Con đã hoàn thành khóa học của lớp này.",
+  lui_khai_giang: "Lớp lùi ngày khai giảng, suất học của con vẫn được giữ.",
+  khong_khai_giang: "Lớp không đủ điều kiện khai giảng. Nhà trường sẽ liên hệ về phương án thay thế hoặc hoàn phí.",
+  hoan_phi: "Nhà trường đã xử lý hoàn phí cho đăng ký này.",
   waitlist: "Lớp đã đủ sĩ số. Nhà trường sẽ liên hệ nếu có chỗ trống.",
   conflict: "Lịch học bị trùng. Vui lòng gửi yêu cầu hỗ trợ để chọn ca khác.",
   cancelled: "Đơn đã hủy.",
@@ -542,7 +568,7 @@ const STATUS_GUIDE = {
 
 function renderSchedule() {
   const active = state.registrations.filter((registration) =>
-    registration.studentId === state.studentId && ["submitted", "payment", "confirmed", "waitlist"].includes(registration.status));
+    registration.studentId === state.studentId && [...SEAT_HOLDING_STATUSES, "waitlist"].includes(registration.status));
   const entries = active.map((registration) => {
     const clubClass = clubs.find((item) => item.id === registration.classId) || null;
     return {
@@ -573,7 +599,7 @@ function renderSchedule() {
     <div class="week-day ${column.items.length ? "" : "empty"}">
       <span class="week-day-label">${column.label}</span>
       ${column.items.map((entry) => {
-        const [label, color] = statusMap[entry.registration.status];
+        const [label, color] = statusBadge(entry.registration.status);
         return `<div class="week-slot visual-${clubs.find((item) => item.id === entry.registration.classId)?.visual || "life"}">
           <strong>${entry.startTime}–${entry.endTime}</strong>
           <span>${entry.emoji} ${escapeHtml(entry.name)}${entry.classLabel ? ` · ${escapeHtml(entry.classLabel)}` : ""}</span>
@@ -1499,8 +1525,10 @@ function bindCatalogEvents() {
 }
 
 function renderApplications() {
-  const filtered = state.adminStatus === "all" ? adminApplications : adminApplications.filter(a => a.status === state.adminStatus);
-  const tabs = [["all","Tất cả"],["submitted","Đã gửi"],["payment","Chờ phí"],["confirmed","Đã xác nhận"],["waitlist","DS chờ"],["conflict","Trùng lịch"]];
+  const filtered = state.adminStatus === "all" ? adminApplications
+    : state.adminStatus === "ngoai-le" ? adminApplications.filter((item) => EXCEPTION_STATUSES.includes(item.status))
+    : adminApplications.filter((item) => item.status === state.adminStatus);
+  const tabs = [["all", "Tất cả"], ...LIFECYCLE_STATUSES.map((status) => [status, statusBadge(status)[0]]), ["ngoai-le", "Ngoại lệ"]];
   return `<section class="section" style="margin-top:0"><div class="section-head"><div><span class="eyebrow">Quản lý tập trung</span><h2>Danh sách đăng ký</h2><p>Lọc, xử lý ngoại lệ và theo dõi lịch sử trạng thái.</p></div><button class="button button-secondary" data-export>${icon("download")} Xuất CSV</button></div>
   <div class="filters"><label class="search-field">${icon("search")}<input id="admin-search" placeholder="Tìm mã đơn, mã học sinh, tên học sinh, CLB..." /></label><div class="status-tabs">${tabs.map(([id,label]) => `<button class="status-tab ${state.adminStatus === id ? "active" : ""}" data-status-tab="${id}">${label}</button>`).join("")}</div></div></section>
   <section class="section panel"><div class="panel-head"><div><h3>${filtered.length} đơn hiển thị</h3><p>${escapeHtml(pageContext("applications", ""))}</p></div></div><div id="applications-table">${renderApplicationTable(filtered)}</div></section>`;
@@ -1529,12 +1557,15 @@ function renderApplicationTable(rows, { rutGon = false } = {}) {
     { title: "Học sinh", cell: (row) => `<div class="student-cell"><span class="mini-avatar">${escapeHtml(row.student.split(" ").slice(-2).map((part) => part[0]).join(""))}</span><div><strong>${escapeHtml(row.student)}</strong><span>${escapeHtml(row.className)}</span></div></div>` },
     { title: "Ngày sinh", rieng: true, cell: (row) => escapeHtml(formatDateOfBirth(row.dateOfBirth)) },
     { title: "CLB", cell: (row) => `${escapeHtml(row.club)}${row.classLabel ? `<br><span style="color:var(--muted)">${escapeHtml(row.classLabel)}</span>` : ""}` },
-    { title: "Trạng thái", cell: (row) => { const [label, color] = statusMap[row.status]; return `<span class="badge badge-${color}">${label}</span>`; } },
-    // Số tiền đi kèm ngay trên nút: bảng này không còn cột Phí, mà xác nhận một
-    // khoản thu trong khi không nhìn thấy số tiền là chỗ dễ sai nhất của cả trang.
-    { title: "Thao tác", cell: (row) => (row.status === "payment"
+    { title: "Trạng thái", cell: (row) => { const [label, color] = statusBadge(row.status); return `<span class="badge badge-${color}">${label}</span>`; } },
+    // "Chi tiết" phải có ở MỌI dòng: popup là nơi duy nhất đổi được trạng thái, mà
+    // đơn đang chờ thanh toán lại chính là loại hay phải đổi tay nhất (lùi khai
+    // giảng, lớp hủy, hoàn phí). Nút xác nhận phí đứng cạnh như một lối tắt, kèm
+    // số tiền vì bảng không còn cột Phí — xác nhận một khoản thu mà không nhìn
+    // thấy số tiền là chỗ dễ sai nhất của cả trang.
+    { title: "Thao tác", cell: (row) => `<div class="row-actions">${row.status === "payment"
       ? `<button class="table-action" data-confirm-payment="${escapeHtml(row.id)}">Xác nhận ${formatMoney(row.amount)}</button>`
-      : `<button class="table-action" data-toast="Demo: mở chi tiết ${escapeHtml(row.id)}.">Chi tiết</button>`) },
+      : ""}<button class="table-action" data-detail-registration="${escapeHtml(row.id)}">Chi tiết</button></div>` },
   ].filter((item) => !(rutGon && item.rieng));
 
   const body = rows.map((row) => {
@@ -1548,6 +1579,162 @@ function renderApplicationTable(rows, { rutGon = false } = {}) {
     <thead><tr>${cot.map((item) => `<th>${item.title}</th>`).join("")}</tr></thead>
     <tbody>${body || `<tr><td colspan="${cot.length}"><div class="empty-state">Không có dữ liệu phù hợp.</div></td></tr>`}</tbody>
   </table></div>`;
+}
+
+// Popup chi tiết một đơn đăng ký: ba tab theo đúng bố cục nhà trường yêu cầu.
+// Chỉ trạng thái sửa được; thông tin học sinh và phụ huynh do đồng bộ Google
+// Sheets làm chủ, sửa ở đây sẽ bị ghi đè ở lượt đồng bộ sau nên để nguyên chỉ đọc.
+const AUDIT_ACTION_LABELS = {
+  CREATE_REGISTRATION: "Tạo đơn đăng ký",
+  CONFIRM_PAYMENT: "Xác nhận đã đóng phí",
+  CHANGE_REGISTRATION_STATUS: "Đổi trạng thái",
+};
+
+let detailState = null;
+
+const detailField = (label, value) =>
+  `<div class="detail-field"><span>${escapeHtml(label)}</span><strong>${value ? escapeHtml(value) : "—"}</strong></div>`;
+
+function renderDetailStudentTab({ registration, student }) {
+  const chon = (danhSach) => danhSach.map((status) => {
+    const [label] = statusBadge(status);
+    return `<option value="${status}" ${registration.status === status ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+  return `<div class="detail-grid">
+    <label class="form-field detail-status"><span>Trạng thái đăng ký</span>
+      <select id="detail-status" class="select-field">
+        <optgroup label="Vòng đời">${chon(LIFECYCLE_STATUSES)}</optgroup>
+        <optgroup label="Ngoại lệ">${chon(EXCEPTION_STATUSES)}</optgroup>
+      </select></label>
+    ${detailField("Mã đơn", registration.id)}
+    ${detailField("Ngày đăng ký", registration.date)}
+    ${detailField("Mã học sinh", student?.code)}
+    ${detailField("Họ và tên con", student?.name)}
+    ${detailField("Ngày sinh", formatDateOfBirth(student?.dateOfBirth))}
+    ${detailField("Lớp con đang học", student?.homeroom)}
+    ${detailField("Cấp học", student?.level)}
+    ${detailField("Câu lạc bộ", registration.clubName)}
+    ${detailField("Ca học", registration.classLabel)}
+    ${detailField("Lịch học", registration.scheduleSnapshot)}
+    ${detailField("Phòng", registration.room)}
+    ${detailField("Giáo viên", registration.teacher)}
+    ${detailField("Học phí", registration.feeSnapshot ? formatMoney(Number(registration.feeSnapshot)) : "")}
+  </div>`;
+}
+
+function renderDetailParentTab({ parents }) {
+  if (!parents.length) {
+    return `<div class="empty-state"><h3>Chưa liên kết phụ huynh</h3><p>Đơn này chưa có tài khoản phụ huynh nào gắn với học sinh. Kiểm tra lại danh bạ trên Google Sheets.</p></div>`;
+  }
+  return `<div class="table-wrap"><table class="data-table">
+    <thead><tr><th>Quan hệ</th><th>Họ và tên</th><th>Số điện thoại</th><th>Email</th></tr></thead>
+    <tbody>${parents.map((parent) => `<tr>
+      <td>${escapeHtml(parent.relationship || "—")}</td>
+      <td><strong>${escapeHtml(parent.name || "—")}</strong></td>
+      <td>${escapeHtml(parent.account || "—")}</td>
+      <td>${escapeHtml(parent.email || "—")}</td>
+    </tr>`).join("")}</tbody>
+  </table></div>
+  ${parents.some((parent) => parent.email) ? "" : `<div class="info-note" style="margin-top:12px"><strong>Chưa có email:</strong> hệ thống chưa đồng bộ cột email phụ huynh từ file danh bạ. Xem tên cột thực tế ở mục Cấu hình &amp; phân quyền → Đồng bộ danh bạ.</div>`}`;
+}
+
+function renderDetailHistoryTab({ history }) {
+  if (!history.length) {
+    return `<div class="empty-state"><h3>Chưa có thay đổi nào</h3><p>Mọi lần đổi trạng thái từ nay sẽ được ghi lại tại đây kèm người thực hiện.</p></div>`;
+  }
+  return `<div class="history-list">${history.map((entry) => {
+    const truoc = entry.before?.status ? statusBadge(entry.before.status)[0] : null;
+    const sau = entry.after?.status ? statusBadge(entry.after.status)[0] : null;
+    const doi = truoc && sau ? `${escapeHtml(truoc)} → ${escapeHtml(sau)}` : sau ? escapeHtml(sau) : "";
+    return `<div class="history-item">
+      <div class="history-when">${escapeHtml(formatAuditTime(entry.createdAt))}</div>
+      <div class="history-body">
+        <strong>${escapeHtml(AUDIT_ACTION_LABELS[entry.action] || entry.action)}</strong>
+        ${doi ? `<span class="history-change">${doi}</span>` : ""}
+        <span class="history-actor">${escapeHtml(entry.actorName || "Hệ thống")}</span>
+        ${entry.reason ? `<p class="history-reason">${escapeHtml(entry.reason)}</p>` : ""}
+      </div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function formatAuditTime(value) {
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime())) return String(value ?? "");
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Ho_Chi_Minh", hour12: false,
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(time).map((part) => [part.type, part.value]));
+  return `${parts.hour}:${parts.minute} - ${parts.day}/${parts.month}/${parts.year}`;
+}
+
+function renderRegistrationDetail() {
+  const { detail, tab } = detailState;
+  const tabs = [
+    ["hoc-sinh", "Thông tin học sinh", () => renderDetailStudentTab(detail)],
+    ["phu-huynh", "Thông tin phụ huynh", () => renderDetailParentTab(detail)],
+    ["lich-su", "Lịch sử thay đổi", () => renderDetailHistoryTab(detail)],
+  ];
+  const hienTai = tabs.find(([id]) => id === tab) || tabs[0];
+  const [label, color] = statusBadge(detail.registration.status);
+  showModal(`<div class="modal-head"><div><span class="eyebrow">Đơn ${escapeHtml(detail.registration.id)}</span>
+      <h2>Chi tiết đăng ký</h2></div>
+      <span class="badge badge-${color}">${escapeHtml(label)}</span>
+      <button class="icon-button" data-close-modal aria-label="Đóng">${icon("x")}</button></div>
+    <div class="detail-tabs">${tabs.map(([id, ten]) =>
+      `<button class="detail-tab ${id === hienTai[0] ? "active" : ""}" data-detail-tab="${id}">${ten}</button>`).join("")}</div>
+    <div class="modal-body">${hienTai[2]()}</div>
+    <div id="detail-error" class="form-error" role="alert"></div>
+    <div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button>
+      <button class="button button-primary" id="detail-save" ${hienTai[0] === "hoc-sinh" ? "" : "disabled"}>Lưu</button></div>`,
+    { wide: true });
+
+  $$("[data-detail-tab]").forEach((button) => button.addEventListener("click", () => {
+    detailState.tab = button.dataset.detailTab;
+    renderRegistrationDetail();
+  }));
+  $("#detail-save")?.addEventListener("click", saveRegistrationStatus);
+}
+
+async function openRegistrationDetail(registrationId) {
+  try {
+    const payload = await api(`/admin/registrations/${encodeURIComponent(registrationId)}`);
+    // Ngày hiển thị lấy từ bản ghi bảng ngoài đã định dạng sẵn, để hai nơi không
+    // gọi cùng một mốc thời gian bằng hai kiểu khác nhau.
+    const row = adminApplications.find((item) => item.id === registrationId);
+    payload.detail.registration.date = row?.date || formatAuditTime(payload.detail.registration.createdAt);
+    detailState = { detail: payload.detail, tab: "hoc-sinh" };
+    renderRegistrationDetail();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function saveRegistrationStatus() {
+  const chon = $("#detail-status");
+  if (!chon) return;
+  const next = chon.value;
+  const box = $("#detail-error");
+  box.textContent = "";
+  if (next === detailState.detail.registration.status) {
+    closeModal();
+    return;
+  }
+  const button = $("#detail-save");
+  button.disabled = true;
+  try {
+    await api(`/admin/registrations/${encodeURIComponent(detailState.detail.registration.id)}/status`,
+      { method: "PATCH", body: JSON.stringify({ status: next }) });
+    // Tải lại cả danh sách: đổi trạng thái làm đổi cả sĩ số lớp và các con số trên
+    // dashboard, hiện mỗi một dòng là để người dùng nhìn thấy số cũ ở chỗ khác.
+    adminApplications = (await api("/registrations")).registrations;
+    closeModal();
+    renderApp();
+    toast(`Đã chuyển đơn sang “${statusBadge(next)[0]}”.`, "success");
+  } catch (error) {
+    box.textContent = error.message;
+    button.disabled = false;
+  }
 }
 
 function renderFinance() {
@@ -1636,6 +1823,20 @@ function renderSheetSources(sources = [], probes = []) {
   }).join("")}</div>`;
 }
 
+// Những cột phần mềm ĐỌC ĐƯỢC nhưng chưa gắn với trường nào. Trước đây chúng bị bỏ
+// qua hoàn toàn và im lặng, nên khi nhà trường thêm một cột mới vào file danh bạ
+// (ví dụ email phụ huynh) thì không có cách nào biết phần mềm đã thấy nó chưa, hay
+// thấy rồi mà gọi tên khác. Hiện ra ở đây thì đối chiếu tên cột mất mười giây.
+function renderUnmappedColumns(source) {
+  const daKhop = new Set(Object.values(source.mapping || {}).map((header) => String(header).trim().toLowerCase()));
+  const thua = (source.headers || [])
+    .map((header) => String(header || "").trim())
+    .filter((header) => header && !daKhop.has(header.toLowerCase()));
+  if (!thua.length) return "";
+  return `<div class="info-note" style="margin-top:9px"><strong>Cột chưa dùng tới (${thua.length}):</strong>
+    ${thua.map(escapeHtml).join(" · ")}. Nếu có cột nào cần đưa vào hệ thống, gửi đúng tên cột cho bộ phận CNTT.</div>`;
+}
+
 function renderSheetPreviewSource(source) {
   if (!source.ok) {
     return `<div class="info-note"><strong>${escapeHtml(source.label)}:</strong> ${escapeHtml(source.error || "Không đọc được file.")}</div>`;
@@ -1650,6 +1851,7 @@ function renderSheetPreviewSource(source) {
     </div>
     <div class="mapping-list">${Object.entries(source.mapping || {}).map(([field, header]) => `<span><b>${escapeHtml(SHEET_FIELD_LABELS[field] || field)}</b>${escapeHtml(header)}</span>`).join("")}</div>
     ${source.missing?.length ? `<div class="inline-alert">Thiếu cột bắt buộc: ${source.missing.map(escapeHtml).join(", ")}.</div>` : ""}
+    ${renderUnmappedColumns(source)}
     ${analysis.issues?.length ? `<div class="info-note"><strong>Cần rà soát:</strong> ${analysis.issues.slice(0, 8).map((issue) => `Dòng ${issue.row} (${issue.severity === "warning" ? "cảnh báo" : "lỗi"}): ${issue.codes.map(escapeHtml).join(", ")}`).join(" · ")}</div>` : ""}`;
 }
 
@@ -1905,7 +2107,7 @@ function addToCart(clubId) {
   }
   // Đơn đã gửi lưu theo mã lớp; một CLB có thể có nhiều ca nên phải chặn cả trùng CLB lẫn trùng giờ.
   const existing = state.registrations
-    .filter((registration) => registration.studentId === state.studentId && ["submitted", "payment", "confirmed"].includes(registration.status))
+    .filter((registration) => registration.studentId === state.studentId && SEAT_HOLDING_STATUSES.includes(registration.status))
     .map((registration) => clubs.find((club) => club.id === registration.classId))
     .find((club) => club && (club.id === target.id || club.clubId === target.clubId || overlaps(club, target)));
   if (existing) {
@@ -2085,6 +2287,7 @@ function bindPageEvents() {
   }));
   $$('[data-add]').forEach(el => el.addEventListener("click", () => addToCart(el.dataset.add)));
   $$('[data-detail]').forEach(el => el.addEventListener("click", () => showDetail(el.dataset.detail)));
+  $$("[data-detail-registration]").forEach((el) => el.addEventListener("click", () => openRegistrationDetail(el.dataset.detailRegistration)));
   $$('[data-open-cart]').forEach(el => el.addEventListener("click", openCart));
   $$('[data-toast]').forEach(el => el.addEventListener("click", () => toast(el.dataset.toast)));
   $("#account-password-submit")?.addEventListener("click", async () => {

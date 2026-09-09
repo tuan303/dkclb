@@ -1,8 +1,9 @@
 import { FieldPath, Firestore } from "@google-cloud/firestore";
 import { randomBytes } from "node:crypto";
 import { planDirectoryWrites } from "./directory-plan.mjs";
+import { SEAT_HOLDING_STATUSES } from "./registration-status.mjs";
 
-const ACTIVE_STATUSES = new Set(["submitted", "payment", "confirmed"]);
+const ACTIVE_STATUSES = new Set(SEAT_HOLDING_STATUSES);
 
 function snapshotRows(snapshot) {
   return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
@@ -468,6 +469,61 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
 
       async createSupportRequest(request) {
         await supportRequests.doc(request.id).create(request);
+      },
+
+      // Chi tiết một đơn: học sinh, bố/mẹ, lịch sử thay đổi. Firestore lưu bản rõ
+      // nên không có bước giải mã như nhánh MySQL.
+      async registrationDetail(registrationId) {
+        const registrationSnapshot = await registrations.doc(registrationId).get();
+        if (!registrationSnapshot.exists) return null;
+        const registration = { id: registrationSnapshot.id, ...registrationSnapshot.data() };
+        const clubClassSnapshot = registration.classId ? await clubClasses.doc(registration.classId).get() : null;
+        const clubClass = clubClassSnapshot?.exists ? clubClassSnapshot.data() : {};
+        const clubSnapshot = clubClass.clubId ? await clubs.doc(clubClass.clubId).get() : null;
+        const [studentSnapshot, linkSnapshot, auditSnapshot] = await Promise.all([
+          students.doc(registration.studentId).get(),
+          parentStudents.where("studentId", "==", registration.studentId).get(),
+          auditLogs.where("entityType", "==", "registration").where("entityId", "==", String(registrationId)).get(),
+        ]);
+        const links = snapshotRows(linkSnapshot);
+        const parentDocuments = links.length
+          ? await firestore.getAll(...links.map((link) => users.doc(link.parentUserId)))
+          : [];
+        const relationships = new Map(links.map((link) => [link.parentUserId, link.relationship]));
+        return {
+          registration: {
+            ...registration,
+            classLabel: clubClass.name || null, room: clubClass.room || null, teacher: clubClass.teacher || null,
+            clubName: clubSnapshot?.exists ? clubSnapshot.data().name : null,
+          },
+          student: studentSnapshot.exists ? { id: studentSnapshot.id, ...studentSnapshot.data() } : null,
+          parents: parentDocuments.filter((document) => document.exists).map((document) => ({
+            id: document.id, name: document.data().displayName, account: document.data().account,
+            relationship: relationships.get(document.id) || null,
+          })),
+          history: snapshotRows(auditSnapshot)
+            .map((row) => ({
+              id: row.id, action: row.action, actorName: null, before: row.before || null,
+              after: row.after || null, reason: row.reason || null, createdAt: row.createdAt,
+            }))
+            .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt))),
+        };
+      },
+
+      async changeRegistrationStatus({ registrationId, status, actorUserId, timestamp, reason = null }) {
+        return firestore.runTransaction(async (transaction) => {
+          const registrationRef = registrations.doc(registrationId);
+          const snapshot = await transaction.get(registrationRef);
+          if (!snapshot.exists) throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
+          const before = snapshot.data().status;
+          if (before === status) return { id: registrationId, status, changed: false };
+          transaction.update(registrationRef, { status, updatedAt: timestamp });
+          transaction.create(auditLogs.doc(`audit_${registrationId}_${timestamp}`), {
+            actorUserId, action: "CHANGE_REGISTRATION_STATUS", entityType: "registration", entityId: String(registrationId),
+            before: { status: before }, after: { status }, reason, createdAt: timestamp,
+          });
+          return { id: registrationId, status, changed: true };
+        });
       },
 
       async confirmPayment({ registrationId, actorUserId, timestamp }) {
