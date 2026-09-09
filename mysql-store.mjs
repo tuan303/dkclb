@@ -847,8 +847,11 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         })),
         history: auditRows.map((row) => ({
           id: row.id, action: row.action, actorName: row.actor_name ? crypto.decrypt(row.actor_name) : null,
-          before: row.before_json ? JSON.parse(row.before_json) : null,
-          after: row.after_json ? JSON.parse(row.after_json) : null,
+          // before_json/after_json là cột kiểu JSON của MySQL nên driver đã phân
+          // giải sẵn thành object; gọi JSON.parse lần nữa là ném SyntaxError. Trên
+          // SQLite chúng là TEXT nên bộ kiểm thử không bao giờ chạm phải chỗ này.
+          before: jsonOrNull(row.before_json),
+          after: jsonOrNull(row.after_json),
           reason: row.reason || null, createdAt: row.created_at,
         })),
       };
