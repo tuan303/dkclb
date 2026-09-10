@@ -69,8 +69,54 @@ test("lịch tự động mặc định TẮT, không còn tự gọi ra Google"
   assert.equal(tichHop.schedule.enabled, false);
 });
 
-test("giao diện nói rõ “chưa chạy” là chuyện của tiến trình, không phải của dữ liệu", () => {
-  assert.match(app, /trạng thái của TIẾN TRÌNH, không phải của dữ liệu/);
+test("giao diện hiện số liệu đọc từ cơ sở dữ liệu", () => {
   assert.match(app, /Học sinh đang học · trong CSDL/);
   assert.match(app, /renderSyncSchedule\(integration\.schedule, integration\.stored\)/);
+});
+
+// Dựng lại hàm vẽ của trình duyệt để kiểm HÀNH VI, không phải kiểm chuỗi ký tự.
+const veLich = (() => {
+  const khop = app.match(/function renderSyncSchedule\(schedule, luuTru\) \{[\s\S]*?\n\}/);
+  assert.ok(khop, "không tìm thấy renderSyncSchedule");
+  return new Function(`
+    const escapeHtml = (v) => String(v ?? "");
+    const icon = () => "";
+    const formatDateTime = (v) => String(v);
+    ${khop[0]}
+    return renderSyncSchedule;`)();
+})();
+
+const lichTat = { enabled: false, health: "chua-chay", lastRun: null };
+const coDuLieu = { students: 4445, parents: 7119, lastSyncAt: "2026-09-04T03:19:00.000Z" };
+
+test("chạy tay + đã có dữ liệu thì KHÔNG kêu báo động", () => {
+  // Mỗi lần triển khai lại rơi vào đúng trạng thái này. Kêu oan mãi thì tới lần
+  // kêu thật cũng không ai buồn đọc.
+  const html = veLich(lichTat, coDuLieu);
+  assert.ok(!html.includes("inline-alert"), "không được hiện dải cảnh báo khi mọi thứ bình thường");
+  assert.match(html, /badge-green/);
+  assert.match(html, /Chạy thủ công/);
+  assert.match(html, /4445/, "vẫn phải hiện số học sinh đang có");
+});
+
+test("cơ sở dữ liệu trống thì PHẢI kêu — đó mới là chuyện thật", () => {
+  const html = veLich(lichTat, { students: 0, parents: 0, lastSyncAt: null });
+  assert.match(html, /inline-alert/);
+  assert.match(html, /Chưa có dữ liệu/);
+});
+
+test("lần chạy gần nhất lỗi thì vẫn kêu, dù đang chạy tay", () => {
+  const html = veLich({ ...lichTat, lastRun: { finishedAt: 1, trigger: "thu-cong", error: { message: "Hết hạn xác thực Google" } } }, coDuLieu);
+  assert.match(html, /inline-alert/);
+  assert.match(html, /Hết hạn xác thực Google/);
+});
+
+test("đọc thiếu một file thì kêu, và nói rõ hệ thống không cho ai nghỉ học", () => {
+  const html = veLich({
+    ...lichTat,
+    lastRun: { finishedAt: 1, trigger: "thu-cong", sources: [{ label: "THPT", ok: false, error: "không có quyền" }] },
+  }, coDuLieu);
+  assert.match(html, /inline-alert/);
+  assert.match(html, /THPT/);
+  assert.match(html, /không đánh dấu học sinh nghỉ học/);
 });

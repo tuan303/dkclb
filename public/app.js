@@ -1851,37 +1851,58 @@ const SHEET_FIELD_LABELS = {
   educationLevel: "Cấp học", gradeBand: "Khối", fatherName: "Tên bố", fatherPhone: "SĐT bố", motherName: "Tên mẹ", motherPhone: "SĐT mẹ",
 };
 
-const SYNC_HEALTH_LABELS = {
-  "chua-chay": ["badge-blue", "Chưa chạy lần nào"],
-  "tot": ["badge-green", "Bình thường"],
-  "thieu-nguon": ["badge-gold", "Đọc thiếu file"],
-  "loi": ["badge-red", "Lỗi"],
-  "qua-han": ["badge-red", "Quá hạn"],
-};
-
 // Lỗi đồng bộ nền phải nhìn thấy ngay trên màn hình cấu hình. Giáo vụ thêm học
 // sinh mà việc đồng bộ chết lặng lẽ thì phụ huynh không đăng ký được, và không
 // ai truy ra được nguyên nhân.
+/**
+ * Tình trạng đồng bộ danh bạ.
+ *
+ * Khái niệm "sức khỏe" ở đây được thiết kế cho thời còn chạy theo lịch 15 phút một
+ * lần: lâu không có lần nào thành công là dấu hiệu tiến trình nền chết lặng lẽ.
+ * Từ khi chuyển sang chạy tay, "chưa chạy lần nào kể từ lúc bật máy chủ" trở thành
+ * trạng thái BÌNH THƯỜNG — mỗi lần triển khai lại rơi vào đúng nó. Kêu báo động ở
+ * đó là kêu oan, và kêu oan mãi thì lần kêu thật cũng không ai buồn đọc.
+ *
+ * Nên cảnh báo chỉ bật khi có chuyện thật: lần chạy gần nhất lỗi, có file không đọc
+ * được, lịch đang bật mà quá hạn, hoặc cơ sở dữ liệu trống trơn.
+ */
 function renderSyncSchedule(schedule, luuTru) {
   if (!schedule) return "";
-  const [tone, label] = SYNC_HEALTH_LABELS[schedule.health] || SYNC_HEALTH_LABELS["chua-chay"];
   const last = schedule.lastRun;
+  const failed = (last?.sources || []).filter((source) => source.ok === false);
+  const coDuLieu = Number(luuTru?.students || 0) > 0;
+  const chayTay = !schedule.enabled;
+
   const counters = last?.counters;
   const summary = counters
     ? `${counters.writes} bản ghi · ${counters.studentsCreated} HS mới · ${counters.studentsDeactivated ?? 0} HS nghỉ học`
     : last?.error ? escapeHtml(last.error.message)
     : "—";
-  const failed = (last?.sources || []).filter((source) => source.ok === false);
-  const alert = failed.length
-    ? `Không đọc được: ${failed.map((source) => `${escapeHtml(source.label)} — ${escapeHtml(source.error || "lỗi không rõ")}`).join(" · ")}. Trong lúc chưa khắc phục, hệ thống <b>không đánh dấu học sinh nghỉ học</b> để tránh vô hiệu hóa nhầm cả một cấp.`
-    : last?.error ? escapeHtml(last.error.message)
-    : schedule.health === "qua-han" ? `Đã ${Math.round((schedule.msSinceLastSuccess || 0) / 60000)} phút không có lần đồng bộ nào thành công.`
-    : "Chưa chạy lần đồng bộ nào kể từ lúc bật máy chủ. Đây là trạng thái của TIẾN TRÌNH, không phải của dữ liệu — danh bạ đã đồng bộ trước đó vẫn nằm nguyên trong cơ sở dữ liệu.";
 
-  return `${schedule.healthy ? "" : `<div class="inline-alert">${icon("clock")}<span><b>${label}.</b> ${alert}</span></div>`}
+  // Cơ sở dữ liệu trống là chuyện nghiêm trọng thật, dù lịch bật hay tắt.
+  const canhBao = !coDuLieu
+    ? ["badge-red", "Chưa có dữ liệu",
+      "Cơ sở dữ liệu chưa có học sinh nào. Hãy nhập danh bạ từ file Excel hoặc bấm đồng bộ từ Google Sheets."]
+    : failed.length
+      ? ["badge-gold", "Đọc thiếu file",
+        `Không đọc được: ${failed.map((source) => `${escapeHtml(source.label)} — ${escapeHtml(source.error || "lỗi không rõ")}`).join(" · ")}.`
+        + " Trong lúc chưa khắc phục, hệ thống <b>không đánh dấu học sinh nghỉ học</b> để tránh vô hiệu hóa nhầm cả một cấp."]
+      : last?.error
+        ? ["badge-red", "Lỗi", escapeHtml(last.error.message)]
+        : !chayTay && schedule.health === "qua-han"
+          ? ["badge-red", "Quá hạn",
+            `Đã ${Math.round((schedule.msSinceLastSuccess || 0) / 60000)} phút không có lần đồng bộ nào thành công.`]
+          : null;
+
+  // Không có gì bất thường: nhãn nói đúng chế độ đang chạy, không dọa người dùng.
+  const [tone, label] = canhBao
+    ? [canhBao[0], canhBao[1]]
+    : chayTay ? ["badge-green", "Chạy thủ công"] : ["badge-green", "Bình thường"];
+
+  return `${canhBao ? `<div class="inline-alert">${icon("clock")}<span><b>${canhBao[1]}.</b> ${canhBao[2]}</span></div>` : ""}
     <div class="integration-source">
       <div><span>Tình trạng đồng bộ</span><strong><span class="badge ${tone}">${label}</span></strong></div>
-      <div><span>Lần chạy gần nhất</span><strong>${last ? `${formatDateTime(new Date(last.finishedAt))} · ${last.trigger === "thu-cong" ? "bấm tay" : "theo lịch"}` : "Chưa chạy"}</strong></div>
+      <div><span>Lần chạy gần nhất</span><strong>${last ? `${formatDateTime(new Date(last.finishedAt))} · ${last.trigger === "thu-cong" ? "bấm tay" : "theo lịch"}` : "Chưa chạy kể từ lúc bật máy chủ"}</strong></div>
       <div><span>Kết quả gần nhất</span><strong>${summary}</strong></div>
       <div><span>Lịch tự động</span><strong>${schedule.enabled ? `Mỗi ${Math.round(schedule.intervalMs / 60000)} phút` : "Đã tắt · chỉ chạy khi bấm tay"}</strong></div>
     </div>
@@ -1891,7 +1912,6 @@ function renderSyncSchedule(schedule, luuTru) {
       <div class="kpi-item"><span>Đồng bộ gần nhất</span><strong>${luuTru?.lastSyncAt ? formatDateTime(luuTru.lastSyncAt) : "Chưa từng chạy"}</strong></div>
     </div>`;
 }
-
 // Mỗi file nguồn một thẻ, kèm kết quả lần kiểm tra kết nối gần nhất.
 function renderSheetSources(sources = [], probes = []) {
   const byKey = new Map((probes || []).map((item) => [item.key, item]));
