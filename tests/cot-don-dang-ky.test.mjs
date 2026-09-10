@@ -15,7 +15,22 @@ let server;
 let donCuaQuanTri;
 
 const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-const bang = app.slice(app.indexOf("const formatDateOfBirth"), app.indexOf("function renderFinance()"));
+
+/**
+ * Cắt đúng đoạn nguồn của bảng đơn. Phải KHẲNG ĐỊNH cả hai mốc còn tồn tại: mốc
+ * biến mất thì indexOf trả -1, slice âm lặng lẽ nuốt trọn phần còn lại của tệp và
+ * mọi bài trong tệp này quay ra soi nhầm đoạn mã. Đã xảy ra thật khi trang "Đối
+ * soát phí" bị gỡ — mốc cuối chính là tên hàm của trang đó.
+ */
+function catDoan(tu, den) {
+  const dau = app.indexOf(tu);
+  const cuoi = app.indexOf(den);
+  assert.ok(dau >= 0, `app.js không còn mốc "${tu}" — hãy sửa lại mốc cắt trong bài kiểm này`);
+  assert.ok(cuoi > dau, `app.js không còn mốc "${den}" sau "${tu}" — hãy sửa lại mốc cắt trong bài kiểm này`);
+  return app.slice(dau, cuoi);
+}
+
+const bang = catDoan("const formatDateOfBirth", "const AUDIT_ACTION_LABELS");
 const tenCot = () => [...bang.matchAll(/\{ title: "([^"]+)"/g)].map((m) => m[1]);
 
 const dong = async (cookie) => (await (await server.request("/api/registrations", cookie)).json()).registrations;
@@ -118,10 +133,10 @@ test("mọi giá trị từ cơ sở dữ liệu đều đi qua escapeHtml", () 
 });
 
 test("số tiền vẫn hiện ở nơi người ta quyết định thu", () => {
-  // Bảng không còn cột Phí theo yêu cầu, mà trang Đối soát phí hiện chỉ có số liệu
-  // minh họa gõ cứng — nếu nút không mang số tiền thì cả cổng quản trị không còn
-  // chỗ nào thấy học phí của một đơn, tức là xác nhận thu tiền trong khi không biết
-  // thu bao nhiêu.
+  // Bảng không còn cột Phí theo yêu cầu, và trang "Đối soát phí" — vốn chỉ có số
+  // liệu minh họa gõ cứng — đã được gỡ khỏi menu. Nếu nút không mang số tiền thì cả
+  // cổng quản trị không còn chỗ nào thấy học phí của một đơn ngay lúc bấm, tức là
+  // xác nhận thu tiền trong khi không biết thu bao nhiêu.
   assert.ok(!tenCot().includes("Phí"), "bảng không còn cột Phí");
   assert.match(bang, /data-confirm-payment="\$\{escapeHtml\(row\.id\)\}">Xác nhận \$\{formatMoney\(row\.amount\)\}/);
 });

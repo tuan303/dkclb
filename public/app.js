@@ -7,6 +7,9 @@ const state = {
   registrations: [],
   filters: { search: "", category: "all", availability: "all" },
   adminStatus: "all",
+  // Danh sách lớp mặc định chỉ hiện các em ĐÃ ĐÓNG PHÍ — đó mới là danh sách
+  // giáo viên cầm đi điểm danh. Bật sang "kèm chưa đóng phí" là việc của giáo vụ.
+  rosterOnlyPaid: true,
   dashboard: null,
   sheetIntegration: null,
   sheetPreview: null,
@@ -74,7 +77,7 @@ const adminNav = [
   { id: "campaigns", label: "Đợt đăng ký", icon: "calendar", cap: "danh-muc" },
   { id: "classes", label: "CLB & lịch học", icon: "grid", cap: "danh-muc" },
   { id: "applications", label: "Đơn đăng ký", icon: "clipboard", badge: 12, cap: "duyet-don" },
-  { id: "finance", label: "Đối soát phí", icon: "credit", cap: "duyet-don" },
+  { id: "rosters", label: "Danh sách lớp CLB", icon: "users", cap: "danh-sach-van-hanh" },
   { section: "Quản trị" },
   { id: "reports", label: "Báo cáo & xuất file", icon: "chart", cap: "danh-sach-van-hanh" },
   { id: "accounts", label: "Tài khoản nhà trường", icon: "settings", cap: "quan-ly-tai-khoan" },
@@ -88,7 +91,7 @@ const pageMeta = {
   account: ["Tài khoản của tôi", "Bảo mật đăng nhập"],
   support: ["Yêu cầu hỗ trợ", "Trung tâm trợ giúp"], dashboard: ["Dashboard vận hành", "Cập nhật lúc 16:00 · 18/08/2026"],
   campaigns: ["Đợt đăng ký", "Học kỳ I · 2026–2027"], classes: ["CLB & lịch học", "Quản lý danh mục và quota"],
-  applications: ["Đơn đăng ký", "158 bản ghi trong đợt hiện tại"], finance: ["Đối soát phí", "Dữ liệu minh họa"],
+  applications: ["Đơn đăng ký", "158 bản ghi trong đợt hiện tại"], rosters: ["Danh sách lớp CLB", "Xếp lớp và điểm danh"],
   reports: ["Báo cáo & xuất file", "Trung tâm dữ liệu vận hành"], structure: ["Cấu trúc hệ thống", "Bản đồ module MVP"],
   settings: ["Cấu hình & phân quyền", "Quản trị hệ thống"],
   accounts: ["Tài khoản nhà trường", "Chỉ quản trị cao nhất truy cập được"],
@@ -417,6 +420,7 @@ function pageContext(page, fallback) {
   if (["home", "clubs", "registrations", "schedule", "dashboard", "campaigns"].includes(page)) return periodLabel;
   if (page === "classes") return `${state.catalog?.clubs.length || 0} CLB · ${state.catalog?.classes.length || 0} lớp`;
   if (page === "applications") return `${adminApplications.length} đơn trong hệ thống`;
+  if (page === "rosters") return state.period ? `${clubs.length} ca học trong đợt` : `${clubs.length} ca học · chưa có đợt nào đang mở`;
   return fallback;
 }
 
@@ -437,7 +441,7 @@ function renderPage() {
     home: renderParentHome, clubs: renderClubsPage, registrations: renderRegistrations,
     schedule: renderSchedule, account: renderAccount, support: renderSupport, dashboard: renderAdminDashboard,
     campaigns: renderCampaigns, classes: renderClasses, applications: renderApplications,
-    finance: renderFinance, reports: renderReports, structure: renderStructure, settings: renderSettings,
+    rosters: renderRosters, reports: renderReports, structure: renderStructure, settings: renderSettings,
     accounts: renderSchoolAccounts,
   };
   $("#page-content").innerHTML = (pages[state.page] || renderParentHome)();
@@ -562,7 +566,7 @@ function renderClubCard(club) {
       <span class="category">${club.category}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</span><h3>${escapeHtml(club.name)}</h3>
       <div class="club-meta"><span>${icon("clock")}${club.schedule}</span><span>${icon("pin")}${club.room} · ${club.teacher}</span></div>
       ${canhBao ? `<p class="club-conflict">${icon("clock")}${escapeHtml(canhBao.nhan)}</p>` : ""}
-      <div class="capacity"><div class="capacity-head"><span>Sĩ số đã đóng phí</span><strong>${club.enrolled}/${club.capacity}</strong></div><div class="capacity-track ${statusClass}"><span style="width:${ratio}%"></span></div>${dangCho > 0 ? `<p class="capacity-pending">${dangCho} đơn đang chờ đóng phí · chỗ chỉ được giữ khi đã đóng phí</p>` : ""}</div>
+      <div class="capacity"><div class="capacity-head"><span>Sĩ số đã đóng phí</span><strong>${club.enrolled}/${club.capacity}</strong></div><div class="capacity-track ${statusClass}"><span style="width:${ratio}%"></span></div>${dangCho > 0 ? `<p class="capacity-pending">${dangCho} đơn đã đăng ký nhưng chưa giữ chỗ · chỗ chỉ được giữ khi đã đóng phí</p>` : ""}</div>
       <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>/ học kỳ</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${inCart || canhBao ? "disabled" : ""}>${inCart ? "Đã chọn" : canhBao ? canhBao.nut : left <= 0 ? "Vào DS chờ" : "Chọn"}</button></div></div>
     </div>
   </article>`;
@@ -1058,7 +1062,7 @@ function renderCatalogClubBlock(club, classes) {
         <td><strong>${escapeHtml(row.name || "Ca chính")}</strong><br><span style="color:var(--muted)">Khối ${grades.join(", ")}</span></td>
         <td>${escapeHtml(row.scheduleLabel)}</td>
         <td>${escapeHtml(row.room)}<br><span style="color:var(--muted)">${escapeHtml(row.teacher)}</span></td>
-        <td>${row.enrolled}/${row.capacity}${row.pendingRegistrations ? `<br><span style="color:var(--muted)">+${row.pendingRegistrations} chờ đóng phí</span>` : ""}${row.minCapacity ? `<br><span style="color:var(--muted)">tối thiểu ${row.minCapacity}</span>` : ""}</td>
+        <td>${row.enrolled}/${row.capacity}${row.pendingRegistrations ? `<br><span style="color:var(--muted)">+${row.pendingRegistrations} đơn chưa giữ chỗ</span>` : ""}${row.minCapacity ? `<br><span style="color:var(--muted)">tối thiểu ${row.minCapacity}</span>` : ""}</td>
         <td>${formatMoney(row.fee)}</td>
         <td><span class="badge badge-${badge[1]}">${badge[0]}</span></td>
         <td>
@@ -1814,9 +1818,13 @@ async function saveRegistrationStatus() {
   try {
     await api(`/admin/registrations/${encodeURIComponent(detailState.detail.registration.id)}/status`,
       { method: "PATCH", body: JSON.stringify({ status: next }) });
-    // Tải lại cả danh sách: đổi trạng thái làm đổi cả sĩ số lớp và các con số trên
-    // dashboard, hiện mỗi một dòng là để người dùng nhìn thấy số cũ ở chỗ khác.
-    adminApplications = (await api("/registrations")).registrations;
+    // Tải lại cả danh sách VÀ danh mục ca học: đổi trạng thái làm đổi cả sĩ số lớp
+    // và các con số trên dashboard, hiện mỗi một dòng là để người dùng nhìn thấy số
+    // cũ ở chỗ khác. Thiếu /api/clubs thì trang Danh sách lớp lấy sĩ số CŨ trừ đi
+    // số đơn giữ chỗ MỚI, ra một con số không có thật.
+    const [donMoi, lopMoi] = await Promise.all([api("/registrations"), api("/clubs")]);
+    adminApplications = donMoi.registrations;
+    clubs = lopMoi.clubs;
     closeModal();
     renderApp();
     toast(`Đã chuyển đơn sang “${statusBadge(next)[0]}”.`, "success");
@@ -1829,8 +1837,136 @@ async function saveRegistrationStatus() {
   }
 }
 
-function renderFinance() {
-  return `<section class="grid grid-4">${renderStat("credit","blue","189,6 tr","Tổng phải thu","158 đăng ký")}${renderStat("check","aqua","154,9 tr","Đã xác nhận","81,7%")}${renderStat("clock","gold","34,7 tr","Chờ đối soát","28 giao dịch")}${renderStat("clipboard","red","0 đ","Hoàn/chuyển phí","Chưa phát sinh")}</section><section class="section panel"><div class="panel-head"><div><h3>Quy trình đối soát đề xuất</h3><p>MVP hỗ trợ import hoặc xác nhận thủ công có log.</p></div><button class="button button-primary" data-toast="Demo: mở trình import giao dịch từ Excel.">Import đối soát</button></div><div class="panel-body"><div class="flow-line">${flowNodes(["Nhận giao dịch","Khớp mã đơn/SĐT","Kiểm tra số tiền","Xác nhận phí","Đưa vào DS chính thức"])}</div></div></section>`;
+// Ép về số an toàn cho mọi con số đến từ máy chủ: thiếu trường thì ra 0 chứ không
+// ra NaN, vì "NaN/20" in ra màn hình là thứ không ai giải thích được.
+const conSo = (value) => Number(value) || 0;
+
+/**
+ * Danh sách lớp CLB: mỗi ca học một bảng, kèm tên từng em trong ca đó. Đây là tờ
+ * giấy giáo viên cầm đi điểm danh, và là chỗ giáo vụ nhìn ra ai đã đóng phí.
+ *
+ * Phạm vi dữ liệu bám đúng quyền danh-sach-van-hanh trong roles.mjs: tên học sinh,
+ * lớp hành chính, trạng thái đơn. KHÔNG mã học sinh, KHÔNG ngày sinh, KHÔNG số
+ * điện thoại phụ huynh. Máy chủ đã cắt sẵn hai trường đầu theo quyền ở
+ * /api/registrations; trang này không dựng lại chúng từ chỗ khác.
+ */
+function renderRosters() {
+  const chiChinhThuc = state.rosterOnlyPaid !== false;
+  const giuCho = (row) => SEAT_HOLDING_STATUSES.includes(row.status);
+  const conHieuLuc = (row) => ACTIVE_REGISTRATION_STATUSES.includes(row.status);
+  const trongDanhSach = (row) => (chiChinhThuc ? giuCho(row) : conHieuLuc(row));
+
+  const theoCa = new Map();
+  const demGiuCho = new Map();
+  for (const row of adminApplications) {
+    if (giuCho(row)) demGiuCho.set(row.classId, (demGiuCho.get(row.classId) || 0) + 1);
+    if (!trongDanhSach(row)) continue;
+    if (!theoCa.has(row.classId)) theoCa.set(row.classId, []);
+    theoCa.get(row.classId).push(row);
+  }
+  // Em đã đóng phí đứng trước, rồi mới tới đơn còn treo; trong mỗi nhóm xếp theo
+  // tên tiếng Việt để giáo viên dò được như dò sổ điểm danh.
+  for (const danhSach of theoCa.values()) {
+    danhSach.sort((a, b) => (giuCho(a) ? 0 : 1) - (giuCho(b) ? 0 : 1)
+      || String(a.student).localeCompare(String(b.student), "vi"));
+  }
+
+  const dsCa = clubs.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), "vi")
+    || conSo(a.dayOfWeek) - conSo(b.dayOfWeek)
+    || String(a.startTime || "").localeCompare(String(b.startTime || "")));
+  // Ca đã tắt hoặc thuộc đợt khác vẫn có thể còn học sinh đang treo đơn. Bỏ im
+  // lặng là mất tên một em khỏi danh sách mà không ai biết, nên gom lại cuối trang.
+  const coTrongDot = new Set(dsCa.map((item) => item.id));
+  const moCoi = [...theoCa.keys()].filter((classId) => !coTrongDot.has(classId));
+
+  // "Học sinh chính thức" phải là số HỌC SINH, không phải số đơn: một em học hai
+  // CLB là hai đơn nhưng vẫn là một em. Số lượt đăng ký để riêng ở dòng phụ, vì
+  // đó mới là con số cộng lại bằng tổng các bảng bên dưới.
+  const donGiuCho = adminApplications.filter(giuCho);
+  const tongChinhThuc = new Set(donGiuCho.map((row) => row.studentId)).size;
+  const tongCho = adminApplications.filter((row) => conHieuLuc(row) && !giuCho(row)).length;
+  const thieuSiSo = dsCa.filter((item) => conSo(item.minCapacity) > 0 && conSo(item.enrolled) < conSo(item.minCapacity)).length;
+  // Hết đợt thì máy chủ trả về ca của MỌI đợt. Nói "trong đợt" lúc đó là sai, mà
+  // im lặng còn tệ hơn: giáo vụ đếm số ca để bàn giao giáo viên sẽ đếm lẫn cả ca
+  // của học kỳ sau. Nên nhãn phải đổi theo đúng thứ máy chủ vừa trả về.
+  const dot = state.period;
+  const nhanDot = dot ? `${dot.name} · đang mở nhận đăng ký` : "Chưa có đợt nào đang mở · đang hiện ca của mọi đợt";
+
+  return `<section class="grid grid-4" data-no-print>
+    ${renderStat("grid", "blue", String(dsCa.length), dot ? "Ca học trong đợt" : "Ca học đang hiển thị", nhanDot)}
+    ${renderStat("users", "aqua", String(tongChinhThuc), "Học sinh chính thức", `${donGiuCho.length} lượt đã đóng phí`)}
+    ${renderStat("clock", "gold", String(tongCho), "Đơn chưa giữ chỗ", "Chờ đóng phí hoặc đang xếp chờ")}
+    ${renderStat("spark", thieuSiSo ? "red" : "aqua", String(thieuSiSo), "Ca dưới sĩ số tối thiểu", thieuSiSo ? "Cần xem lại" : "Không có")}
+  </section>
+  <section class="section" style="margin-top:0">
+    <div class="section-head"><div><span class="eyebrow">Xếp lớp & điểm danh</span><h2>Danh sách lớp CLB</h2>
+    <p>${escapeHtml(nhanDot)}. Chỗ chỉ được giữ khi đã đóng phí, nên danh sách chính thức chỉ gồm các em đã đóng phí.</p></div>
+    <button class="button button-secondary" data-no-print data-roster-csv="">${icon("download")} Xuất toàn bộ (CSV)</button></div>
+    <div class="filters" data-no-print>
+      <label class="search-field">${icon("search")}<input id="roster-search" placeholder="Tìm học sinh, CLB, phòng, giáo viên..." /></label>
+      <div class="status-tabs">
+        <button class="status-tab ${chiChinhThuc ? "active" : ""}" data-roster-scope="paid">Chính thức (đã đóng phí)</button>
+        <button class="status-tab ${chiChinhThuc ? "" : "active"}" data-roster-scope="all">Kèm đơn chưa đóng phí</button>
+      </div>
+    </div>
+  </section>
+  ${dsCa.length || moCoi.length
+    ? dsCa.map((ca) => renderRosterPanel(ca, theoCa.get(ca.id) || [], demGiuCho.get(ca.id) || 0)).join("")
+      + moCoi.map((classId) => renderRosterPanel(null, theoCa.get(classId), 0, classId)).join("")
+    : `<section class="panel empty-state"><div class="empty-icon">${icon("users")}</div><h3>Chưa có ca học nào</h3><p>Đợt đăng ký hiện tại chưa mở ca học nào, hoặc tất cả đang tắt.</p></section>`}`;
+}
+
+/**
+ * Một ca học: phần đầu là thông tin lớp, phần thân là tên học sinh.
+ *
+ * "Sĩ số ghi nhận" và số dòng trong bảng có thể lệch nhau, vì sĩ số còn cộng cả
+ * số em ghi danh sẵn ngoài hệ thống (enrolled_base). Lệch mà không nói ra thì
+ * giáo vụ tưởng hệ thống mất tên học sinh, nên chênh lệch được nêu thẳng.
+ */
+function renderRosterPanel(ca, danhSach, soGiuCho, classIdMoCoi = "") {
+  const rows = danhSach || [];
+  // Ca mồ côi vẫn gọi được đúng tên: chính các đơn bên dưới mang sẵn tên CLB và
+  // tên ca. In mỗi mã "class_88ace2..." là bắt giáo vụ tự tra xem đó là lớp gì.
+  const dauTien = rows[0] || null;
+  const tenMoCoi = dauTien
+    ? `${dauTien.club}${dauTien.classLabel ? ` · ${dauTien.classLabel}` : ""}`
+    : "Ca học không còn trong đợt này";
+  const ten = ca ? `${ca.name}${ca.className ? ` · ${ca.className}` : ""}` : tenMoCoi;
+  const meta = ca
+    ? [ca.schedule, ca.room, ca.teacher].filter(Boolean).join(" · ")
+    : `Ca đã tắt hoặc thuộc đợt khác (mã ${classIdMoCoi}), nhưng các em dưới đây vẫn đang có đơn.`;
+  const ghiDanhSan = ca ? Math.max(0, conSo(ca.enrolled) - conSo(soGiuCho)) : 0;
+  const timTheoCa = [ten, ca?.schedule, ca?.room, ca?.teacher, ca?.category].filter(Boolean).join(" ").toLowerCase();
+
+  const than = rows.length
+    ? `<div class="table-wrap"><table class="data-table roster-table">
+        <thead><tr><th style="width:44px">STT</th><th>Học sinh</th><th>Lớp</th><th>Trạng thái</th></tr></thead>
+        <tbody>${rows.map((row) => {
+          const [nhan, mau] = statusBadge(row.status);
+          const chuCai = String(row.student || "?").split(" ").slice(-2).map((phan) => phan[0] || "").join("");
+          return `<tr data-roster-text="${escapeHtml(`${row.student} ${row.className} ${row.id}`.toLowerCase())}">
+            <td class="roster-stt"></td>
+            <td><div class="student-cell"><span class="mini-avatar">${escapeHtml(chuCai)}</span><div><strong>${escapeHtml(row.student)}</strong><span>${escapeHtml(row.id)}</span></div></div></td>
+            <td>${escapeHtml(row.className)}</td>
+            <td><span class="badge badge-${mau}">${escapeHtml(nhan)}</span>${row.feePaid && !SEAT_HOLDING_STATUSES.includes(row.status) ? '<br><span style="color:var(--muted)">đã thu phí</span>' : ""}</td>
+          </tr>`;
+        }).join("")}</tbody></table></div>`
+    : `<div class="panel-body"><p style="margin:0;color:var(--muted)">${ghiDanhSan > 0
+        ? `Không em nào đăng ký ca này qua cổng. ${ghiDanhSan} em đang giữ chỗ được ghi danh sẵn ngoài hệ thống, nhà trường giữ danh sách riêng.`
+        : state.rosterOnlyPaid !== false
+          ? "Chưa em nào đóng phí cho ca này."
+          : "Chưa có đơn nào cho ca này."}</p></div>`;
+
+  return `<section class="section panel roster-panel" data-roster-panel="${escapeHtml(timTheoCa)}">
+    <div class="panel-head"><div><h3>${escapeHtml(ten)}</h3><p>${escapeHtml(meta)}</p></div>
+      <div class="roster-head-right">
+        <span class="badge badge-${ca && conSo(ca.enrolled) >= conSo(ca.capacity) ? "red" : "green"}" data-roster-count="${rows.length}">${rows.length} em trong danh sách</span>
+        ${ca ? `<span class="roster-note">Sĩ số ghi nhận ${conSo(ca.enrolled)}/${conSo(ca.capacity)}${ghiDanhSan ? ` · ${ghiDanhSan} em ghi danh sẵn ngoài hệ thống` : ""}${conSo(ca.pending) ? ` · ${conSo(ca.pending)} đơn chưa giữ chỗ` : ""}</span>` : ""}
+        ${ca ? `<button class="button button-secondary" data-no-print data-roster-csv="${escapeHtml(ca.id)}">${icon("download")} CSV</button>` : ""}
+      </div>
+    </div>
+    ${than}
+  </section>`;
 }
 
 function renderReports() {
@@ -2450,7 +2586,7 @@ function closeCart() { $("#cart-drawer").classList.remove("open"); $("#drawer-ov
 function showDetail(clubId) {
   const club = clubs.find(c => c.id === clubId);
   const left = club.capacity - club.enrolled;
-  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.description}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${club.schedule}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${club.room}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${club.teacher}</strong></div><div class="detail-cell"><span>Sĩ số đã đóng phí</span><strong>${left > 0 ? `Còn ${left}/${club.capacity} chỗ` : "Đã đầy · nhận DS chờ"}</strong>${club.pending ? `<small style="display:block;color:var(--muted)">${club.pending} đơn đang chờ đóng phí</small>` : ""}</div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)} / học kỳ</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id)?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":left<=0?"Vào DS chờ":"Chọn CLB"}</button></div>`);
+  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.description}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${club.schedule}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${club.room}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${club.teacher}</strong></div><div class="detail-cell"><span>Sĩ số đã đóng phí</span><strong>${left > 0 ? `Còn ${left}/${club.capacity} chỗ` : "Đã đầy · nhận DS chờ"}</strong>${club.pending ? `<small style="display:block;color:var(--muted)">${club.pending} đơn đã đăng ký nhưng chưa giữ chỗ</small>` : ""}</div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)} / học kỳ</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id)?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":left<=0?"Vào DS chờ":"Chọn CLB"}</button></div>`);
 }
 
 function showModal(content, { wide = false } = {}) {
@@ -2504,6 +2640,23 @@ function closeSidebar() { $("#sidebar").classList.remove("open"); $("#sidebar-ov
 function toast(message, type = "") {
   const el = document.createElement("div"); el.className = `toast ${type}`; el.textContent = message;
   $("#toast-root").appendChild(el); setTimeout(() => el.remove(), 3200);
+}
+
+/**
+ * Tải danh sách của MỘT ca học, hoặc của cả đợt khi classId rỗng. Phạm vi "chỉ đã
+ * đóng phí" phải khớp đúng cái đang hiện trên màn hình — xuất ra một tệp khác với
+ * cái người ta vừa nhìn là cách nhanh nhất để giáo vụ điểm danh nhầm.
+ */
+function exportRosterCsv(classId) {
+  const params = new URLSearchParams();
+  if (classId) params.set("classId", classId);
+  params.set("phamVi", state.rosterOnlyPaid !== false ? "giu-cho" : "hieu-luc");
+  const link = document.createElement("a");
+  link.href = `/api/admin/reports/registrations.csv${params.toString() ? `?${params}` : ""}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  toast("Đang xuất danh sách từ hệ thống.", "success");
 }
 
 function exportCsv() {
@@ -2635,9 +2788,14 @@ function bindPageEvents() {
     el.disabled = true;
     try {
       await api(`/admin/registrations/${encodeURIComponent(registrationId)}/confirm-payment`, { method: "PATCH", body: "{}" });
-      const [registrationPayload, dashboardPayload] = await Promise.all([api("/registrations"), api("/admin/dashboard")]);
+      // Xem chú thích ở saveRegistrationStatus: phải tải lại cả /api/clubs, không thì
+      // sĩ số trên trang Danh sách lớp lệch đúng bằng số đơn vừa đổi.
+      const [registrationPayload, dashboardPayload, clubPayload] = await Promise.all([
+        api("/registrations"), api("/admin/dashboard"), api("/clubs"),
+      ]);
       adminApplications = registrationPayload.registrations;
       state.dashboard = dashboardPayload.dashboard;
+      clubs = clubPayload.clubs;
       renderApp();
       toast(`Đã xác nhận phí cho ${registrationId}.`,"success");
     } catch (error) { el.disabled = false; toast(error.message, "error"); }
@@ -2707,6 +2865,34 @@ function bindPageEvents() {
   bindAccountSupportEvents();
   bindBackupEvents();
   $("[data-export]")?.addEventListener("click", exportCsv);
+  $$("[data-roster-scope]").forEach((el) => el.addEventListener("click", () => {
+    state.rosterOnlyPaid = el.dataset.rosterScope === "paid";
+    renderPage();
+  }));
+  $$("[data-roster-csv]").forEach((el) => el.addEventListener("click", () => exportRosterCsv(el.dataset.rosterCsv)));
+  // Gõ tên một CLB thì hiện NGUYÊN ca đó; gõ tên một em thì chỉ hiện em ấy, trong
+  // đúng ca của em. Ca không còn dòng nào khớp thì ẩn cả khối, để không phải cuộn
+  // qua một trang toàn tiêu đề rỗng.
+  $("#roster-search")?.addEventListener("input", (event) => {
+    const tim = event.target.value.trim().toLowerCase();
+    $$("[data-roster-panel]").forEach((panel) => {
+      const khopCa = !tim || (panel.dataset.rosterPanel || "").includes(tim);
+      let hienThi = 0;
+      panel.querySelectorAll("[data-roster-text]").forEach((row) => {
+        const hien = khopCa || (row.dataset.rosterText || "").includes(tim);
+        row.style.display = hien ? "" : "none";
+        if (hien) hienThi += 1;
+      });
+      panel.style.display = khopCa || hienThi ? "" : "none";
+      const oDem = panel.querySelector("[data-roster-count]");
+      if (oDem) {
+        const tong = conSo(oDem.dataset.rosterCount);
+        oDem.textContent = tim && hienThi !== tong
+          ? `${hienThi}/${tong} em khớp tìm kiếm`
+          : `${tong} em trong danh sách`;
+      }
+    });
+  });
   $("[data-send-support]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     const message = $("#support-message").value.trim();

@@ -30,7 +30,7 @@ test("mỗi mục điều hướng quản trị gắn với một quyền", () =
     ["campaigns", "danh-muc"],
     ["classes", "danh-muc"],
     ["applications", "duyet-don"],
-    ["finance", "duyet-don"],
+    ["rosters", "danh-sach-van-hanh"],
     ["reports", "danh-sach-van-hanh"],
     ["accounts", "quan-ly-tai-khoan"],
     ["settings", "tra-cuu-ho-tro"],

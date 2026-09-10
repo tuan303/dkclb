@@ -419,7 +419,7 @@ Giáo vụ vẫn trả lời được "vì sao phụ huynh không đăng nhập 
 
 Có hai thứ dễ bị gộp làm một nhưng khác hẳn nhau về mức nhạy cảm:
 
-- **Danh sách đăng ký** (`registrations.csv`): mã đơn, tên học sinh, lớp hành chính, CLB, lịch, trạng thái, học phí. Không số điện thoại phụ huynh, không ngày sinh, không mã học sinh. Đây là công cụ làm việc hằng ngày của giáo vụ để xếp lớp và cập nhật thông tin học sinh, nên giáo vụ tải được.
+- **Danh sách đăng ký** (`registrations.csv`): mã đơn, tên học sinh, lớp hành chính, CLB, ca học, lịch, trạng thái, đã thu phí, học phí. Không số điện thoại phụ huynh, không ngày sinh, không mã học sinh. Đây là công cụ làm việc hằng ngày của giáo vụ để xếp lớp và cập nhật thông tin học sinh, nên giáo vụ tải được. Trang **Danh sách lớp CLB** dùng chính endpoint này với `?classId=<mã ca>` để tải danh sách một ca, và `?phamVi=giu-cho` (chỉ em đã đóng phí) hoặc `?phamVi=hieu-luc` (kèm đơn chưa đóng phí) để tệp khớp đúng chế độ đang hiện trên màn hình.
 - **Sao lưu toàn bộ cơ sở dữ liệu**: gồm cả tài khoản phụ huynh và mã kích hoạt của họ. Chỉ quản trị vận hành trở lên.
 
 Quyền kiểm tra theo **năng lực** chứ không theo tên vai trò: mỗi endpoint hỏi "thao tác này cần quyền gì". Nhờ vậy thêm một vai trò mới chỉ phải sửa ma trận trong `roles.mjs` thay vì rà lại hơn hai chục điểm kiểm tra rời rạc — kiểu sửa mà bỏ sót một chỗ là mở toang một cánh cửa. Giao diện cũng ẩn/hiện theo danh sách quyền do máy chủ trả về, không tự suy từ tên vai trò.

@@ -2493,11 +2493,32 @@ async function handleApi(req, res, url) {
   // xếp lớp và cập nhật thông tin học sinh.
   if (method === "GET" && url.pathname === "/api/admin/reports/registrations.csv") {
     await requireSchoolUser(req, CAP.danhSachVanHanh);
-    const rows = await listRegistrations({ role: "admin" });
+    const classId = url.searchParams.get("classId") || "";
+    // Phạm vi phải nói ra thành lời, vì trang danh sách lớp có ĐÚNG hai chế độ và
+    // tệp tải về buộc phải khớp cái người ta vừa nhìn:
+    //   giu-cho  = danh sách chính thức, chỉ các em đã đóng phí trở đi
+    //   hieu-luc = kèm đơn chưa đóng phí, nhưng BỎ lớp hủy / hoàn phí / không khai giảng
+    // Không truyền gì thì xuất mọi đơn — giữ nguyên hành vi cũ của trang Báo cáo.
+    const phamVi = url.searchParams.get("phamVi") || "";
+    const loc = phamVi === "giu-cho" ? SEAT_HOLDING_STATUSES
+      : phamVi === "hieu-luc" ? ACTIVE_REGISTRATION_STATUSES
+      : null;
+    let rows = await listRegistrations({ role: "admin" });
+    if (classId) rows = rows.filter((row) => row.classId === classId);
+    if (loc) rows = rows.filter((row) => loc.includes(row.status));
 
-    const csvRows = [["Mã đơn","Học sinh","Lớp","CLB","Lịch","Trạng thái","Số tiền"], ...rows.map((row) => [row.id,row.student,row.className,row.club,row.schedule,statusLabel(row.status),row.amount])];
+    const csvRows = [["Mã đơn","Học sinh","Lớp","CLB","Ca học","Lịch","Trạng thái","Đã thu phí","Số tiền"],
+      ...rows.map((row) => [row.id,row.student,row.className,row.club,row.classLabel,row.schedule,statusLabel(row.status),row.feePaid ? "Rồi" : "Chưa",row.amount])];
     const csv = "\uFEFF" + csvRows.map((row) => row.map((value) => `"${String(value).replaceAll('"','""')}"`).join(",")).join("\r\n");
-    res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="NSHM_Danh_sach_dang_ky.csv"', "Content-Length": Buffer.byteLength(csv) });
+    // Tên tệp đi trong header HTTP nên phải là ASCII; mã ca học do hệ thống sinh
+    // ra vốn đã an toàn, vẫn lọc lại để không ai chèn được dấu nháy vào header.
+    const tenTep = classId ? `NSHM_Danh_sach_${classId.replace(/[^A-Za-z0-9_-]+/g, "_")}.csv` : "NSHM_Danh_sach_dang_ky.csv";
+    res.writeHead(200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${tenTep}"`,
+      "Cache-Control": "no-store",
+      "Content-Length": Buffer.byteLength(csv),
+    });
     return res.end(csv);
   }
 

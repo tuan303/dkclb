@@ -244,6 +244,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .capacity-track.warning span { background: var(--gold); }
 .capacity-track.full span { background: var(--red); }
 .capacity-pending { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
+
+/* Danh sách lớp CLB. Số thứ tự đánh bằng bộ đếm CSS chứ không gõ sẵn vào HTML:
+   ô tìm kiếm ẩn dòng bằng display:none, mà phần tử display:none KHÔNG làm tăng
+   bộ đếm — nên lọc xong vẫn được 1, 2, 3 liền mạch thay vì 1, 4, 9. */
+.roster-panel .panel-head { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.roster-head-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.roster-note { color: var(--muted); font-size: 9px; }
+.roster-table tbody { counter-reset: roster-stt; }
+.roster-table tbody tr { counter-increment: roster-stt; }
+.roster-table td.roster-stt { color: var(--muted); font-variant-numeric: tabular-nums; }
+.roster-table td.roster-stt::before { content: counter(roster-stt); }
+
 .club-price { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-top: 14px; padding-top: 13px; border-top: 1px solid #edeef4; }
 .club-price strong { font-family: "DM Sans", sans-serif; font-size: 14px; }
 .club-price small { color: var(--muted); font-size: 9px; }
@@ -564,3 +576,38 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .activation-code-box { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; padding: 14px 16px; border: 1px solid #bfe4c2; border-radius: 12px; background: var(--green-soft); }
 .activation-code-box span { color: #247a2b; font-size: 10px; font-weight: 600; }
 .activation-code-box strong { color: #17601d; font-family: "DM Sans", monospace; font-size: 24px; letter-spacing: .12em; }
+
+/* ---------------------------------------------------------------------------
+   IN DANH SÁCH ĐIỂM DANH.
+
+   Khối này phải nằm CUỐI TỆP. @media không cộng thêm độ ưu tiên, nên .roster-panel
+   ở đây chỉ thắng .panel nếu nó đứng sau — đặt ở giữa tệp thì nửa khối là mã chết
+   (đã đo bằng Chrome ở media=print: bóng đổ vẫn nguyên).
+--------------------------------------------------------------------------- */
+@media print {
+  /* Thứ tự quan trọng: bung khung ứng dụng ra trước… */
+  .app-shell, .main-area, .page-content {
+    display: block !important;
+    width: auto !important; max-width: none !important;
+    margin: 0 !important; padding: 0 !important;
+  }
+  /* …rồi mới ẩn, để .hidden luôn thắng. Thiếu dòng này thì in ở màn hình đăng
+     nhập sẽ bung ra cả khung ứng dụng đang ẩn. */
+  .hidden, [hidden] { display: none !important; }
+  .sidebar, .topbar, .sidebar-overlay, [data-no-print] { display: none !important; }
+  .cart-drawer, .drawer-overlay, .modal-backdrop { display: none !important; }
+
+  /* Tiêu đề trang nằm trong .topbar đã bị ẩn, nên tờ giấy phải tự có tiêu đề của
+     nó: thẻ h2 trong .section-head được giữ lại chứ không đánh dấu no-print. */
+  body { background: #fff; }
+  .section { margin-top: 12px !important; }
+  .section-head { padding-bottom: 6px; border-bottom: 1px solid #999; }
+
+  .panel, .roster-panel { break-inside: auto; box-shadow: none !important; border: 1px solid #999 !important; }
+  /* Bảng dài hơn một trang giấy thì cho ngắt, nhưng không ngắt giữa một dòng học
+     sinh, và lặp lại hàng tiêu đề ở đầu trang sau. */
+  .roster-table tr { break-inside: avoid; }
+  .roster-table thead { display: table-header-group; }
+  .table-wrap { overflow: visible !important; }
+  .data-table tbody tr:hover { background: none; }
+}
