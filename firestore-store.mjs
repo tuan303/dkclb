@@ -259,6 +259,11 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         return asServerUser(await users.doc(userId).get());
       },
 
+      async countActiveStudents() {
+        const snapshot = await students.where("status", "==", "active").get();
+        return snapshot.size;
+      },
+
       async listStudentsByParent(parentUserId) {
         const links = snapshotRows(await parentStudents.where("parentUserId", "==", parentUserId).get());
         if (!links.length) return [];

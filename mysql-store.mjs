@@ -503,6 +503,11 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
     },
 
+    async countActiveStudents() {
+      const row = await first("SELECT COUNT(*) AS n FROM students WHERE status = 'active'");
+      return toInt(row?.n);
+    },
+
     async listPendingActivations() {
       const rows = await query(
         `SELECT id, account, display_name, activation_code FROM users

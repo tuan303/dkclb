@@ -484,6 +484,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* Popup chi tiết đơn đăng ký: ba tab, lưới trường chỉ đọc, dòng thời gian lịch sử. */
 /* Cảnh báo trùng giờ ngay trên thẻ CLB: phụ huynh thấy trước khi bấm, không phải
    bấm rồi mới nhận thông báo lỗi. */
+/* Hai chế độ nhập Excel. Chế độ đối chiếu có thể cho hàng nghìn em nghỉ học nên nó
+   phải TRÔNG khác hẳn chế độ bổ sung, không được nằm ngang hàng như hai lựa chọn
+   tương đương. */
+.import-modes { display: grid; gap: 9px; margin-top: 13px; }
+.import-mode { display: flex; gap: 11px; align-items: flex-start; padding: 12px 13px; border: 1px solid var(--line); border-radius: 12px; background: #fff; cursor: pointer; }
+.import-mode.active { border-color: var(--blue); background: var(--blue-soft); }
+.import-mode.canh-bao { border-color: var(--red); background: var(--red-soft); }
+.import-mode input { margin-top: 3px; }
+.import-mode strong { display: block; font-size: 12px; }
+.import-mode span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.import-mode.canh-bao span { color: #8f3245; }
 .club-conflict { display: flex; gap: 6px; align-items: flex-start; margin: 9px 0 0; padding: 8px 10px; color: #b23a50; border-radius: 9px; background: var(--red-soft); font-size: 10px; font-weight: 600; line-height: 1.45; }
 .club-conflict .icon { flex: 0 0 13px; width: 13px; height: 13px; margin-top: 1px; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 5px; }

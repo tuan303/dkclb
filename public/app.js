@@ -10,6 +10,7 @@ const state = {
   dashboard: null,
   sheetIntegration: null,
   sheetPreview: null,
+  excelImport: null,
   catalog: null,
   catalogPeriodId: null,
   importDraft: null,
@@ -1845,6 +1846,7 @@ function renderStructure() {
 }
 
 const SHEET_FIELD_LABELS = {
+  fatherEmail: "Email bố", motherEmail: "Email mẹ",
   studentCode: "Mã học sinh", studentName: "Họ tên", dateOfBirth: "Ngày sinh", className: "Lớp",
   educationLevel: "Cấp học", gradeBand: "Khối", fatherName: "Tên bố", fatherPhone: "SĐT bố", motherName: "Tên mẹ", motherPhone: "SĐT mẹ",
 };
@@ -2154,10 +2156,196 @@ function debounceSearch(handler, delay = 250) {
   };
 }
 
+// Nhập danh bạ học sinh từ file Excel, thay cho việc gọi ra Google Sheets.
+//
+// File được đọc NGAY TRONG TRÌNH DUYỆT (public/sheet-reader.js), chỉ bảng ô chữ đã
+// trích mới gửi lên máy chủ — không tải tệp nhị phân, không có tệp tạm trên đĩa.
+//
+// MỖI SHEET LÀ MỘT NGUỒN. File danh bạ của trường là một workbook có ba tab theo ba
+// cấp học, nên chọn một file cũng ra ba nguồn; chọn ba file riêng thì cũng vậy. Gộp
+// chúng lại rồi mới đối chiếu là bắt buộc: em lớp 5 lên lớp 6 rời tab Tiểu học sang
+// tab THCS, xử lý riêng từng tab là vô hiệu hoá nhầm em đó rồi tạo lại thành người
+// mới, mất sạch liên kết phụ huynh và lịch sử đăng ký.
+const IMPORT_MODES = { boSung: "bo-sung", doiChieu: "doi-chieu" };
+
+function renderExcelImport() {
+  const draft = state.excelImport;
+  const files = draft?.sources || [];
+  const preview = draft?.preview || null;
+  const mode = draft?.mode || IMPORT_MODES.boSung;
+  const doiChieu = mode === IMPORT_MODES.doiChieu;
+
+  return `<section class="section panel"><div class="panel-head"><div>
+      <span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Nhập từ file Excel</h3>
+      <p>Đọc ngay trên máy bạn, không phụ thuộc kết nối Internet ra ngoài.</p></div></div>
+    <div class="panel-body">
+      <label class="form-field"><span>Chọn file .xlsx hoặc .csv (chọn được nhiều file)</span>
+        <input id="excel-files" type="file" accept=".xlsx,.csv" multiple /></label>
+
+      ${files.length ? `<div class="mapping-list" style="margin-top:11px">${files.map((source) =>
+        `<span><b>${escapeHtml(source.label)}</b>${source.rows.length} dòng</span>`).join("")}</div>` : ""}
+
+      <div class="import-modes">
+        <label class="import-mode ${doiChieu ? "" : "active"}">
+          <input type="radio" name="excel-mode" value="${IMPORT_MODES.boSung}" ${doiChieu ? "" : "checked"} />
+          <div><strong>Bổ sung học sinh mới</strong>
+            <span>Chỉ thêm và cập nhật. Không em nào bị cho nghỉ học, kể cả khi vắng mặt trong file. Dùng cho tuyển ngang hàng tháng.</span></div>
+        </label>
+        <label class="import-mode ${doiChieu ? "active canh-bao" : ""}">
+          <input type="radio" name="excel-mode" value="${IMPORT_MODES.doiChieu}" ${doiChieu ? "checked" : ""} />
+          <div><strong>Đối chiếu toàn trường</strong>
+            <span>Coi các file vừa chọn là TOÀN BỘ danh sách trường. Em nào không có trong đó sẽ bị đánh dấu nghỉ học. Chỉ dùng đầu năm, và phải nạp đủ cả ba cấp cùng lúc.</span></div>
+        </label>
+      </div>
+
+      <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:13px">
+        <button class="button button-secondary" id="excel-preview" ${files.length ? "" : "disabled"}>Kiểm tra file</button>
+        <button class="button button-primary" id="excel-commit" ${preview?.readyToSync ? "" : "disabled"}>Ghi vào hệ thống</button>
+      </div>
+      <div id="excel-error" class="form-error" role="alert"></div>
+      ${preview ? renderExcelPreview(preview) : `<div class="info-note" style="margin-top:11px"><strong>Chưa kiểm tra:</strong> chọn file rồi bấm “Kiểm tra file”. Bước này chỉ đọc và đối chiếu, không ghi gì vào hệ thống.</div>`}
+    </div></section>`;
+}
+
+function renderExcelPreview(preview) {
+  const conSot = preview.sources.filter((source) => !source.ok);
+  const sePhaiNghi = Number(preview.willDeactivate || 0);
+  return `
+    <div class="kpi-strip" style="margin-top:13px">
+      <div class="kpi-item"><span>Đang học trong hệ thống</span><strong>${preview.activeStudentsNow}</strong></div>
+      <div class="kpi-item"><span>Học sinh trong file</span><strong>${preview.studentsInFile}</strong></div>
+      <div class="kpi-item"><span>Phụ huynh trong file</span><strong>${preview.guardiansInFile}</strong></div>
+      <div class="kpi-item"><span>Dòng đã đọc</span><strong>${preview.scannedRows}</strong></div>
+    </div>
+    ${sePhaiNghi > 0
+      ? `<div class="inline-alert" style="margin-top:11px">${icon("clock")}<span><strong>${sePhaiNghi} học sinh sẽ bị đánh dấu nghỉ học</strong> vì không có trong các file vừa chọn. Kiểm tra kỹ đã nạp đủ cả ba cấp chưa trước khi ghi.</span></div>`
+      : preview.mode === IMPORT_MODES.doiChieu
+        ? `<div class="info-note" style="margin-top:11px"><strong>Không em nào bị cho nghỉ học</strong> — mọi em đang học đều có mặt trong file.</div>`
+        : `<div class="info-note" style="margin-top:11px"><strong>Chế độ bổ sung:</strong> không em nào bị cho nghỉ học, kể cả ${Math.max(0, preview.activeStudentsNow - preview.studentsInFile)} em không có trong file.</div>`}
+    ${preview.duplicates?.length ? `<div class="inline-alert" style="margin-top:9px">${icon("clock")}<span>${preview.duplicates.length} mã học sinh xuất hiện ở nhiều file: ${preview.duplicates.slice(0, 8).map((item) => escapeHtml(item.code)).join(", ")}. Giữ bản gặp trước.</span></div>` : ""}
+    ${conSot.length ? `<div class="inline-alert" style="margin-top:9px">${icon("clock")}<span>${conSot.length} sheet không đọc được: ${conSot.map((source) => `${escapeHtml(source.label)} — ${escapeHtml(source.error || "")}`).join(" · ")}</span></div>` : ""}
+    ${preview.sources.filter((source) => source.ok).map(renderExcelSourceCard).join("")}`;
+}
+
+function renderExcelSourceCard(source) {
+  const analysis = source.analysis || {};
+  const daKhop = new Set(Object.values(source.mapping || {}).map((header) => String(header).trim().toLowerCase()));
+  const chuaDung = (source.headers || [])
+    .map((header) => String(header || "").trim())
+    .filter((header) => header && !daKhop.has(header.toLowerCase()));
+  return `<div class="info-note" style="margin-top:11px">
+      <strong>${escapeHtml(source.label)}</strong> · hàng tiêu đề ${source.headerRow}
+      · ${analysis.validRows ?? 0} dòng hợp lệ / ${analysis.scannedRows ?? 0} đã đọc
+      ${analysis.invalidRows ? ` · <span style="color:var(--red)">${analysis.invalidRows} dòng lỗi</span>` : ""}
+    </div>
+    <div class="mapping-list">${Object.entries(source.mapping || {})
+      .map(([field, header]) => `<span><b>${escapeHtml(SHEET_FIELD_LABELS[field] || field)}</b>${escapeHtml(header)}</span>`).join("")}</div>
+    ${chuaDung.length ? `<div class="info-note" style="margin-top:7px"><strong>Cột chưa dùng tới:</strong> ${chuaDung.map(escapeHtml).join(" · ")}</div>` : ""}
+    ${analysis.issues?.length ? `<div class="inline-alert" style="margin-top:7px">${icon("clock")}<span>${analysis.issues.slice(0, 6).map((issue) => `Dòng ${issue.row}: ${issue.codes.map(escapeHtml).join(", ")}`).join(" · ")}</span></div>` : ""}`;
+}
+
+// Mỗi sheet nhìn thấy được và có dữ liệu là một nguồn riêng.
+async function docFileExcel(fileList) {
+  const sources = [];
+  for (const file of fileList) {
+    const { sheets } = await window.NSHMSheet.readFile(file);
+    for (const sheet of sheets) {
+      if (sheet.hidden || !sheet.rows?.length) continue;
+      sources.push({
+        key: `${file.name}::${sheet.name}`,
+        label: sheets.length > 1 ? `${file.name} · ${sheet.name}` : file.name,
+        rows: sheet.rows,
+      });
+    }
+  }
+  return sources;
+}
+
+function bindExcelImport() {
+  const draft = () => (state.excelImport = state.excelImport || { sources: [], mode: IMPORT_MODES.boSung, preview: null });
+  const loi = () => $("#excel-error");
+
+  $("#excel-files")?.addEventListener("change", async (event) => {
+    loi().textContent = "";
+    try {
+      const sources = await docFileExcel([...event.target.files]);
+      if (!sources.length) throw new Error("Không đọc được sheet nào có dữ liệu trong các file đã chọn.");
+      // Đổi file thì bản xem trước cũ hết giá trị; giữ lại là mời người dùng bấm ghi
+      // theo một kết quả không còn đúng với file đang chọn.
+      state.excelImport = { sources, mode: draft().mode, preview: null };
+      renderPage();
+    } catch (error) {
+      loi().textContent = error.message;
+    }
+  });
+
+  $$('input[name="excel-mode"]').forEach((radio) => radio.addEventListener("change", () => {
+    state.excelImport = { ...draft(), mode: radio.value, preview: null };
+    renderPage();
+  }));
+
+  $("#excel-preview")?.addEventListener("click", async () => {
+    const button = $("#excel-preview");
+    loi().textContent = "";
+    button.disabled = true;
+    button.textContent = "Đang kiểm tra...";
+    try {
+      const payload = await api("/admin/directory/excel/preview", {
+        method: "POST",
+        body: JSON.stringify({ mode: draft().mode, files: draft().sources.map(({ key, label, rows }) => ({ key, label, rows })) }),
+      });
+      state.excelImport = { ...draft(), preview: payload.preview };
+      renderPage();
+    } catch (error) {
+      loi().textContent = error.message;
+      button.disabled = false;
+      button.textContent = "Kiểm tra file";
+    }
+  });
+
+  $("#excel-commit")?.addEventListener("click", async () => {
+    const hienTai = draft();
+    const doiChieu = hienTai.mode === IMPORT_MODES.doiChieu;
+    const sePhaiNghi = Number(hienTai.preview?.willDeactivate || 0);
+    const cauHoi = doiChieu
+      ? `Ghi ${hienTai.preview.studentsInFile} học sinh vào hệ thống theo chế độ ĐỐI CHIẾU TOÀN TRƯỜNG.`
+        + (sePhaiNghi ? `\n\n${sePhaiNghi} em không có trong file sẽ bị đánh dấu NGHỈ HỌC.` : "")
+        + "\n\nĐã nạp đủ cả ba cấp học chưa?"
+      : `Bổ sung ${hienTai.preview.studentsInFile} học sinh từ file vào hệ thống. Không em nào bị cho nghỉ học.`;
+    if (!window.confirm(cauHoi)) return;
+
+    const button = $("#excel-commit");
+    loi().textContent = "";
+    button.disabled = true;
+    button.textContent = "Đang ghi...";
+    try {
+      const payload = await api("/admin/directory/excel/commit", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: hienTai.mode,
+          confirmation: doiChieu ? "DOI_CHIEU_TOAN_TRUONG" : undefined,
+          files: hienTai.sources.map(({ key, label, rows }) => ({ key, label, rows })),
+        }),
+      });
+      const dem = payload.result?.counters || {};
+      state.excelImport = null;
+      await hydrateRole();
+      renderApp();
+      toast(`Đã ghi: ${dem.studentsCreated || 0} em mới, ${dem.studentsUpdated || 0} em cập nhật`
+        + `, ${dem.studentsDeactivated || 0} em cho nghỉ học.`, "success");
+    } catch (error) {
+      loi().textContent = error.message;
+      button.disabled = false;
+      button.textContent = "Ghi vào hệ thống";
+    }
+  });
+}
+
 function renderSettings() {
   const integration = state.sheetIntegration || {};
   const preview = state.sheetPreview;
   return `<section class="grid grid-3">${renderModuleCard("01","Người dùng & vai trò","8 nhóm vai trò với phạm vi xem/thao tác khác nhau.",["Phụ huynh","Vận hành/Giáo vụ/Kế toán","GV/BGH/IT Admin"])}${renderModuleCard("02","Quy tắc nghiệp vụ","Cấu hình giới hạn CLB, waitlist, thời hạn đổi/hủy.",["Không hard-code theo năm","Ghi log mọi ngoại lệ"])}${renderModuleCard("03","Tích hợp","Kết nối dữ liệu học sinh, OTP, thông báo và kế toán.",["Google Sheets chỉ đọc","Mã hóa trước khi ghi Firestore"])}</section>
+  ${hasCap("dong-bo-danh-ba") ? renderExcelImport() : ""}
   ${hasCap("dong-bo-danh-ba") ? `<section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets · ${Number(integration.sourceCount || 0)} file theo cấp học</h3><p>${escapeHtml(integration.serviceAccountEmail || "—")} · quyền Viewer, chỉ đọc</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
     ${renderSyncSchedule(integration.schedule)}
     ${renderSheetSources(integration.sources, preview?.sources)}
@@ -2417,6 +2605,7 @@ function bindPageEvents() {
       toast(`Đã xác nhận phí cho ${registrationId}.`,"success");
     } catch (error) { el.disabled = false; toast(error.message, "error"); }
   }));
+  bindExcelImport();
   $("[data-preview-sheets]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;

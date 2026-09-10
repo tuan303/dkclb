@@ -19,6 +19,7 @@ import { formatActivationCode, generateActivationCode, normalizeActivationCode }
 import { isUnchanged } from "./record-diff.mjs";
 import { ASSIGNABLE_STATUSES, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, statusLabel } from "./registration-status.mjs";
 import { conflictMessage, intervalsOverlap } from "./schedule-conflict.mjs";
+import { IMPORT_MODES, buildExcelDirectory } from "./directory-excel.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
 import {
@@ -93,10 +94,13 @@ const directorySource = createMultiSourceDirectory({
 // Chu kỳ tự đồng bộ. Đặt SHEETS_SYNC_INTERVAL_MINUTES=0 để tắt hẳn.
 // Trên Vercel mỗi request là một tiến trình riêng nên hẹn giờ trong tiến trình
 // không có tác dụng; lịch chỉ bật khi tự vận hành trên máy chủ của trường.
-const SYNC_INTERVAL_MS = process.env.SHEETS_SYNC_INTERVAL_MINUTES === undefined
-  ? DEFAULT_SYNC_INTERVAL_MS
-  : Math.max(0, Number(process.env.SHEETS_SYNC_INTERVAL_MINUTES) || 0) * 60 * 1000;
+// MẶC ĐỊNH TẮT kể từ khi danh bạ nhập bằng file Excel. Lịch tự gọi ra Google là
+// phụ thuộc mạng duy nhất còn lại của việc đồng bộ danh bạ, mà máy chủ của trường
+// từng mất phân giải tên miền cả buổi. Đặt SHEETS_SYNC_INTERVAL_MINUTES=15 để bật
+// lại nếu vẫn muốn dùng Google Sheets.
+const SYNC_INTERVAL_MS = Math.max(0, Number(process.env.SHEETS_SYNC_INTERVAL_MINUTES) || 0) * 60 * 1000;
 const SYNC_SCHEDULE_ENABLED = SYNC_INTERVAL_MS > 0 && !process.env.VERCEL;
+const EXCEL_IMPORT_LIMIT = 12_000_000;
 
 const syncScheduler = createSyncScheduler({
   intervalMs: SYNC_INTERVAL_MS || DEFAULT_SYNC_INTERVAL_MS,
@@ -840,6 +844,11 @@ async function dashboardData() {
     categories: [...categories.values()].sort((left, right) => left.category.localeCompare(right.category, "vi"))
       .map((row) => ({ ...row, fillRate: Math.min(100, Math.round(row.enrolled / row.capacity * 100)) })),
   };
+}
+
+async function countActiveStudents() {
+  if (businessStore) return businessStore.countActiveStudents();
+  return asInt(db.prepare("SELECT COUNT(*) AS n FROM students WHERE status = 'active'").get()?.n);
 }
 
 async function syncGoogleDirectory(actorUserId) {
@@ -1985,6 +1994,74 @@ async function handleApi(req, res, url) {
     const startedAt = Date.now();
     const result = await syncScheduler.runNow("thu-cong", { actorUserId: user.id });
     return sendJson(res, 200, { result: { ...result, elapsedMs: Date.now() - startedAt } });
+  }
+
+  // Nhập danh bạ học sinh từ file Excel. File được đọc NGAY TRONG TRÌNH DUYỆT bằng
+  // public/sheet-reader.js rồi gửi lên dạng bảng ô chữ, nên máy chủ không phải nhận
+  // tệp nhị phân, không có tệp tạm, và chỉ dữ liệu đã trích mới đi qua đường truyền.
+  if (method === "POST" && url.pathname === "/api/admin/directory/excel/preview") {
+    await requireSchoolUser(req, CAP.dongBoDanhBa);
+    const payload = await readJson(req, EXCEL_IMPORT_LIMIT);
+    const ketQua = buildExcelDirectory(payload.files || [], { mode: payload.mode || IMPORT_MODES.boSung });
+    const dangCo = await countActiveStudents();
+    return sendJson(res, 200, {
+      preview: {
+        mode: ketQua.mode,
+        readyToSync: ketQua.readyToSync,
+        allSourcesLoaded: ketQua.allSourcesLoaded,
+        scannedRows: ketQua.scannedRows,
+        duplicates: ketQua.duplicates,
+        // Con số người vận hành cần để DÁM bấm ghi: đang có bao nhiêu em, file mang
+        // vào bao nhiêu em, và ở chế độ đối chiếu thì bao nhiêu em sẽ bị cho nghỉ.
+        studentsInFile: ketQua.snapshot.students.length,
+        guardiansInFile: ketQua.snapshot.guardians.length,
+        activeStudentsNow: dangCo,
+        willDeactivate: ketQua.allSourcesLoaded ? Math.max(0, dangCo - ketQua.snapshot.students.length) : 0,
+        sources: ketQua.results.map((source) => ({
+          key: source.key, label: source.label, ok: source.ok, error: source.error || null,
+          headerRow: source.headerRow || null, headers: source.headers || [],
+          mapping: source.mapping || {}, analysis: source.analysis || null,
+        })),
+      },
+    });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/directory/excel/commit") {
+    const user = await requireSchoolUser(req, CAP.dongBoDanhBa);
+    const payload = await readJson(req, EXCEL_IMPORT_LIMIT);
+    const mode = payload.mode || IMPORT_MODES.boSung;
+
+    // Chế độ đối chiếu có thể cho hàng nghìn em nghỉ học chỉ vì thiếu một file, nên
+    // nó đòi một câu xác nhận riêng — bấm nhầm nút không đủ để kích hoạt.
+    if (mode === IMPORT_MODES.doiChieu && payload.confirmation !== "DOI_CHIEU_TOAN_TRUONG") {
+      throw httpError(422, "SYNC_CONFIRMATION_REQUIRED",
+        "Chế độ đối chiếu toàn trường cần xác nhận rõ vì có thể cho học sinh nghỉ học hàng loạt.");
+    }
+
+    const ketQua = buildExcelDirectory(payload.files || [], { mode });
+    if (!ketQua.results.some((source) => source.ok)) {
+      throw httpError(422, "EXCEL_ALL_SOURCES_FAILED",
+        `Không đọc được file nào trong ${ketQua.results.length} file đã chọn. ${ketQua.results[0]?.error || ""}`.trim());
+    }
+
+    const timestamp = nowIso();
+    const context = {
+      snapshot: ketQua.snapshot, actorUserId: user.id, timestamp, idFactory: id,
+      source: { kind: "excel", mode, files: ketQua.results.map((item) => ({ key: item.key, label: item.label, ok: item.ok })) },
+      analysis: { scannedRows: ketQua.scannedRows },
+      allSourcesLoaded: ketQua.allSourcesLoaded,
+    };
+    // Đi qua cùng cái khóa với đồng bộ theo lịch: hai lượt ghi song song lên bảng
+    // học sinh là chuyện phải tránh tuyệt đối.
+    const result = await syncScheduler.runExclusive(() => (businessStore
+      ? businessStore.syncDirectory(context)
+      : syncDirectoryLocal(context)));
+    return sendJson(res, 200, {
+      result: {
+        ...result, mode, allSourcesLoaded: ketQua.allSourcesLoaded,
+        sources: ketQua.sources, duplicates: ketQua.duplicates,
+      },
+    });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/export/collections") {

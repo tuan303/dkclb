@@ -107,8 +107,26 @@ export function createSyncScheduler({
     return inFlight;
   }
 
+  /**
+   * Chạy một lượt ghi danh bạ KHÁC (nhập từ file Excel) dưới cùng cái khóa với
+   * đồng bộ theo lịch, để không bao giờ có hai lượt ghi song song lên bảng học sinh.
+   *
+   * Từ chối thay vì xếp hàng: người bấm cần biết ngay là có lượt khác đang chạy,
+   * chứ không phải đợi im lặng rồi ghi đè lên kết quả của lượt kia.
+   */
+  async function runExclusive(task) {
+    if (inFlight) {
+      const error = new Error("Đang có một lượt đồng bộ danh bạ chạy dở. Vui lòng đợi lượt đó xong rồi thử lại.");
+      Object.assign(error, { status: 409, code: "DIRECTORY_SYNC_BUSY", expose: true });
+      throw error;
+    }
+    inFlight = Promise.resolve().then(task).finally(() => { inFlight = null; });
+    return inFlight;
+  }
+
   return {
     runNow,
+    runExclusive,
 
     start() {
       if (enabled) return;
