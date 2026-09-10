@@ -10,6 +10,11 @@ const state = {
   // Danh sách lớp mặc định chỉ hiện các em ĐÃ ĐÓNG PHÍ — đó mới là danh sách
   // giáo viên cầm đi điểm danh. Bật sang "kèm chưa đóng phí" là việc của giáo vụ.
   rosterOnlyPaid: true,
+  rosterSearch: "",
+  rosterPage: 1,
+  rosterPageSize: 10,
+  rosterDetailId: null,
+  rosterTab: "hoc-sinh",
   dashboard: null,
   sheetIntegration: null,
   sheetPreview: null,
@@ -1841,132 +1846,330 @@ async function saveRegistrationStatus() {
 // ra NaN, vì "NaN/20" in ra màn hình là thứ không ai giải thích được.
 const conSo = (value) => Number(value) || 0;
 
+const ROSTER_CO_MAU = [10, 20, 50, 100];
+
 /**
- * Danh sách lớp CLB: mỗi ca học một bảng, kèm tên từng em trong ca đó. Đây là tờ
- * giấy giáo viên cầm đi điểm danh, và là chỗ giáo vụ nhìn ra ai đã đóng phí.
+ * Bỏ dấu để tìm kiếm. Giáo vụ gõ "my thuat" phải ra "Mỹ thuật sáng tạo" — bắt gõ
+ * đủ dấu là bắt họ gõ đúng thứ họ đang đi tìm, mà gõ dấu trên máy trường thì qua
+ * bộ gõ, và bộ gõ thì hay nuốt chữ.
+ */
+const boDau = (value) => String(value ?? "")
+  .normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replaceAll("đ", "d").replaceAll("Đ", "D")
+  .toLowerCase();
+
+/** Đơn còn hiệu lực / đơn đang giữ chỗ — hai câu hỏi khác nhau, xem registration-status.mjs. */
+const roGiuCho = (row) => SEAT_HOLDING_STATUSES.includes(row.status);
+const roConHieuLuc = (row) => ACTIVE_REGISTRATION_STATUSES.includes(row.status);
+
+/**
+ * Danh sách ca học để hiển thị: danh mục đang mở, CỘNG các ca "mồ côi".
  *
- * Phạm vi dữ liệu bám đúng quyền danh-sach-van-hanh trong roles.mjs: tên học sinh,
- * lớp hành chính, trạng thái đơn. KHÔNG mã học sinh, KHÔNG ngày sinh, KHÔNG số
- * điện thoại phụ huynh. Máy chủ đã cắt sẵn hai trường đầu theo quyền ở
- * /api/registrations; trang này không dựng lại chúng từ chỗ khác.
+ * Ca mồ côi là ca còn đơn nhưng không còn trong /api/clubs — lớp đã tắt, hoặc
+ * thuộc đợt khác. Đầu mỗi học kỳ, khi nhà trường đóng đợt cũ và mở đợt mới, TOÀN
+ * BỘ ca của đợt trước rơi vào diện này. Bỏ chúng đi thì học sinh đang học biến mất
+ * khỏi trang mà không một dòng cảnh báo — đã dựng máy chủ thật và đo: 7/7 em mất
+ * sạch trong khi ô thống kê vẫn khẳng định có 2 em.
+ */
+function danhSachCaHoc() {
+  const coTrongDanhMuc = new Set(clubs.map((ca) => ca.id));
+  const moCoi = new Map();
+  for (const row of adminApplications) {
+    if (coTrongDanhMuc.has(row.classId) || moCoi.has(row.classId) || !roConHieuLuc(row)) continue;
+    moCoi.set(row.classId, {
+      id: row.classId, moCoi: true,
+      name: row.club || row.classId, className: row.classLabel || "",
+      schedule: row.schedule || "", room: row.room || "", teacher: row.teacher || "",
+      category: "", grade: [], capacity: 0, minCapacity: 0, enrolled: 0, pending: 0, fee: 0,
+    });
+  }
+  const sapXep = (a, b) => String(a.name).localeCompare(String(b.name), "vi")
+    || conSo(a.dayOfWeek) - conSo(b.dayOfWeek)
+    || String(a.startTime || "").localeCompare(String(b.startTime || ""));
+  return [...clubs].sort(sapXep).concat([...moCoi.values()].sort(sapXep));
+}
+
+/** Học sinh của một ca, đã sắp: em đang giữ chỗ trước, rồi tới đơn còn treo. */
+function hocSinhCuaCa(classId, chiGiuCho) {
+  return adminApplications
+    .filter((row) => row.classId === classId && (chiGiuCho ? roGiuCho(row) : roConHieuLuc(row)))
+    .sort((a, b) => (roGiuCho(a) ? 0 : 1) - (roGiuCho(b) ? 0 : 1)
+      || String(a.student).localeCompare(String(b.student), "vi"));
+}
+
+/**
+ * Trạng thái một ca học, gọn thành một huy hiệu.
+ *
+ * "Đã đầy" tính theo sĩ số ĐANG GIỮ CHỖ, đúng luật nhà trường chốt: chỗ chỉ có chủ
+ * từ khi đóng phí. Dưới sĩ số tối thiểu phải thấy ngay, vì đó là ca có nguy cơ
+ * không khai giảng được.
+ */
+function trangThaiCa(ca) {
+  if (ca.moCoi) return ["Ngoài đợt đang mở", "purple"];
+  const daDung = conSo(ca.enrolled);
+  const toiDa = conSo(ca.capacity);
+  const toiThieu = conSo(ca.minCapacity);
+  if (toiDa <= 0) return ["Chưa đặt sĩ số", "gold"];
+  if (daDung >= toiDa) return ["Đã đầy", "red"];
+  if (toiThieu > 0 && daDung < toiThieu) return [`Chưa đủ tối thiểu ${toiThieu}`, "gold"];
+  return [`Còn ${toiDa - daDung} chỗ`, "green"];
+}
+
+/**
+ * Danh sách lớp CLB: một bảng tra cứu các ca học, bấm "Chi tiết" ra danh sách học
+ * sinh của ca đó. Bố cục theo đúng màn "Danh sách lớp" nhà trường đang dùng ở hệ
+ * thống quản lý học sinh, để giáo vụ không phải học lại một cách đọc khác.
+ *
+ * Phạm vi dữ liệu bám quyền danh-sach-van-hanh trong roles.mjs: tên học sinh, lớp
+ * hành chính, trạng thái đơn. Mã học sinh và ngày sinh chỉ hiện cho người có quyền
+ * duyet-don — máy chủ cũng đã cắt sẵn hai trường đó theo đúng quyền ấy.
  */
 function renderRosters() {
-  const chiChinhThuc = state.rosterOnlyPaid !== false;
-  const giuCho = (row) => SEAT_HOLDING_STATUSES.includes(row.status);
-  const conHieuLuc = (row) => ACTIVE_REGISTRATION_STATUSES.includes(row.status);
-  const trongDanhSach = (row) => (chiChinhThuc ? giuCho(row) : conHieuLuc(row));
+  const tatCa = danhSachCaHoc();
+  const thieuSiSo = tatCa.filter((ca) => conSo(ca.minCapacity) > 0 && conSo(ca.enrolled) < conSo(ca.minCapacity)).length;
+  const donGiuCho = adminApplications.filter(roGiuCho);
+  const soCho = adminApplications.filter((row) => roConHieuLuc(row) && !roGiuCho(row)).length;
 
-  const theoCa = new Map();
-  const demGiuCho = new Map();
-  for (const row of adminApplications) {
-    if (giuCho(row)) demGiuCho.set(row.classId, (demGiuCho.get(row.classId) || 0) + 1);
-    if (!trongDanhSach(row)) continue;
-    if (!theoCa.has(row.classId)) theoCa.set(row.classId, []);
-    theoCa.get(row.classId).push(row);
-  }
-  // Em đã đóng phí đứng trước, rồi mới tới đơn còn treo; trong mỗi nhóm xếp theo
-  // tên tiếng Việt để giáo viên dò được như dò sổ điểm danh.
-  for (const danhSach of theoCa.values()) {
-    danhSach.sort((a, b) => (giuCho(a) ? 0 : 1) - (giuCho(b) ? 0 : 1)
-      || String(a.student).localeCompare(String(b.student), "vi"));
-  }
-
-  const dsCa = clubs.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), "vi")
-    || conSo(a.dayOfWeek) - conSo(b.dayOfWeek)
-    || String(a.startTime || "").localeCompare(String(b.startTime || "")));
-  // Ca đã tắt hoặc thuộc đợt khác vẫn có thể còn học sinh đang treo đơn. Bỏ im
-  // lặng là mất tên một em khỏi danh sách mà không ai biết, nên gom lại cuối trang.
-  const coTrongDot = new Set(dsCa.map((item) => item.id));
-  const moCoi = [...theoCa.keys()].filter((classId) => !coTrongDot.has(classId));
-
-  // "Học sinh chính thức" phải là số HỌC SINH, không phải số đơn: một em học hai
-  // CLB là hai đơn nhưng vẫn là một em. Số lượt đăng ký để riêng ở dòng phụ, vì
-  // đó mới là con số cộng lại bằng tổng các bảng bên dưới.
-  const donGiuCho = adminApplications.filter(giuCho);
-  const tongChinhThuc = new Set(donGiuCho.map((row) => row.studentId)).size;
-  const tongCho = adminApplications.filter((row) => conHieuLuc(row) && !giuCho(row)).length;
-  const thieuSiSo = dsCa.filter((item) => conSo(item.minCapacity) > 0 && conSo(item.enrolled) < conSo(item.minCapacity)).length;
-  // Hết đợt thì máy chủ trả về ca của MỌI đợt. Nói "trong đợt" lúc đó là sai, mà
-  // im lặng còn tệ hơn: giáo vụ đếm số ca để bàn giao giáo viên sẽ đếm lẫn cả ca
-  // của học kỳ sau. Nên nhãn phải đổi theo đúng thứ máy chủ vừa trả về.
+  // Hết đợt thì máy chủ trả về ca của MỌI đợt. Nói "trong đợt" lúc đó là sai, mà im
+  // lặng còn tệ hơn: giáo vụ đếm số ca để bàn giao giáo viên sẽ đếm lẫn cả ca của
+  // học kỳ sau. Nhãn phải đổi theo đúng thứ máy chủ vừa trả về.
   const dot = state.period;
   const nhanDot = dot ? `${dot.name} · đang mở nhận đăng ký` : "Chưa có đợt nào đang mở · đang hiện ca của mọi đợt";
 
   return `<section class="grid grid-4" data-no-print>
-    ${renderStat("grid", "blue", String(dsCa.length), dot ? "Ca học trong đợt" : "Ca học đang hiển thị", nhanDot)}
-    ${renderStat("users", "aqua", String(tongChinhThuc), "Học sinh chính thức", `${donGiuCho.length} lượt đã đóng phí`)}
-    ${renderStat("clock", "gold", String(tongCho), "Đơn chưa giữ chỗ", "Chờ đóng phí hoặc đang xếp chờ")}
+    ${renderStat("grid", "blue", String(tatCa.length), dot ? "Ca học đang hiển thị" : "Ca học đang hiển thị", nhanDot)}
+    ${renderStat("users", "aqua", String(new Set(donGiuCho.map((row) => row.studentId)).size), "Học sinh đang giữ chỗ", `${donGiuCho.length} lượt đăng ký`)}
+    ${renderStat("clock", "gold", String(soCho), "Đơn chưa giữ chỗ", "Chờ đóng phí hoặc đang xếp chờ")}
     ${renderStat("spark", thieuSiSo ? "red" : "aqua", String(thieuSiSo), "Ca dưới sĩ số tối thiểu", thieuSiSo ? "Cần xem lại" : "Không có")}
   </section>
+
   <section class="section" style="margin-top:0">
     <div class="section-head"><div><span class="eyebrow">Xếp lớp & điểm danh</span><h2>Danh sách lớp CLB</h2>
-    <p>${escapeHtml(nhanDot)}. Chỗ chỉ được giữ khi đã đóng phí, nên danh sách chính thức chỉ gồm các em đã đóng phí.</p></div>
-    <button class="button button-secondary" data-no-print data-roster-csv="">${icon("download")} Xuất toàn bộ (CSV)</button></div>
+    <p>${escapeHtml(nhanDot)}. Bấm <strong>Chi tiết</strong> ở từng ca để xem và in danh sách học sinh.</p></div>
+    <button class="button button-secondary" data-no-print data-roster-csv-all>${icon("download")} Xuất toàn bộ đơn còn hiệu lực (CSV)</button></div>
     <div class="filters" data-no-print>
-      <label class="search-field">${icon("search")}<input id="roster-search" placeholder="Tìm học sinh, CLB, phòng, giáo viên..." /></label>
-      <div class="status-tabs">
-        <button class="status-tab ${chiChinhThuc ? "active" : ""}" data-roster-scope="paid">Chính thức (đã đóng phí)</button>
-        <button class="status-tab ${chiChinhThuc ? "" : "active"}" data-roster-scope="all">Kèm đơn chưa đóng phí</button>
-      </div>
+      <label class="search-field">${icon("search")}<input id="roster-search" placeholder="Tìm CLB, ca học, phòng, giáo viên, tên học sinh..." value="${escapeHtml(state.rosterSearch || "")}" /></label>
     </div>
   </section>
-  ${dsCa.length || moCoi.length
-    ? dsCa.map((ca) => renderRosterPanel(ca, theoCa.get(ca.id) || [], demGiuCho.get(ca.id) || 0)).join("")
-      + moCoi.map((classId) => renderRosterPanel(null, theoCa.get(classId), 0, classId)).join("")
-    : `<section class="panel empty-state"><div class="empty-icon">${icon("users")}</div><h3>Chưa có ca học nào</h3><p>Đợt đăng ký hiện tại chưa mở ca học nào, hoặc tất cả đang tắt.</p></section>`}`;
+
+  <section class="section panel" id="roster-results">${renderRosterResults()}</section>`;
 }
 
 /**
- * Một ca học: phần đầu là thông tin lớp, phần thân là tên học sinh.
+ * Phần kết quả tra cứu, tách riêng để ô tìm kiếm KHÔNG bị dựng lại theo mỗi phím.
  *
- * "Sĩ số ghi nhận" và số dòng trong bảng có thể lệch nhau, vì sĩ số còn cộng cả
- * số em ghi danh sẵn ngoài hệ thống (enrolled_base). Lệch mà không nói ra thì
- * giáo vụ tưởng hệ thống mất tên học sinh, nên chênh lệch được nêu thẳng.
+ * Trước đây gõ một ký tự là vẽ lại cả trang, kể cả lúc bộ gõ tiếng Việt đang soạn
+ * dở một chữ — phần tử input bị hủy giữa chừng nên bộ gõ chèn lại nguyên cụm vào
+ * cuối giá trị cũ: gõ "mỹ thuật" ra "mmymyxmỹ tththuthuathuaathuaatthuaatjthuật"
+ * và tra cứu ra 0 kết quả. Đã tái hiện bằng Chrome thật qua Input.imeSetComposition.
  */
-function renderRosterPanel(ca, danhSach, soGiuCho, classIdMoCoi = "") {
-  const rows = danhSach || [];
-  // Ca mồ côi vẫn gọi được đúng tên: chính các đơn bên dưới mang sẵn tên CLB và
-  // tên ca. In mỗi mã "class_88ace2..." là bắt giáo vụ tự tra xem đó là lớp gì.
-  const dauTien = rows[0] || null;
-  const tenMoCoi = dauTien
-    ? `${dauTien.club}${dauTien.classLabel ? ` · ${dauTien.classLabel}` : ""}`
-    : "Ca học không còn trong đợt này";
-  const ten = ca ? `${ca.name}${ca.className ? ` · ${ca.className}` : ""}` : tenMoCoi;
-  const meta = ca
-    ? [ca.schedule, ca.room, ca.teacher].filter(Boolean).join(" · ")
-    : `Ca đã tắt hoặc thuộc đợt khác (mã ${classIdMoCoi}), nhưng các em dưới đây vẫn đang có đơn.`;
-  const ghiDanhSan = ca ? Math.max(0, conSo(ca.enrolled) - conSo(soGiuCho)) : 0;
-  const timTheoCa = [ten, ca?.schedule, ca?.room, ca?.teacher, ca?.category].filter(Boolean).join(" ").toLowerCase();
+function renderRosterResults() {
+  const tim = boDau(state.rosterSearch).trim();
+  const tatCa = danhSachCaHoc();
+  // Tìm được cả theo TÊN HỌC SINH: giáo vụ hay phải trả lời "em này đang học ca nào".
+  const tenTheoCa = new Map();
+  for (const row of adminApplications) {
+    if (!roConHieuLuc(row)) continue;
+    tenTheoCa.set(row.classId, `${tenTheoCa.get(row.classId) || ""} ${boDau(row.student)} ${boDau(row.id)}`);
+  }
+  const khop = (ca) => !tim
+    || boDau([ca.name, ca.className, ca.room, ca.teacher, ca.category, ca.schedule].filter(Boolean).join(" ")).includes(tim)
+    || String(tenTheoCa.get(ca.id) || "").includes(tim);
+  const dsCa = tatCa.filter(khop);
 
-  const than = rows.length
-    ? `<div class="table-wrap"><table class="data-table roster-table">
-        <thead><tr><th style="width:44px">STT</th><th>Học sinh</th><th>Lớp</th><th>Trạng thái</th></tr></thead>
-        <tbody>${rows.map((row) => {
-          const [nhan, mau] = statusBadge(row.status);
-          const chuCai = String(row.student || "?").split(" ").slice(-2).map((phan) => phan[0] || "").join("");
-          return `<tr data-roster-text="${escapeHtml(`${row.student} ${row.className} ${row.id}`.toLowerCase())}">
-            <td class="roster-stt"></td>
-            <td><div class="student-cell"><span class="mini-avatar">${escapeHtml(chuCai)}</span><div><strong>${escapeHtml(row.student)}</strong><span>${escapeHtml(row.id)}</span></div></div></td>
-            <td>${escapeHtml(row.className)}</td>
-            <td><span class="badge badge-${mau}">${escapeHtml(nhan)}</span>${row.feePaid && !SEAT_HOLDING_STATUSES.includes(row.status) ? '<br><span style="color:var(--muted)">đã thu phí</span>' : ""}</td>
-          </tr>`;
-        }).join("")}</tbody></table></div>`
-    : `<div class="panel-body"><p style="margin:0;color:var(--muted)">${ghiDanhSan > 0
-        ? `Không em nào đăng ký ca này qua cổng. ${ghiDanhSan} em đang giữ chỗ được ghi danh sẵn ngoài hệ thống, nhà trường giữ danh sách riêng.`
-        : state.rosterOnlyPaid !== false
-          ? "Chưa em nào đóng phí cho ca này."
-          : "Chưa có đơn nào cho ca này."}</p></div>`;
+  // Con số học sinh phải đi theo đúng cái bảng đang hiện, không thì nó đứng cạnh
+  // "Kết quả tra cứu: 0 ca học" mà vẫn khẳng định có người.
+  const idHien = new Set(dsCa.map((ca) => ca.id));
+  const donHien = adminApplications.filter((row) => idHien.has(row.classId) && roGiuCho(row));
+  const soHocSinh = new Set(donHien.map((row) => row.studentId)).size;
+  const ghiDanhSanTong = dsCa.reduce((tong, ca) => tong + Math.max(0, conSo(ca.enrolled)
+    - adminApplications.filter((row) => row.classId === ca.id && roGiuCho(row)).length), 0);
 
-  return `<section class="section panel roster-panel" data-roster-panel="${escapeHtml(timTheoCa)}">
-    <div class="panel-head"><div><h3>${escapeHtml(ten)}</h3><p>${escapeHtml(meta)}</p></div>
-      <div class="roster-head-right">
-        <span class="badge badge-${ca && conSo(ca.enrolled) >= conSo(ca.capacity) ? "red" : "green"}" data-roster-count="${rows.length}">${rows.length} em trong danh sách</span>
-        ${ca ? `<span class="roster-note">Sĩ số ghi nhận ${conSo(ca.enrolled)}/${conSo(ca.capacity)}${ghiDanhSan ? ` · ${ghiDanhSan} em ghi danh sẵn ngoài hệ thống` : ""}${conSo(ca.pending) ? ` · ${conSo(ca.pending)} đơn chưa giữ chỗ` : ""}</span>` : ""}
-        ${ca ? `<button class="button button-secondary" data-no-print data-roster-csv="${escapeHtml(ca.id)}">${icon("download")} CSV</button>` : ""}
+  const moiTrang = ROSTER_CO_MAU.includes(conSo(state.rosterPageSize)) ? conSo(state.rosterPageSize) : 10;
+  const soTrang = Math.max(1, Math.ceil(dsCa.length / moiTrang));
+  const trang = Math.min(Math.max(1, conSo(state.rosterPage) || 1), soTrang);
+  const batDau = (trang - 1) * moiTrang;
+  const trongTrang = dsCa.slice(batDau, batDau + moiTrang);
+
+  const cot = [
+    { title: "CLB", cell: (ca) => `<strong>${escapeHtml(ca.name)}</strong>` },
+    { title: "Ca học", cell: (ca) => escapeHtml(ca.className || "Ca chính") },
+    { title: "Lịch học", cell: (ca) => escapeHtml(ca.schedule || "—") },
+    { title: "Trạng thái", cell: (ca) => { const [nhan, mau] = trangThaiCa(ca); return `<span class="badge badge-${mau}">${escapeHtml(nhan)}</span>`; } },
+    { title: "Nhóm môn", cell: (ca) => escapeHtml(ca.category || "—") },
+    { title: "Phòng học", cell: (ca) => escapeHtml(ca.room || "—") },
+    // Sĩ số là số em ĐANG GIỮ CHỖ trên sức chứa; đơn chưa giữ chỗ để riêng một dòng
+    // vì nó KHÔNG chiếm chỗ — gộp chung là hứa một con số không có thật.
+    { title: "Sĩ số", cell: (ca) => (ca.moCoi
+      ? `<span style="color:var(--muted)">Ngoài đợt</span>`
+      : `${conSo(ca.enrolled)}/${conSo(ca.capacity)}${conSo(ca.pending)
+        ? `<br><span style="color:var(--muted)">+${conSo(ca.pending)} đơn chưa giữ chỗ</span>` : ""}`) },
+    { title: "Giáo viên phụ trách", cell: (ca) => escapeHtml(ca.teacher || "—") },
+  ];
+
+  const than = trongTrang.length
+    ? trongTrang.map((ca, i) => `<tr${ca.moCoi ? ' class="roster-mocoi"' : ""}>
+        <td>${batDau + i + 1}</td>
+        <td><button class="table-action" data-roster-detail="${escapeHtml(ca.id)}">Chi tiết</button></td>
+        ${cot.map((item) => `<td>${item.cell(ca)}</td>`).join("")}
+      </tr>`).join("")
+    : `<tr><td colspan="${cot.length + 2}" class="empty-cell">${tim
+        ? "Không có ca học nào khớp từ khóa."
+        : "Đợt đăng ký hiện tại chưa mở ca học nào, hoặc tất cả đang tắt."}</td></tr>`;
+
+  const soMoCoi = dsCa.filter((ca) => ca.moCoi).length;
+  return `<div class="panel-head">
+      <div><h3>Kết quả tra cứu: ${dsCa.length} ca học${tim ? ` / ${tatCa.length}` : ""}</h3>
+      <p>Sĩ số tính theo số em đang giữ chỗ (đã đóng phí trở đi).</p></div>
+      <div style="text-align:right">
+        <strong>Số lượng học sinh: ${soHocSinh} học sinh</strong>
+        ${ghiDanhSanTong ? `<br><span class="roster-note">chưa kể ${ghiDanhSanTong} em ghi danh sẵn ngoài hệ thống</span>` : ""}
       </div>
     </div>
-    ${than}
-  </section>`;
+    ${soMoCoi ? `<div class="roster-canh-bao">${icon("clock")} ${soMoCoi} ca học không thuộc đợt đang mở (lớp đã tắt hoặc thuộc đợt khác) nhưng vẫn còn học sinh có đơn — vẫn liệt kê ở đây để không sót ai.</div>` : ""}
+    <div class="table-wrap"><table class="data-table roster-index">
+      <thead><tr><th style="width:44px">#</th><th style="width:80px">Chi tiết</th>${cot.map((item) => `<th>${item.title}</th>`).join("")}</tr></thead>
+      <tbody>${than}</tbody>
+    </table></div>
+    ${renderRosterPager(trang, soTrang, moiTrang, dsCa.length)}`;
+}
+
+/** Phân trang giống màn danh sách lớp của hệ thống quản lý học sinh nhà trường. */
+function renderRosterPager(trang, soTrang, moiTrang, tong) {
+  if (!tong) return "";
+  const so = [];
+  for (let i = 1; i <= soTrang; i += 1) {
+    if (i === 1 || i === soTrang || Math.abs(i - trang) <= 2) so.push(i);
+    else if (so[so.length - 1] !== "…") so.push("…");
+  }
+  return `<div class="roster-pager" data-no-print>
+    <span class="roster-note">Hiển thị ${Math.min(tong, (trang - 1) * moiTrang + 1)}–${Math.min(tong, trang * moiTrang)} trên ${tong} ca học</span>
+    <div class="roster-pager-nav">
+      <button class="table-action" data-roster-page="${trang - 1}" ${trang <= 1 ? "disabled" : ""}>‹</button>
+      ${so.map((i) => (i === "…"
+        ? `<span class="roster-note">…</span>`
+        : `<button class="table-action ${i === trang ? "active" : ""}" data-roster-page="${i}">${i}</button>`)).join("")}
+      <button class="table-action" data-roster-page="${trang + 1}" ${trang >= soTrang ? "disabled" : ""}>›</button>
+      <select id="roster-page-size" class="select-field">
+        ${ROSTER_CO_MAU.map((n) => `<option value="${n}" ${n === moiTrang ? "selected" : ""}>${n} / trang</option>`).join("")}
+      </select>
+    </div>
+  </div>`;
+}
+
+/**
+ * Popup chi tiết một ca học. Hai thẻ, cả hai đều có dữ liệu thật.
+ *
+ * KHÔNG có nút "Thêm học sinh vào lớp" / "Xóa học sinh khỏi lớp" như màn quản lý
+ * học sinh của nhà trường: ở cổng này, một em vào ca học CHỈ qua đơn đăng ký và
+ * rời đi bằng cách đổi trạng thái đơn. Thêm tay là đi vòng qua cả kiểm tra sĩ số
+ * lẫn bước thu phí, và chỗ đó sẽ không có đơn nào để đối chiếu. Đường đúng là mở
+ * đơn ở cột "Đơn".
+ */
+function renderRosterDetail() {
+  const ca = danhSachCaHoc().find((item) => item.id === state.rosterDetailId);
+  if (!ca) { closeModal(); return; }
+  const chiGiuCho = state.rosterOnlyPaid !== false;
+  const rows = hocSinhCuaCa(ca.id, chiGiuCho);
+  const soGiuCho = adminApplications.filter((row) => row.classId === ca.id && roGiuCho(row)).length;
+  // Sĩ số còn cộng cả số em ghi danh sẵn ngoài hệ thống (enrolled_base). Lệch mà
+  // không nói ra thì giáo vụ tưởng hệ thống làm mất tên học sinh.
+  const ghiDanhSan = ca.moCoi ? 0 : Math.max(0, conSo(ca.enrolled) - soGiuCho);
+  const [nhanCa, mauCa] = trangThaiCa(ca);
+  const tab = state.rosterTab === "thong-tin" ? "thong-tin" : "hoc-sinh";
+  const dongLich = [ca.className || "Ca chính", ca.schedule, ca.room, ca.teacher].filter(Boolean).join(" · ");
+
+  const than = tab === "thong-tin"
+    ? `<div class="detail-grid">
+        ${detailField("Câu lạc bộ", ca.name)}
+        ${detailField("Ca học", ca.className || "Ca chính")}
+        ${detailField("Nhóm môn", ca.category)}
+        ${detailField("Lịch học", ca.schedule)}
+        ${detailField("Phòng học", ca.room)}
+        ${detailField("Giáo viên phụ trách", ca.teacher)}
+        ${detailField("Khối áp dụng", (ca.grade || []).join(", "))}
+        ${detailField("Học phí", ca.moCoi ? "" : formatMoney(conSo(ca.fee)))}
+        ${detailField("Sĩ số đang giữ chỗ", ca.moCoi ? "" : `${conSo(ca.enrolled)}/${conSo(ca.capacity)}`)}
+        ${detailField("Sĩ số tối thiểu", ca.moCoi ? "" : (conSo(ca.minCapacity) || "Không đặt"))}
+        ${detailField("Đơn chưa giữ chỗ", ca.moCoi ? "" : `${conSo(ca.pending)} đơn`)}
+        ${detailField("Ghi danh sẵn ngoài hệ thống", ghiDanhSan ? `${ghiDanhSan} em` : "Không có")}
+      </div>
+      ${ca.moCoi ? `<p class="roster-canh-bao">Ca này không còn trong đợt đang mở — lớp đã tắt hoặc thuộc đợt khác. Thông tin lấy từ chính các đơn của học sinh, nên không có sĩ số và học phí.</p>` : ""}`
+    : renderRosterStudents(ca, rows, chiGiuCho, ghiDanhSan);
+
+  showModal(`<div class="modal-head"><div><span class="eyebrow">Chi tiết ca học</span>
+      <h2>${escapeHtml(ca.name)}</h2>
+      <p class="roster-note">${escapeHtml(dongLich)}</p></div>
+      <span class="badge badge-${mauCa}">${escapeHtml(nhanCa)}</span>
+      <button class="icon-button" data-no-print data-close-modal aria-label="Đóng">${icon("x")}</button></div>
+    <div class="detail-tabs" data-no-print>
+      <button class="detail-tab ${tab === "thong-tin" ? "active" : ""}" data-roster-tab="thong-tin">Thông tin lớp</button>
+      <button class="detail-tab ${tab === "hoc-sinh" ? "active" : ""}" data-roster-tab="hoc-sinh">Danh sách học sinh</button>
+    </div>
+    <div class="modal-body">${than}</div>
+    <div class="modal-foot" data-no-print>
+      <button class="button button-secondary" data-close-modal>Đóng</button>
+      <button class="button button-secondary" data-roster-csv-ca="${escapeHtml(ca.id)}">${icon("download")} Tải CSV</button>
+      <button class="button button-primary" data-roster-print>In danh sách</button>
+    </div>`, { wide: true });
+
+  // Buộc mọi lời gọi vào TRONG popup. Trước đây dùng $$ trên cả tài liệu nên mỗi
+  // lần mở popup lại gắn thêm một listener vào nút CSV NGOÀI trang — bấm một cái
+  // tải về mấy tệp cùng lúc.
+  const hop = $(".modal");
+  hop?.querySelectorAll("[data-roster-tab]").forEach((el) => el.addEventListener("click", () => {
+    state.rosterTab = el.dataset.rosterTab;
+    renderRosterDetail();
+  }));
+  hop?.querySelectorAll("[data-roster-scope]").forEach((el) => el.addEventListener("click", () => {
+    state.rosterOnlyPaid = el.dataset.rosterScope === "paid";
+    renderRosterDetail();
+  }));
+  hop?.querySelectorAll("[data-roster-csv-ca]").forEach((el) => el.addEventListener("click", () =>
+    exportRosterCsv(el.dataset.rosterCsvCa, state.rosterOnlyPaid !== false ? "giu-cho" : "hieu-luc")));
+  hop?.querySelector("[data-roster-print]")?.addEventListener("click", () => window.print());
+  hop?.querySelectorAll("[data-detail-registration]").forEach((el) => el.addEventListener("click", () => openRegistrationDetail(el.dataset.detailRegistration)));
+}
+
+/** Bảng học sinh trong popup — đúng bộ cột màn danh sách lớp của nhà trường. */
+function renderRosterStudents(ca, rows, chiGiuCho, ghiDanhSan) {
+  // Mã học sinh và ngày sinh là dữ liệu cá nhân nằm NGOÀI phạm vi quyền
+  // danh-sach-van-hanh của giáo vụ. Máy chủ đã không gửi hai trường này cho họ, nên
+  // hiện cột rỗng chỉ là bày ra hai ô gạch ngang — ẩn hẳn cột thì đúng hơn.
+  const xemDinhDanh = hasCap("duyet-don");
+  const cot = [
+    ...(xemDinhDanh ? [{ title: "Mã học sinh", cell: (row) => escapeHtml(row.studentCode || "—") }] : []),
+    { title: "Tên học sinh", cell: (row) => `<strong>${escapeHtml(row.student)}</strong>` },
+    ...(xemDinhDanh ? [{ title: "Ngày sinh", cell: (row) => escapeHtml(formatDateOfBirth(row.dateOfBirth)) }] : []),
+    { title: "Lớp", cell: (row) => escapeHtml(row.className) },
+    { title: "Trạng thái", cell: (row) => { const [nhan, mau] = statusBadge(row.status); return `<span class="badge badge-${mau}">${escapeHtml(nhan)}</span>${row.feePaid ? '<br><span style="color:var(--muted)">đã thu phí</span>' : ""}`; } },
+    // Giáo vụ KHÔNG có quyền duyet-don nên popup chi tiết đơn trả 403 cho họ. Vẽ ra
+    // một cái nút chỉ để bấm vào nhận thông báo lỗi là dựng sẵn một ngõ cụt ở mỗi
+    // dòng; mã đơn thì họ vẫn được xem, nên hiện thành chữ.
+    { title: "Đơn", cell: (row) => (xemDinhDanh
+      ? `<button class="table-action" data-detail-registration="${escapeHtml(row.id)}">${escapeHtml(row.id)}</button>`
+      : escapeHtml(row.id)) },
+  ];
+
+  const trong = ghiDanhSan > 0
+    ? `Không em nào đăng ký ca này qua cổng. ${ghiDanhSan} em đang giữ chỗ được ghi danh sẵn ngoài hệ thống, nhà trường giữ danh sách riêng.`
+    : chiGiuCho ? "Chưa em nào giữ chỗ ở ca này." : "Chưa có đơn nào cho ca này.";
+
+  return `<div class="roster-scope">
+      <div class="status-tabs" data-no-print>
+        <button class="status-tab ${chiGiuCho ? "active" : ""}" data-roster-scope="paid">Chính thức (đang giữ chỗ)</button>
+        <button class="status-tab ${chiGiuCho ? "" : "active"}" data-roster-scope="all">Kèm đơn chưa giữ chỗ</button>
+      </div>
+      <span class="roster-note">${rows.length} em trong danh sách${ghiDanhSan ? ` · ${ghiDanhSan} em ghi danh sẵn ngoài hệ thống` : ""}</span>
+    </div>
+    ${rows.length
+      ? `<div class="table-wrap"><table class="data-table roster-table">
+          <thead><tr><th style="width:44px">#</th>${cot.map((item) => `<th>${item.title}</th>`).join("")}</tr></thead>
+          <tbody>${rows.map((row) => `<tr>
+            <td class="roster-stt"></td>
+            ${cot.map((item) => `<td>${item.cell(row)}</td>`).join("")}
+          </tr>`).join("")}</tbody></table></div>`
+      : `<p style="margin:0;color:var(--muted)">${escapeHtml(trong)}</p>`}`;
 }
 
 function renderReports() {
@@ -2590,12 +2793,18 @@ function showDetail(clubId) {
 }
 
 function showModal(content, { wide = false } = {}) {
+  // Đánh dấu lên body để @media print biết đang có popup mở mà in đúng nó — xem
+  // khối in ở cuối styles.css.
+  document.body.classList.add("co-modal");
   $("#modal-root").innerHTML = `<div class="modal-backdrop"><div class="modal${wide ? " modal-wide" : ""}">${content}</div></div>`;
   $$('[data-close-modal]').forEach(el => el.addEventListener("click", closeModal));
   $(".modal-backdrop")?.addEventListener("click", e => { if (e.target.classList.contains("modal-backdrop")) closeModal(); });
   $("[data-modal-add]")?.addEventListener("click", e => { closeModal(); addToCart(e.currentTarget.dataset.modalAdd); });
 }
-function closeModal() { $("#modal-root").innerHTML = ""; }
+function closeModal() {
+  document.body.classList.remove("co-modal");
+  $("#modal-root").innerHTML = "";
+}
 
 async function submitRegistration() {
   const submit = $("#submit-cart");
@@ -2647,10 +2856,31 @@ function toast(message, type = "") {
  * đóng phí" phải khớp đúng cái đang hiện trên màn hình — xuất ra một tệp khác với
  * cái người ta vừa nhìn là cách nhanh nhất để giáo vụ điểm danh nhầm.
  */
-function exportRosterCsv(classId) {
+/** Gắn lại sự kiện cho khối kết quả sau mỗi lần vẽ lại — xem ô tìm kiếm ở trên. */
+function bindRosterResults() {
+  const khung = $("#roster-results");
+  if (!khung) return;
+  khung.querySelectorAll("[data-roster-detail]").forEach((el) => el.addEventListener("click", () => {
+    state.rosterDetailId = el.dataset.rosterDetail;
+    state.rosterTab = "hoc-sinh";
+    renderRosterDetail();
+  }));
+  const veLai = () => { khung.innerHTML = renderRosterResults(); bindRosterResults(); };
+  khung.querySelectorAll("[data-roster-page]").forEach((el) => el.addEventListener("click", () => {
+    state.rosterPage = conSo(el.dataset.rosterPage) || 1;
+    veLai();
+  }));
+  khung.querySelector("#roster-page-size")?.addEventListener("change", (event) => {
+    state.rosterPageSize = conSo(event.target.value) || 10;
+    state.rosterPage = 1;
+    veLai();
+  });
+}
+
+function exportRosterCsv(classId, phamVi) {
   const params = new URLSearchParams();
   if (classId) params.set("classId", classId);
-  params.set("phamVi", state.rosterOnlyPaid !== false ? "giu-cho" : "hieu-luc");
+  params.set("phamVi", phamVi === "giu-cho" ? "giu-cho" : "hieu-luc");
   const link = document.createElement("a");
   link.href = `/api/admin/reports/registrations.csv${params.toString() ? `?${params}` : ""}`;
   document.body.appendChild(link);
@@ -2865,33 +3095,30 @@ function bindPageEvents() {
   bindAccountSupportEvents();
   bindBackupEvents();
   $("[data-export]")?.addEventListener("click", exportCsv);
-  $$("[data-roster-scope]").forEach((el) => el.addEventListener("click", () => {
-    state.rosterOnlyPaid = el.dataset.rosterScope === "paid";
-    renderPage();
-  }));
-  $$("[data-roster-csv]").forEach((el) => el.addEventListener("click", () => exportRosterCsv(el.dataset.rosterCsv)));
-  // Gõ tên một CLB thì hiện NGUYÊN ca đó; gõ tên một em thì chỉ hiện em ấy, trong
-  // đúng ca của em. Ca không còn dòng nào khớp thì ẩn cả khối, để không phải cuộn
-  // qua một trang toàn tiêu đề rỗng.
-  $("#roster-search")?.addEventListener("input", (event) => {
-    const tim = event.target.value.trim().toLowerCase();
-    $$("[data-roster-panel]").forEach((panel) => {
-      const khopCa = !tim || (panel.dataset.rosterPanel || "").includes(tim);
-      let hienThi = 0;
-      panel.querySelectorAll("[data-roster-text]").forEach((row) => {
-        const hien = khopCa || (row.dataset.rosterText || "").includes(tim);
-        row.style.display = hien ? "" : "none";
-        if (hien) hienThi += 1;
-      });
-      panel.style.display = khopCa || hienThi ? "" : "none";
-      const oDem = panel.querySelector("[data-roster-count]");
-      if (oDem) {
-        const tong = conSo(oDem.dataset.rosterCount);
-        oDem.textContent = tim && hienThi !== tong
-          ? `${hienThi}/${tong} em khớp tìm kiếm`
-          : `${tong} em trong danh sách`;
-      }
-    });
+  $("[data-roster-csv-all]")?.addEventListener("click", () => exportRosterCsv("", "hieu-luc"));
+  bindRosterResults();
+  // Ô tìm kiếm nằm NGOÀI khối kết quả và không bao giờ được dựng lại: bộ gõ tiếng
+  // Việt soạn chữ ngay trong phần tử đó, hủy nó giữa chừng là bộ gõ chèn lại cả cụm
+  // vào cuối giá trị cũ. Đã đo bằng Chrome thật: gõ "mỹ thuật" ra
+  // "mmymyxmỹ tththuthuathuaathuaatthuaatjthuật" và tra ra 0 kết quả.
+  const oTim = $("#roster-search");
+  const veLaiKetQua = () => {
+    state.rosterPage = 1;
+    const khung = $("#roster-results");
+    if (!khung) return;
+    khung.innerHTML = renderRosterResults();
+    bindRosterResults();
+  };
+  oTim?.addEventListener("input", (event) => {
+    state.rosterSearch = event.target.value;
+    // Đang soạn dở một chữ thì chưa lọc: giá trị lúc đó là chuỗi trung gian của bộ
+    // gõ ("thuaatj"), lọc theo nó chỉ tổ nháy bảng mấy lần rồi ra 0 kết quả.
+    if (event.isComposing) return;
+    veLaiKetQua();
+  });
+  oTim?.addEventListener("compositionend", (event) => {
+    state.rosterSearch = event.target.value;
+    veLaiKetQua();
   });
   $("[data-send-support]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;

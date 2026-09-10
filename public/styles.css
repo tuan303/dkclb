@@ -248,9 +248,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* Danh sách lớp CLB. Số thứ tự đánh bằng bộ đếm CSS chứ không gõ sẵn vào HTML:
    ô tìm kiếm ẩn dòng bằng display:none, mà phần tử display:none KHÔNG làm tăng
    bộ đếm — nên lọc xong vẫn được 1, 2, 3 liền mạch thay vì 1, 4, 9. */
-.roster-panel .panel-head { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-.roster-head-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .roster-note { color: var(--muted); font-size: 9px; }
+.roster-index td { vertical-align: top; }
+.roster-index .table-action.active { color: #fff; border-color: var(--blue); background: var(--blue); }
+.empty-cell { padding: 28px 13px !important; color: var(--muted); text-align: center; }
+.roster-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--line); }
+.roster-pager-nav { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.roster-pager-nav .select-field { width: auto; padding: 6px 10px; font-size: 10px; }
+.roster-pager-nav .table-action[disabled] { opacity: .4; cursor: default; }
+.roster-scope { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.roster-canh-bao { margin: 0; padding: 10px 16px; color: #6b4b9a; border-bottom: 1px solid var(--line); background: #f6f2ff; font-size: 10px; line-height: 1.5; }
+.roster-canh-bao svg { width: 12px; height: 12px; vertical-align: -2px; }
+.roster-mocoi td { background: #faf7ff; }
 .roster-table tbody { counter-reset: roster-stt; }
 .roster-table tbody tr { counter-increment: roster-stt; }
 .roster-table td.roster-stt { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -595,7 +604,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
      nhập sẽ bung ra cả khung ứng dụng đang ẩn. */
   .hidden, [hidden] { display: none !important; }
   .sidebar, .topbar, .sidebar-overlay, [data-no-print] { display: none !important; }
-  .cart-drawer, .drawer-overlay, .modal-backdrop { display: none !important; }
+  .cart-drawer, .drawer-overlay { display: none !important; }
+  /* Không mở popup thì in cả trang; ĐANG mở popup thì in đúng popup đó, vì đấy mới
+     là tờ danh sách điểm danh người ta vừa bấm ra. body.co-modal do showModal đặt. */
+  .modal-backdrop { display: none !important; }
+  body.co-modal .app-shell { display: none !important; }
+  body.co-modal .modal-backdrop {
+    display: block !important; position: static !important;
+    padding: 0 !important; background: none !important;
+  }
+  body.co-modal .modal .detail-tabs,
+  body.co-modal .modal .modal-foot,
+  body.co-modal .modal .modal-head .icon-button,
+  body.co-modal .modal .form-error:empty { display: none !important; }
+  body.co-modal .modal {
+    width: 100% !important; max-width: none !important; max-height: none !important;
+    overflow: visible !important; border-radius: 0 !important; box-shadow: none !important;
+  }
 
   /* Tiêu đề trang nằm trong .topbar đã bị ẩn, nên tờ giấy phải tự có tiêu đề của
      nó: thẻ h2 trong .section-head được giữ lại chứ không đánh dấu no-print. */
@@ -606,6 +631,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .panel, .roster-panel { break-inside: auto; box-shadow: none !important; border: 1px solid #999 !important; }
   /* Bảng dài hơn một trang giấy thì cho ngắt, nhưng không ngắt giữa một dòng học
      sinh, và lặp lại hàng tiêu đề ở đầu trang sau. */
+  /* Nút trong bảng in ra thành chữ thường, không phải biến mất: mã đơn nằm trong
+     một cái nút, ẩn nút đi là cả cột trống trơn trên giấy. */
+  .table-action { padding: 0 !important; color: inherit !important; border: 0 !important; background: none !important; }
   .roster-table tr { break-inside: avoid; }
   .roster-table thead { display: table-header-group; }
   .table-wrap { overflow: visible !important; }

@@ -76,14 +76,42 @@ test("giáo vụ có quyền vào trang này, đúng như menu hứa", async () 
 
 /* ---------- Phạm vi dữ liệu ---------- */
 
-test("trang danh sách lớp KHÔNG đụng tới mã học sinh và ngày sinh", () => {
-  // Cắt đúng hai hàm dựng trang, không hơn: nới rộng mốc là bài kiểm quét trúng
-  // mã của trang khác rồi báo động nhầm — hoặc tệ hơn, báo yên nhầm.
-  const trang = catDoan("function renderRosters()", "function renderReports()");
-  for (const truong of ["studentCode", "dateOfBirth", "parentPhone", "phone", "email"]) {
-    assert.ok(!trang.includes(truong),
-      `trang danh sách lớp không được nhắc tới ${truong} — ngoài phạm vi quyền danh-sach-van-hanh`);
+test("mã học sinh và ngày sinh chỉ hiện cho người có quyền duyệt đơn", () => {
+  // Nhà trường muốn bảng học sinh có mã học sinh và ngày sinh như màn danh sách lớp
+  // bên hệ thống quản lý học sinh. Nhưng roles.mjs ghi rõ phạm vi danh-sach-van-hanh
+  // của giáo vụ KHÔNG gồm hai trường đó, mà chính giáo vụ là người mở trang này
+  // nhiều nhất. Nên hai cột phải nằm sau đúng cái quyền đang chắn trang Đơn đăng ký.
+  const bang = catDoan("function renderRosterStudents(", "function renderReports()");
+  assert.ok(bang.includes('const xemDinhDanh = hasCap("duyet-don")'),
+    "bảng học sinh phải lấy quyền duyet-don làm cổng cho hai cột định danh");
+  for (const truong of ["studentCode", "dateOfBirth"]) {
+    const dong = bang.split("\n").filter((row) => row.includes(truong));
+    assert.ok(dong.length > 0, `bảng học sinh phải có cột ${truong}`);
+    for (const row of dong) {
+      assert.ok(row.includes("xemDinhDanh ?"),
+        `cột ${truong} phải nằm sau cổng quyền xemDinhDanh, dòng: ${row.trim()}`);
+    }
   }
+  // Số điện thoại và email phụ huynh thì KHÔNG có cửa nào cả — ngoài phạm vi của
+  // cả hai vai trò trên trang này.
+  for (const truong of ["parentPhone", '"phone"', '"email"']) {
+    assert.ok(!bang.includes(truong), `bảng học sinh không được nhắc tới ${truong}`);
+  }
+});
+
+test("máy chủ KHÔNG gửi mã học sinh và ngày sinh cho giáo vụ, dù giao diện có lỡ hiện", async () => {
+  // Che ở giao diện là lớp thứ hai. Lớp thứ nhất là máy chủ không gửi — đúng nguồn
+  // dữ liệu mà trang này dùng, chứ không phải một endpoint nào khác.
+  const cua = async (cookie) => (await (await server.request("/api/registrations", cookie)).json()).registrations;
+  const cuaGiaoVu = await cua(giaovuCookie);
+  assert.ok(cuaGiaoVu.length > 0, "dữ liệu mẫu phải có đơn");
+  for (const row of cuaGiaoVu) {
+    assert.equal(row.studentCode, undefined, `đơn ${row.id} lọt mã học sinh cho giáo vụ`);
+    assert.equal(row.dateOfBirth, undefined, `đơn ${row.id} lọt ngày sinh cho giáo vụ`);
+  }
+  // Người duyệt đơn thì có, không thì cột bật ra cũng rỗng.
+  const cuaQuanTri = await cua(adminCookie);
+  assert.ok(cuaQuanTri.some((row) => row.studentCode), "quản trị phải nhận được mã học sinh");
 });
 
 test("tệp CSV của một ca học cũng không mang thông tin cá nhân ngoài phạm vi", async () => {
@@ -130,13 +158,24 @@ test("danh sách chính thức chỉ gồm các em ĐÃ ĐÓNG PHÍ", async () =
     "dữ liệu mẫu phải có đơn chưa đóng phí để phép lọc này có ý nghĩa");
 });
 
-test("nút tải trên màn hình xuất đúng cái đang hiện", () => {
-  // Màn hình đang lọc "chính thức" mà tệp tải về lại là mọi đơn thì giáo vụ điểm
-  // danh theo một danh sách khác với cái vừa nhìn.
+test("mỗi nút tải nói rõ phạm vi của mình, không đi mượn trạng thái ở chỗ khác", () => {
+  // Nút trong popup phải theo đúng chế độ đang chọn trong popup đó. Nút "Xuất toàn
+  // bộ" ngoài trang thì KHÔNG được mượn chế độ ấy: trên trang không có dấu hiệu nào
+  // cho biết đang ở chế độ gì, mà chế độ đó lại bị đổi lén từ popup của một ca khác.
   const ham = catDoan("function exportRosterCsv(", "function exportCsv()");
-  assert.match(ham, /state\.rosterOnlyPaid !== false/);
-  assert.match(ham, /params\.set\("phamVi", .*"giu-cho" : "hieu-luc"\)/);
+  assert.ok(!ham.includes("state.rosterOnlyPaid"),
+    "hàm xuất không được tự đọc trạng thái popup — phạm vi phải do nơi gọi truyền vào");
+  assert.match(ham, /params\.set\("phamVi", phamVi === "giu-cho" \? "giu-cho" : "hieu-luc"\)/);
   assert.match(ham, /params\.set\("classId", classId\)/);
+
+  const trang = catDoan("function renderRosters()", "function renderRosterResults()");
+  assert.match(trang, /data-roster-csv-all/);
+  const goiNgoaiTrang = app.slice(app.indexOf('$("[data-roster-csv-all]")'));
+  assert.match(goiNgoaiTrang.split("\n")[0], /exportRosterCsv\("", "hieu-luc"\)/,
+    "nút ngoài trang phải xuất phạm vi cố định, ghi rõ trên nhãn nút");
+
+  const popup = catDoan("function renderRosterDetail()", "function renderRosterStudents(");
+  assert.match(popup, /exportRosterCsv\(el\.dataset\.rosterCsvCa, state\.rosterOnlyPaid !== false \? "giu-cho" : "hieu-luc"\)/);
 });
 
 test("tệp tải về khớp ĐÚNG số dòng màn hình đang hiện, ở CẢ HAI chế độ", async () => {
@@ -247,4 +286,81 @@ test("mọi màu ô thống kê dùng trong app.js đều có thật trong css",
   for (const mau of dungTrongApp) {
     assert.ok(coThat.has(mau), `app.js dùng màu "${mau}" nhưng styles.css không khai .stat-icon.${mau}`);
   }
+});
+
+/* ---------- Bảng tra cứu: chạy chính mã của trình duyệt ---------- */
+
+/**
+ * Nạp đúng khối hàm dựng bảng từ public/app.js rồi gọi thẳng, với dữ liệu giả lập
+ * y như hai lời gọi API thật. Không mô phỏng lại logic ở đây: mô phỏng lại thì bài
+ * kiểm chỉ chứng minh bản sao của tôi đúng, chứ không nói gì về mã đang chạy.
+ */
+function napBangLop({ clubs, adminApplications, state = {} }) {
+  const nguon = catDoan("const conSo = ", "function renderRosterDetail()");
+  const tao = new Function(
+    "SEAT_HOLDING_STATUSES", "ACTIVE_REGISTRATION_STATUSES", "clubs", "adminApplications",
+    "state", "escapeHtml", "icon", "renderStat",
+    `${nguon}\nreturn { renderRosters, renderRosterResults, danhSachCaHoc, boDau, trangThaiCa };`,
+  );
+  return tao(
+    SEAT_HOLDING_STATUSES, ACTIVE_REGISTRATION_STATUSES, clubs, adminApplications,
+    { rosterPage: 1, rosterPageSize: 10, rosterSearch: "", period: null, ...state },
+    (value) => String(value ?? ""), () => "", () => "",
+  );
+}
+
+const CA_MAU = [
+  { id: "mythuat", name: "Mỹ thuật sáng tạo", className: "", schedule: "Thứ 4 · 16:15–17:30", room: "Phòng Mỹ thuật 2", teacher: "Cô Minh Trang", category: "Nghệ thuật", capacity: 20, minCapacity: 0, enrolled: 1, pending: 0 },
+  { id: "piano", name: "Piano nhập môn", className: "", schedule: "Thứ 3 · 16:15–17:30", room: "Phòng Âm nhạc 1", teacher: "Cô Phương Linh", category: "Âm nhạc", capacity: 12, minCapacity: 0, enrolled: 0, pending: 1 },
+];
+const DON_MAU = [
+  { id: "DK-1", classId: "mythuat", club: "Mỹ thuật sáng tạo", classLabel: "", student: "Đỗ Gia Linh", studentId: "hs1", className: "3A4", status: "confirmed", feePaid: true },
+  { id: "DK-2", classId: "piano", club: "Piano nhập môn", classLabel: "", student: "Nguyễn Minh An", studentId: "hs2", className: "3A2", status: "payment", feePaid: false },
+];
+
+test("ca học đã tắt / thuộc đợt khác VẪN hiện ra, không nuốt mất học sinh", () => {
+  // Đầu mỗi học kỳ nhà trường đóng đợt cũ và mở đợt mới, lúc đó /api/clubs không
+  // còn trả về ca nào của đợt trước — nhưng học sinh của các ca đó vẫn đang học.
+  // Bỏ im lặng là mất tên một em khỏi danh sách điểm danh mà không ai biết.
+  const donCuHoc = { id: "DK-3", classId: "debate-hk1", club: "English Debate", classLabel: "Ca chính",
+    student: "Phạm Anh Tú", studentId: "hs3", className: "6A2", status: "dang_hoc", feePaid: true };
+  const bang = napBangLop({ clubs: CA_MAU, adminApplications: [...DON_MAU, donCuHoc] });
+
+  const ds = bang.danhSachCaHoc();
+  const moCoi = ds.find((ca) => ca.id === "debate-hk1");
+  assert.ok(moCoi, "ca ngoài đợt phải có mặt trong danh sách");
+  assert.equal(moCoi.moCoi, true);
+  assert.equal(moCoi.name, "English Debate", "phải gọi đúng tên CLB, không phải mã ca thô");
+
+  const html = bang.renderRosterResults();
+  assert.match(html, /English Debate/, "ca ngoài đợt phải có dòng trên bảng");
+  assert.match(html, /không thuộc đợt đang mở/, "phải nói rõ vì sao ca này nằm ở đây");
+  assert.deepEqual(bang.trangThaiCa(moCoi), ["Ngoài đợt đang mở", "purple"]);
+});
+
+test("tìm kiếm bỏ dấu được và tìm được cả tên học sinh", () => {
+  // Gõ đủ dấu trên máy trường phải qua bộ gõ, mà bộ gõ thì hay nuốt chữ. Và câu hỏi
+  // giáo vụ hay phải trả lời nhất là "em này đang học ca nào".
+  const goTim = (tu) => napBangLop({
+    clubs: CA_MAU, adminApplications: DON_MAU, state: { rosterSearch: tu },
+  }).renderRosterResults();
+
+  assert.match(goTim("my thuat"), /Kết quả tra cứu: 1 ca học/, "gõ không dấu phải ra đúng ca");
+  assert.match(goTim("my thuat"), /Mỹ thuật sáng tạo/);
+  assert.match(goTim("nguyen minh an"), /Kết quả tra cứu: 1 ca học/, "tìm theo tên học sinh");
+  assert.match(goTim("nguyen minh an"), /Piano nhập môn/, "phải ra đúng ca của em ấy");
+  assert.match(goTim("khong-co-gi-khop"), /Kết quả tra cứu: 0 ca học/);
+});
+
+test("con số học sinh đi theo bảng đang hiện, không phải con số toàn hệ thống", () => {
+  // Nó đứng ngay cạnh "Kết quả tra cứu", nên đứng yên trong khi bảng lọc còn 0 dòng
+  // là tự cãi chính mình: bảng trống trơn mà vẫn khẳng định có người.
+  const dem = (tu) => {
+    const html = napBangLop({ clubs: CA_MAU, adminApplications: DON_MAU, state: { rosterSearch: tu } })
+      .renderRosterResults();
+    return Number(html.match(/Số lượng học sinh: (\d+) học sinh/)?.[1]);
+  };
+  assert.equal(dem(""), 1, "cả hai ca: đúng một em đang giữ chỗ");
+  assert.equal(dem("piano"), 0, "lọc còn ca Piano: em duy nhất đang giữ chỗ không thuộc ca đó");
+  assert.equal(dem("khong-co-gi-khop"), 0, "bảng trống thì con số cũng phải về 0");
 });
