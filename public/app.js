@@ -120,6 +120,81 @@ const statusMap = {
 // trạng thái mới đủ làm trắng cả trang. Đi qua hàm này thì tệ nhất chỉ là nhãn xấu.
 const statusBadge = (status) => statusMap[status] || [String(status || "—"), "blue"];
 
+// Bản sao của schedule-conflict.mjs cho trình duyệt: app.js nạp bằng thẻ <script>
+// thường nên không import được. Kiểm thử tests/trung-lich.test.mjs so hai bên với
+// nhau, sửa một bên quên bên kia là test đỏ ngay.
+function intervalsOverlap(a, b) {
+  const thu = (value) => (value === null || value === undefined || value === "" ? NaN : Number(value));
+  const thuA = thu(a?.dayOfWeek);
+  const thuB = thu(b?.dayOfWeek);
+  if (!Number.isFinite(thuA) || !Number.isFinite(thuB) || thuA !== thuB) return false;
+  const gio = (value) => String(value ?? "");
+  if (!gio(a?.startTime) || !gio(a?.endTime) || !gio(b?.startTime) || !gio(b?.endTime)) return false;
+  return gio(a.startTime) < gio(b.endTime) && gio(b.startTime) < gio(a.endTime);
+}
+
+function conflictMessage(moi, cu, { daDangKy = true } = {}) {
+  const lich = String(cu?.schedule || moi?.schedule || "").trim();
+  const khoangGio = lich ? ` vào ${lich}` : "";
+  const tenMoi = String(moi?.name || "CLB vừa chọn");
+  const tenCu = String(cu?.name || "một CLB khác");
+  return daDangKy
+    ? `Con đã đăng ký “${tenCu}”${khoangGio}. “${tenMoi}” trùng đúng khoảng giờ này, vui lòng chọn ca khác.`
+    : `“${tenMoi}” trùng giờ với “${tenCu}”${khoangGio} đang có trong giỏ đăng ký.`;
+}
+
+function conflictBadge(cu) {
+  const lich = String(cu?.schedule || "").trim();
+  return lich ? `Trùng giờ với “${cu.name}” (${lich})` : `Trùng giờ với “${cu?.name || "CLB đã đăng ký"}”`;
+}
+
+// Đơn đã gửi tự mang theo thứ, giờ và nhãn lịch của chính nó (listRegistrations trả
+// về), nên đối chiếu thẳng trên đơn thay vì tra ngược sang danh mục CLB đang hiển
+// thị. Tra ngược sẽ hụt khi lớp đã đăng ký không còn trong danh mục của đợt này —
+// và hụt nghĩa là phụ huynh không được cảnh báo.
+function donDaGuiCuaCon() {
+  return state.registrations
+    .filter((registration) => registration.studentId === state.studentId
+      && SEAT_HOLDING_STATUSES.includes(registration.status))
+    .map((registration) => ({
+      id: registration.classId,
+      clubId: registration.clubId,
+      name: registration.club,
+      schedule: registration.schedule,
+      dayOfWeek: registration.dayOfWeek,
+      startTime: registration.startTime,
+      endTime: registration.endTime,
+    }));
+}
+
+// Tìm CLB đang vướng giờ với CLB được xét. Ưu tiên báo cái ĐÃ ĐĂNG KÝ trước, vì đó
+// là ràng buộc phụ huynh không tự gỡ được; cái trong giỏ thì chỉ cần bỏ chọn.
+function findScheduleConflict(club) {
+  const daGui = donDaGuiCuaCon().find((don) => don.id !== club.id && intervalsOverlap(don, club));
+  if (daGui) return { doiThu: daGui, daDangKy: true };
+  const trongGio = state.cart
+    .filter((id) => id !== club.id)
+    .map((id) => clubs.find((item) => item.id === id))
+    .find((item) => item && intervalsOverlap(item, club));
+  return trongGio ? { doiThu: trongGio, daDangKy: false } : null;
+}
+// Mọi lý do khiến thẻ CLB không bấm được, gom về một chỗ để hiện NGAY trên thẻ.
+// Trước đây phụ huynh phải bấm rồi mới biết mình đã đăng ký ca đó — thẻ vẫn mời
+// "Chọn" như thường.
+function findCardWarning(club) {
+  const daGui = donDaGuiCuaCon();
+  if (daGui.some((don) => don.id === club.id)) {
+    return { nhan: "Con đã đăng ký chính ca này", nut: "Đã đăng ký" };
+  }
+  const khacCa = daGui.find((don) => don.clubId && don.clubId === club.clubId);
+  if (khacCa) {
+    const lich = String(khacCa.schedule || "").trim();
+    return { nhan: `Con đã đăng ký một ca khác của CLB này${lich ? ` (${lich})` : ""}`, nut: "Đã đăng ký" };
+  }
+  const vuongGio = findScheduleConflict(club);
+  return vuongGio ? { nhan: conflictBadge(vuongGio.doiThu), nut: "Trùng giờ" } : null;
+}
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const icon = (name, className = "icon") => `<svg class="${className}"><use href="#i-${name}"></use></svg>`;
@@ -469,13 +544,17 @@ function renderClubCard(club) {
   const statusClass = left === 0 ? "full" : left <= 3 ? "warning" : "";
   const statusText = left === 0 ? "Đã đầy · Có DS chờ" : left <= 3 ? `Chỉ còn ${left} chỗ` : `Còn ${left} chỗ`;
   const inCart = state.cart.includes(club.id);
+  // Báo trùng giờ NGAY TRÊN THẺ, không đợi phụ huynh bấm rồi mới biết. Nhà trường
+  // yêu cầu nói rõ vướng CLB nào và vào khoảng giờ nào.
+  const canhBao = inCart ? null : findCardWarning(club);
   return `<article class="club-card">
     <div class="club-visual visual-${club.visual}"><span class="club-status ${statusClass}">${statusText}</span><span class="club-symbol">${club.emoji}</span></div>
     <div class="club-body">
       <span class="category">${club.category}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</span><h3>${escapeHtml(club.name)}</h3>
       <div class="club-meta"><span>${icon("clock")}${club.schedule}</span><span>${icon("pin")}${club.room} · ${club.teacher}</span></div>
+      ${canhBao ? `<p class="club-conflict">${icon("clock")}${escapeHtml(canhBao.nhan)}</p>` : ""}
       <div class="capacity"><div class="capacity-head"><span>Sĩ số</span><strong>${club.enrolled}/${club.capacity}</strong></div><div class="capacity-track ${statusClass}"><span style="width:${ratio}%"></span></div></div>
-      <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>/ học kỳ</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${inCart ? "disabled" : ""}>${inCart ? "Đã chọn" : left === 0 ? "Vào DS chờ" : "Chọn"}</button></div></div>
+      <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>/ học kỳ</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${inCart || canhBao ? "disabled" : ""}>${inCart ? "Đã chọn" : canhBao ? canhBao.nut : left === 0 ? "Vào DS chờ" : "Chọn"}</button></div></div>
     </div>
   </article>`;
 }
@@ -2099,27 +2178,25 @@ function flowNodes(nodes) {
 function addToCart(clubId) {
   if (state.cart.includes(clubId)) return;
   const target = clubs.find(c => c.id === clubId);
-  const overlaps = (left, right) => left.dayOfWeek === right.dayOfWeek && left.startTime < right.endTime && right.startTime < left.endTime;
-  const conflict = state.cart.map(id => clubs.find(c => c.id === id)).find(c => overlaps(c, target));
-  if (conflict) {
-    toast(`${target.name} trùng lịch với ${conflict.name}. Vui lòng chọn phương án khác.`, "error");
+  // Ba chuyện khác nhau, ba câu báo khác nhau: đã đăng ký đúng ca này, đã đăng ký
+  // một ca khác của cùng CLB, và trùng khoảng giờ với một CLB khác hẳn.
+  const daGui = donDaGuiCuaCon();
+  if (daGui.some((don) => don.id === target.id)) {
+    toast(`“${target.name}” đã có trong đăng ký hiện tại.`, "error");
     return;
   }
-  // Đơn đã gửi lưu theo mã lớp; một CLB có thể có nhiều ca nên phải chặn cả trùng CLB lẫn trùng giờ.
-  const existing = state.registrations
-    .filter((registration) => registration.studentId === state.studentId && SEAT_HOLDING_STATUSES.includes(registration.status))
-    .map((registration) => clubs.find((club) => club.id === registration.classId))
-    .find((club) => club && (club.id === target.id || club.clubId === target.clubId || overlaps(club, target)));
-  if (existing) {
-    const reason = existing.id === target.id ? `${target.name} đã có trong đăng ký hiện tại.`
-      : existing.clubId === target.clubId ? `Học sinh đã đăng ký một ca khác của ${target.name}.`
-      : `${target.name} trùng lịch với ${existing.name} đã đăng ký.`;
-    toast(reason, "error");
+  if (daGui.some((don) => don.clubId && don.clubId === target.clubId)) {
+    toast(`Con đã đăng ký một ca khác của “${target.name}”.`, "error");
+    return;
+  }
+  const vuongGio = findScheduleConflict(target);
+  if (vuongGio) {
+    toast(conflictMessage(target, vuongGio.doiThu, { daDangKy: vuongGio.daDangKy }), "error");
     return;
   }
   const sameClubInCart = state.cart.map((id) => clubs.find((club) => club.id === id)).find((club) => club && club.clubId === target.clubId);
   if (sameClubInCart) {
-    toast(`Bạn đã chọn một ca khác của ${target.name}. Vui lòng chỉ giữ một ca.`, "error");
+    toast(`Bạn đã chọn một ca khác của “${target.name}”. Vui lòng chỉ giữ một ca.`, "error");
     return;
   }
   state.cart.push(clubId);

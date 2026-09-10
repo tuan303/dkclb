@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { planDirectoryWrites } from "./directory-plan.mjs";
 import { SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL } from "./registration-status.mjs";
+import { CONFLICT_AT_COMMIT, intervalsOverlap } from "./schedule-conflict.mjs";
 import { createFieldCrypto } from "./field-crypto.mjs";
 
 const ACTIVE_STATUSES = SEAT_HOLDING_STATUSES;
@@ -758,11 +759,12 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
               throw createHttpError(422, "VALIDATION_FAILED", `Học sinh đã đăng ký một lớp khác của ${club.name}.`,
                 [{ type: "duplicate", clubId: club.id, message: `Học sinh đã đăng ký một lớp khác của ${club.name}.` }]);
             }
-            const overlaps = toInt(current.day_of_week) === club.dayOfWeek
-              && club.startTime < current.end_time && current.start_time < club.endTime;
+            const overlaps = intervalsOverlap(club, {
+              dayOfWeek: current.day_of_week, startTime: current.start_time, endTime: current.end_time,
+            });
             if (overlaps) {
-              throw createHttpError(422, "VALIDATION_FAILED", `${club.name} trùng lịch với một CLB đã đăng ký.`,
-                [{ type: "conflict", clubId: club.id, message: `${club.name} trùng lịch với một CLB đã đăng ký.` }]);
+              const message = CONFLICT_AT_COMMIT(club.name);
+              throw createHttpError(422, "VALIDATION_FAILED", message, [{ type: "conflict", clubId: club.id, message }]);
             }
           }
         }

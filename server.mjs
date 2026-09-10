@@ -18,6 +18,7 @@ import { loadMasterKey } from "./field-crypto.mjs";
 import { formatActivationCode, generateActivationCode, normalizeActivationCode } from "./activation-code.mjs";
 import { isUnchanged } from "./record-diff.mjs";
 import { ASSIGNABLE_STATUSES, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, statusLabel } from "./registration-status.mjs";
+import { conflictMessage, intervalsOverlap } from "./schedule-conflict.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
 import {
@@ -400,7 +401,7 @@ const REGISTRATION_SEED_ROWS = [
   ["DK-260818-0158", "GR-260818-58", "hs03", "u_seed", "robotics", "payment", 1650000, "Thứ 5 · 16:15–17:45", "2026-08-18T08:42:00.000Z"],
   ["DK-260818-0157", "GR-260818-57", "hs04", "u_seed", "painting", "waitlist", 1100000, "Thứ 4 · 16:15–17:30", "2026-08-18T08:38:00.000Z"],
   ["DK-260818-0156", "GR-260818-56", "hs05", "u_seed", "debate", "confirmed", 1450000, "Thứ 6 · 16:15–17:45", "2026-08-18T08:31:00.000Z"],
-  ["DK-260818-0155", "GR-260818-55", "hs06", "u_seed", "basketball", "conflict", 1200000, "Thứ 3 · 16:15–17:30", "2026-08-18T08:22:00.000Z"],
+  ["DK-260818-0155", "GR-260818-55", "hs06", "u_seed", "basketball", "waitlist", 1200000, "Thứ 3 · 16:15–17:30", "2026-08-18T08:22:00.000Z"],
   ["DK-260818-0154", "GR-260818-54", "hs07", "u_seed", "piano", "submitted", 1900000, "Thứ 3 · 16:15–17:30", "2026-08-18T08:17:00.000Z"],
   ["DK-260818-0153", "GR-260818-53", "hs08", "u_seed", "dance", "confirmed", 1250000, "Thứ 7 · 08:30–10:00", "2026-08-18T08:03:00.000Z"],
 ];
@@ -685,10 +686,6 @@ async function clubRows(studentId, periodId = null) {
   });
 }
 
-function intervalsOverlap(a, b) {
-  return a.dayOfWeek === b.dayOfWeek && a.startTime < b.endTime && b.startTime < a.endTime;
-}
-
 async function validateRegistration(user, studentId, clubIds) {
   if (!studentId || !Array.isArray(clubIds) || clubIds.length === 0) {
     throw httpError(400, "INVALID_REGISTRATION", "Vui lòng chọn học sinh và ít nhất một CLB.");
@@ -714,7 +711,9 @@ async function validateRegistration(user, studentId, clubIds) {
   }
   for (let i = 0; i < selected.length; i += 1) {
     for (let j = i + 1; j < selected.length; j += 1) {
-      if (intervalsOverlap(selected[i], selected[j])) issues.push({ type: "conflict", clubId: selected[j].id, message: `${selected[j].name} trùng lịch với ${selected[i].name}.` });
+      if (intervalsOverlap(selected[i], selected[j])) {
+        issues.push({ type: "conflict", clubId: selected[j].id, message: conflictMessage(selected[j], selected[i], { daDangKy: false }) });
+      }
     }
   }
   const existing = (await rawRegistrationRows({ studentId }))
@@ -730,6 +729,7 @@ async function validateRegistration(user, studentId, clubIds) {
         dayOfWeek: registration.dayOfWeek,
         startTime: registration.startTime,
         endTime: registration.endTime,
+        schedule: known?.schedule || registration.scheduleSnapshot || "",
       };
     });
 
@@ -745,7 +745,7 @@ async function validateRegistration(user, studentId, clubIds) {
     for (const current of existing) {
       if (current.id === club.id) issues.push({ type: "duplicate", clubId: club.id, message: `${club.name} đã có trong đăng ký hiện tại.` });
       else if (current.inPeriod && current.clubId === club.clubId) issues.push({ type: "duplicate", clubId: club.id, message: `Học sinh đã đăng ký một lớp khác của ${club.name}.` });
-      else if (intervalsOverlap(club, current)) issues.push({ type: "conflict", clubId: club.id, message: `${club.name} trùng lịch với ${current.name} đã đăng ký.` });
+      else if (intervalsOverlap(club, current)) issues.push({ type: "conflict", clubId: club.id, message: conflictMessage(club, current, { daDangKy: true }) });
     }
   }
 
@@ -822,7 +822,7 @@ async function dashboardData() {
   const registrations = await rawRegistrationRows();
   const total = registrations.length;
   const students = new Set(registrations.map((item) => item.studentId)).size;
-  const needAction = registrations.filter((item) => ["conflict", "waitlist", "submitted"].includes(item.status)).length;
+  const needAction = registrations.filter((item) => [STATUS.xepCho, STATUS.dangKy].includes(item.status)).length;
   const pending = registrations.filter((item) => item.status === "payment");
   const categories = new Map();
   for (const club of await clubRows()) {

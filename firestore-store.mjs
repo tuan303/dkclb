@@ -2,6 +2,7 @@ import { FieldPath, Firestore } from "@google-cloud/firestore";
 import { randomBytes } from "node:crypto";
 import { planDirectoryWrites } from "./directory-plan.mjs";
 import { SEAT_HOLDING_STATUSES } from "./registration-status.mjs";
+import { CONFLICT_AT_COMMIT, intervalsOverlap } from "./schedule-conflict.mjs";
 
 const ACTIVE_STATUSES = new Set(SEAT_HOLDING_STATUSES);
 
@@ -443,8 +444,10 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
             for (const current of existing) {
               if (current.classId === club.id) throw createHttpError(422, "VALIDATION_FAILED", `${club.name} đã có trong đăng ký hiện tại.`, [{ type: "duplicate", clubId: club.id, message: `${club.name} đã có trong đăng ký hiện tại.` }]);
               if (club.clubId && current.clubId === club.clubId) throw createHttpError(422, "VALIDATION_FAILED", `Học sinh đã đăng ký một lớp khác của ${club.name}.`, [{ type: "duplicate", clubId: club.id, message: `Học sinh đã đăng ký một lớp khác của ${club.name}.` }]);
-              const overlaps = current.dayOfWeek === club.dayOfWeek && club.startTime < current.endTime && current.startTime < club.endTime;
-              if (overlaps) throw createHttpError(422, "VALIDATION_FAILED", `${club.name} trùng lịch với một CLB đã đăng ký.`, [{ type: "conflict", clubId: club.id, message: `${club.name} trùng lịch với một CLB đã đăng ký.` }]);
+              if (intervalsOverlap(club, current)) {
+                const message = CONFLICT_AT_COMMIT(club.name);
+                throw createHttpError(422, "VALIDATION_FAILED", message, [{ type: "conflict", clubId: club.id, message }]);
+              }
             }
           }
           return selectedClubs.map((club, index) => {
