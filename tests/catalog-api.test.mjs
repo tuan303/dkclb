@@ -145,9 +145,16 @@ test("không cho hạ sĩ số xuống dưới số đơn đang giữ chỗ", as
   });
   assert.equal(submitted.status, 201);
 
+  // Đơn mới sinh ra ở CHỜ THANH TOÁN nên chưa giữ chỗ; phải xác nhận đã đóng phí
+  // thì chỗ mới có chủ. Đây chính là luật mới nhà trường yêu cầu.
+  const donMoi = (await submitted.json()).registrations[0];
+  const xacNhan = await request(`/api/admin/registrations/${encodeURIComponent(donMoi.id)}/confirm-payment`,
+    adminCookie, { method: "PATCH", body: "{}" });
+  assert.equal(xacNhan.status, 200);
+
   const catalog = await (await request("/api/admin/catalog", adminCookie)).json();
   const debate = catalog.classes.find((row) => row.id === "debate");
-  assert.ok(debate.activeRegistrations >= 2, "lớp phải có ít nhất hai đơn giữ chỗ để kiểm tra ngưỡng sĩ số");
+  assert.ok(debate.activeRegistrations >= 1, "lớp phải có ít nhất một đơn ĐÃ ĐÓNG PHÍ để kiểm ngưỡng sĩ số");
   assert.equal(debate.enrolled, debate.enrolledBase + debate.activeRegistrations);
 
   const response = await request("/api/admin/classes/debate", adminCookie, {

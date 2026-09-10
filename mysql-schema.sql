@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS registrations (
   period_id         VARCHAR(64)      NULL,
   status            VARCHAR(24)  NOT NULL,
   fee_snapshot      INT          NOT NULL DEFAULT 0,
+  fee_paid          TINYINT(1)   NOT NULL DEFAULT 0,
   schedule_snapshot VARCHAR(120) NOT NULL,
   terms_accepted_at VARCHAR(32)      NULL,
   created_at        VARCHAR(32)  NOT NULL,

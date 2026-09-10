@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { startTestServer } from "./helpers/test-server.mjs";
 import {
-  ASSIGNABLE_STATUSES, EXCEPTION_STATUSES, LIFECYCLE_STATUSES,
+  ACTIVE_REGISTRATION_STATUSES, ASSIGNABLE_STATUSES, EXCEPTION_STATUSES, LIFECYCLE_STATUSES,
   SEAT_HOLDING_STATUSES, STATUS, STATUS_LABELS, holdsSeat, statusLabel,
 } from "../registration-status.mjs";
 
@@ -61,11 +61,26 @@ test("XẾP CHỜ và ba nhánh nhả chỗ thì KHÔNG tính sĩ số", () => {
   }
 });
 
-test("ba trạng thái cũ vẫn giữ nguyên tư cách chiếm chỗ", () => {
-  // Mã trong cơ sở dữ liệu không đổi, nên sĩ số của 4.445 học sinh đang chạy phải
-  // giữ nguyên tuyệt đối trước và sau lần thay nhãn này.
-  for (const status of ["submitted", "payment", "confirmed"]) assert.ok(holdsSeat(status));
-  assert.ok(!holdsSeat("waitlist"));
+test("CHƯA ĐÓNG PHÍ thì KHÔNG giữ chỗ", () => {
+  // Quyết định của nhà trường: nhiều gia đình đăng ký rồi không đóng tiền, mà chỗ
+  // vẫn bị treo cho họ. Chỗ chỉ có chủ từ khi ĐÃ ĐÓNG PHÍ trở đi.
+  for (const status of [STATUS.dangKy, STATUS.choThanhToan, STATUS.xepCho]) {
+    assert.ok(!holdsSeat(status), `${statusLabel(status)} không được giữ chỗ`);
+  }
+  assert.ok(holdsSeat(STATUS.daDongPhi));
+});
+
+test("nhưng đơn CHƯA ĐÓNG PHÍ vẫn là đơn CÒN HIỆU LỰC của học sinh", () => {
+  // Hai danh sách khác nhau. Gộp lại là em có đơn Piano chưa đóng phí sẽ đăng ký
+  // lại đúng lớp Piano đó lần thứ hai, và đăng ký được lớp trùng khung giờ — đã
+  // dựng máy chủ thật và đo: phí phải thu của một cháu nhảy 1,9 lên 5,0 triệu.
+  for (const status of [STATUS.dangKy, STATUS.xepCho, STATUS.choThanhToan, STATUS.daDongPhi]) {
+    assert.ok(ACTIVE_REGISTRATION_STATUSES.includes(status), `${statusLabel(status)} phải là đơn còn hiệu lực`);
+  }
+  // Ba nhánh nhả chỗ thì KHÔNG, để em bị huỷ lớp còn đăng ký lại được.
+  for (const status of [STATUS.lopHuy, STATUS.hoanPhi, STATUS.khongKhaiGiang]) {
+    assert.ok(!ACTIVE_REGISTRATION_STATUSES.includes(status), `${statusLabel(status)} không được coi là đơn còn hiệu lực`);
+  }
 });
 
 test("không còn chỗ nào gõ cứng bộ ba trạng thái cũ", () => {
@@ -180,6 +195,14 @@ test("sĩ số lớp lên xuống đúng theo từng trạng thái, không chỉ
     .registrations.find((row) => row.id !== don.id && row.classId);
   assert.ok(mau, "cần một đơn minh họa khác để đo sĩ số");
 
+  // Nới sĩ số tối đa trước: từ khi chỗ chỉ tính lúc đóng phí, chuyển một đơn TRỞ
+  // LẠI trạng thái giữ chỗ sẽ bị chốt chặn từ chối nếu lớp đã đầy. Bài này đo cách
+  // ĐẾM chỗ, không đo chốt chặn — chốt chặn có bài riêng ngay dưới.
+  const noiSiSo = await server.request(`/api/admin/classes/${encodeURIComponent(mau.classId)}`, adminCookie, {
+    method: "PATCH", body: JSON.stringify({ capacity: 99 }),
+  });
+  assert.equal(noiSiSo.status, 200, "cần nới sĩ số để đo được cả chiều tăng");
+
   const siSo = async () => {
     const catalog = await (await server.request("/api/admin/catalog", adminCookie)).json();
     return catalog.classes.find((item) => item.id === mau.classId).activeRegistrations;
@@ -193,10 +216,130 @@ test("sĩ số lớp lên xuống đúng theo từng trạng thái, không chỉ
   };
 
   const giuCho = await dat(STATUS.daDongPhi);
-  for (const status of [STATUS.dangHoc, STATUS.hocXong, STATUS.luiKhaiGiang, STATUS.choThanhToan, STATUS.dangKy]) {
+  for (const status of [STATUS.dangHoc, STATUS.hocXong, STATUS.luiKhaiGiang]) {
     assert.equal(await dat(status), giuCho, `${statusLabel(status)} phải giữ nguyên chỗ trong lớp`);
   }
-  for (const status of [STATUS.xepCho, STATUS.lopHuy, STATUS.hoanPhi, STATUS.khongKhaiGiang]) {
+  // Chưa đóng phí và ba nhánh nhả chỗ đều KHÔNG chiếm chỗ nữa.
+  for (const status of [STATUS.choThanhToan, STATUS.dangKy, STATUS.xepCho, STATUS.lopHuy, STATUS.hoanPhi, STATUS.khongKhaiGiang]) {
     assert.equal(await dat(status), giuCho - 1, `${statusLabel(status)} phải nhả chỗ ra cho người khác`);
   }
+});
+
+test("lớp đã đủ chỗ thì đơn đã đóng phí chuyển sang XẾP CHỜ, không nhận vượt trần", async () => {
+  // Từ khi chỗ chỉ tính lúc đóng phí, XÁC NHẬN PHÍ mới là thời điểm giành chỗ thật
+  // sự — mà trước đây hàm đó không hề đếm sĩ số. Đã dựng máy chủ thật và đo: lớp 12
+  // chỗ chốt được 13 đơn, không một cảnh báo nào.
+  //
+  // Nhà trường chọn: tiền đã cầm rồi thì không chặn cứng người ta được, nhưng cũng
+  // không nhận vượt trần lớp — nên đơn vẫn ghi nhận đã thu tiền và sang xếp chờ.
+  const lop = "piano";
+  const boSiSo = async (capacity) => {
+    const response = await server.request(`/api/admin/classes/${lop}`, adminCookie, {
+      method: "PATCH", body: JSON.stringify({ capacity }),
+    });
+    assert.equal(response.status, 200, `đặt sĩ số ${capacity} thất bại`);
+  };
+  const catalogLop = async () => (await (await server.request("/api/admin/catalog", adminCookie)).json())
+    .classes.find((item) => item.id === lop);
+
+  const donCuaLop = async () => (await (await server.request("/api/registrations", adminCookie)).json())
+    .registrations.filter((row) => row.classId === lop);
+  const dat = async (registrationId, status) => server.request(
+    `/api/admin/registrations/${encodeURIComponent(registrationId)}/status`, adminCookie,
+    { method: "PATCH", body: JSON.stringify({ status }) });
+
+  // Dữ liệu mẫu có hai đơn cho lớp này. Đưa cả hai về CHỜ THANH TOÁN để bắt đầu từ
+  // một trạng thái đã biết, thay vì phụ thuộc vào thứ tự chạy của các bài trước.
+  const donLop = await donCuaLop();
+  assert.ok(donLop.length >= 2, "dữ liệu mẫu phải có ít nhất hai đơn cho lớp này");
+  for (const item of donLop) await dat(item.id, STATUS.choThanhToan);
+
+  // Đặt sĩ số vừa đúng để còn CHÍNH XÁC MỘT chỗ trống. Không gõ cứng số 1: lớp có
+  // enrolled_base (ghi danh sẵn ngoài hệ thống) nên hạ xuống dưới đó là bị chặn.
+  const banDau = await catalogLop();
+  await boSiSo(banDau.enrolledBase + banDau.activeRegistrations + 1);
+  const truoc = await catalogLop();
+  const [don1, don2] = donLop;
+
+  const xacNhan = async (registrationId) => {
+    const response = await server.request(`/api/admin/registrations/${encodeURIComponent(registrationId)}/confirm-payment`,
+      adminCookie, { method: "PATCH", body: "{}" });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+
+  // Đơn đầu tiên lấp đúng chỗ trống duy nhất.
+  const ketQua1 = await xacNhan(don1.id);
+  assert.equal(ketQua1.status, STATUS.daDongPhi, "chỗ còn trống thì đơn vào thẳng đã đóng phí");
+  assert.equal(ketQua1.feePaid, true);
+  assert.equal((await catalogLop()).activeRegistrations, truoc.activeRegistrations + 1);
+
+  // Đơn thứ hai: lớp đã đầy. Vẫn ghi nhận đã thu tiền, nhưng sang xếp chờ.
+  const ketQua2 = await xacNhan(don2.id);
+  assert.equal(ketQua2.status, STATUS.xepCho, "lớp đầy thì đơn đã đóng phí phải sang xếp chờ");
+  assert.equal(ketQua2.feePaid, true, "tiền đã thu KHÔNG được biến mất khi đơn sang xếp chờ");
+  assert.equal(ketQua2.lopDaDay, true);
+
+  // Và sĩ số KHÔNG vượt trần.
+  const sau = await catalogLop();
+  assert.ok(sau.activeRegistrations + sau.enrolledBase <= sau.capacity,
+    `sĩ số vượt trần: ${sau.enrolledBase}+${sau.activeRegistrations} > ${sau.capacity}`);
+  assert.ok(sau.pendingRegistrations >= 1, "đơn đang chờ đóng phí phải đếm được riêng");
+});
+
+test("cửa sau đổi trạng thái tay cũng không vượt được trần sĩ số", async () => {
+  // Vá xác nhận phí mà quên chỗ này là vá nửa vời: giáo vụ đổi tay trong popup chi
+  // tiết là đi thẳng vào trạng thái giữ chỗ.
+  const lop = "piano";
+  const dangXepCho = (await (await server.request("/api/registrations", adminCookie)).json())
+    .registrations.find((row) => row.classId === lop && row.status === STATUS.xepCho);
+  assert.ok(dangXepCho, "cần một đơn đang xếp chờ ở lớp đã đầy");
+
+  const response = await server.request(`/api/admin/registrations/${encodeURIComponent(dangXepCho.id)}/status`, adminCookie, {
+    method: "PATCH", body: JSON.stringify({ status: STATUS.daDongPhi }),
+  });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error.code, "CLASS_FULL");
+});
+
+test("đơn chưa đóng phí đếm riêng, KHÔNG cộng vào sĩ số phụ huynh nhìn thấy", async () => {
+  // Hai con số phải nhúc nhích NGƯỢC chiều nhau khi một đơn nhả chỗ. Chỉ khoá con
+  // số sĩ số là chưa đủ: màn hình phụ huynh chỉ hiện "còn 5 chỗ" mà giấu đi 30 đơn
+  // đang chờ đóng phí thì vẫn là nói thật một nửa, và gia đình thứ 31 đóng phí xong
+  // mới biết mình bị đẩy sang xếp chờ.
+  const lop = "piano";
+  const xemLop = async () => (await (await server.request("/api/clubs", adminCookie)).json())
+    .clubs.find((item) => item.id === lop);
+  const donGiuCho = (await (await server.request("/api/registrations", adminCookie)).json())
+    .registrations.find((row) => row.classId === lop && row.status === STATUS.daDongPhi);
+  assert.ok(donGiuCho, "cần một đơn đang giữ chỗ ở lớp này");
+
+  const truoc = await xemLop();
+  const doi = await server.request(`/api/admin/registrations/${encodeURIComponent(donGiuCho.id)}/status`,
+    adminCookie, { method: "PATCH", body: JSON.stringify({ status: STATUS.choThanhToan }) });
+  assert.equal(doi.status, 200);
+  const sau = await xemLop();
+
+  assert.equal(sau.enrolled, truoc.enrolled - 1, "đơn quay về chờ đóng phí thì nhả chỗ, sĩ số phải giảm");
+  assert.equal(sau.pending, truoc.pending + 1, "và phải hiện ra ở con số đơn đang chờ đóng phí");
+});
+
+test("popup chi tiết nói đúng đơn đã thu tiền hay chưa", async () => {
+  // Bảng ngoài đọc feePaid từ danh sách đơn, popup đọc từ một câu truy vấn KHÁC.
+  // Bản SQLite thiếu cột ở câu thứ hai nên popup ghi "Chưa" cho đúng cái đơn mà
+  // dòng bảng ngay trên đó ghi "đã thu phí" — đã mở trình duyệt và nhìn thấy.
+  const don = (await (await server.request("/api/registrations", adminCookie)).json())
+    .registrations.find((row) => !row.feePaid);
+  assert.ok(don, "cần một đơn chưa từng thu tiền");
+  await server.request(`/api/admin/registrations/${encodeURIComponent(don.id)}/status`, adminCookie,
+    { method: "PATCH", body: JSON.stringify({ status: STATUS.choThanhToan }) });
+
+  const chiTiet = async () => (await (await server.request(
+    `/api/admin/registrations/${encodeURIComponent(don.id)}`, adminCookie)).json()).detail.registration;
+  assert.ok(!(await chiTiet()).feePaid, "chưa thu tiền thì popup phải nói là chưa");
+
+  const xacNhan = await server.request(`/api/admin/registrations/${encodeURIComponent(don.id)}/confirm-payment`,
+    adminCookie, { method: "PATCH", body: "{}" });
+  assert.equal(xacNhan.status, 200);
+  assert.ok((await chiTiet()).feePaid, "đã thu tiền thì popup phải nói là rồi");
 });

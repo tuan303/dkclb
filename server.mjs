@@ -17,7 +17,7 @@ import { toErrorResponse } from "./error-reporting.mjs";
 import { loadMasterKey } from "./field-crypto.mjs";
 import { formatActivationCode, generateActivationCode, normalizeActivationCode } from "./activation-code.mjs";
 import { isUnchanged } from "./record-diff.mjs";
-import { ASSIGNABLE_STATUSES, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, statusLabel } from "./registration-status.mjs";
+import { ACTIVE_REGISTRATION_STATUSES, ASSIGNABLE_STATUSES, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, holdsSeat, statusLabel } from "./registration-status.mjs";
 import { conflictMessage, intervalsOverlap } from "./schedule-conflict.mjs";
 import { IMPORT_MODES, buildExcelDirectory } from "./directory-excel.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
@@ -305,6 +305,7 @@ function initializeDatabase() {
       period_id TEXT,
       status TEXT NOT NULL,
       fee_snapshot INTEGER NOT NULL,
+      fee_paid INTEGER NOT NULL DEFAULT 0,
       schedule_snapshot TEXT NOT NULL,
       terms_accepted_at TEXT,
       created_at TEXT NOT NULL,
@@ -362,6 +363,9 @@ function initializeDatabase() {
   ensureColumn("club_classes", "min_capacity", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("club_classes", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("registrations", "period_id", "TEXT");
+  // "Đã thu tiền" là sự thật về TIỀN, còn trạng thái là sự thật về CHỖ. Từ khi chỗ
+  // chỉ được giữ lúc đóng phí, một đơn có thể vừa đã trả tiền vừa đang xếp chờ.
+  ensureColumn("registrations", "fee_paid", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("club_classes", "grades_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("users", "activation_code", "TEXT");
   ensureColumn("users", "last_login_at", "TEXT");
@@ -630,7 +634,7 @@ async function rawRegistrationRows({ parentUserId, status, studentId } = {}) {
   if (studentId) { conditions.push("r.student_id = ?"); params.push(studentId); }
   return db.prepare(`SELECT r.id, r.group_id AS groupId, r.student_id AS studentId,
     r.parent_user_id AS parentUserId, r.class_id AS classId, r.period_id AS periodId, r.status,
-    r.fee_snapshot AS feeSnapshot, r.schedule_snapshot AS scheduleSnapshot,
+    r.fee_snapshot AS feeSnapshot, r.fee_paid AS feePaid, r.schedule_snapshot AS scheduleSnapshot,
     r.terms_accepted_at AS termsAcceptedAt, r.created_at AS createdAt, r.updated_at AS updatedAt,
     cc.day_of_week AS dayOfWeek, cc.start_time AS startTime, cc.end_time AS endTime
     FROM registrations r JOIN club_classes cc ON cc.id = r.class_id
@@ -652,9 +656,10 @@ async function clubRows(studentId, periodId = null) {
     enrollmentCounts = await businessStore.getEnrollmentCounts();
   } else {
     const counts = db.prepare(`SELECT cc.id, cc.enrolled_base + COALESCE(SUM(
-      CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS enrolled
+      CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS enrolled,
+      COALESCE(SUM(CASE WHEN r.status IN (${PENDING_SEAT_SQL}) THEN 1 ELSE 0 END), 0) AS pending
       FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`).all();
-    enrollmentCounts = Object.fromEntries(counts.map((row) => [row.id, asInt(row.enrolled)]));
+    enrollmentCounts = Object.fromEntries(counts.map((row) => [row.id, { enrolled: asInt(row.enrolled), pending: asInt(row.pending) }]));
   }
   return scopedRows.map((row) => {
     const clubGrades = businessStore ? row.grades : JSON.parse(row.grades_json);
@@ -679,7 +684,11 @@ async function clubRows(studentId, periodId = null) {
       teacher: row.teacher,
       capacity: asInt(row.capacity),
       minCapacity: asInt(row.minCapacity ?? row.min_capacity),
-      enrolled: asInt(enrollmentCounts[row.id] ?? row.enrolledBase ?? row.enrolled_base),
+      enrolled: asInt(enrollmentCounts[row.id]?.enrolled ?? row.enrolledBase ?? row.enrolled_base),
+      // Số đơn đã đăng ký nhưng CHƯA đóng phí. Từ khi chỗ chỉ tính lúc đóng phí, giấu
+      // con số này đi tức là để phụ huynh chọn một lớp "còn 5 chỗ" trong khi 30 gia
+      // đình đang xếp trước — rồi đóng phí xong mới biết mình bị đẩy sang xếp chờ.
+      pending: asInt(enrollmentCounts[row.id]?.pending),
       fee: asInt(row.fee),
       waitlistEnabled: waitlist !== 0 && waitlist !== false,
       eligible: student ? grades.includes(student.grade) : true,
@@ -721,7 +730,7 @@ async function validateRegistration(user, studentId, clubIds) {
     }
   }
   const existing = (await rawRegistrationRows({ studentId }))
-    .filter((registration) => SEAT_HOLDING_STATUSES.includes(registration.status))
+    .filter((registration) => ACTIVE_REGISTRATION_STATUSES.includes(registration.status))
     .map((registration) => {
       const known = available.get(registration.classId);
       return {
@@ -813,6 +822,7 @@ async function listRegistrations(user, status, { includeStudentIdentity = false 
       startTime: registration.startTime || "",
       endTime: registration.endTime || "",
       status: registration.status,
+      feePaid: Boolean(registration.feePaid),
       amount: Number(registration.feeSnapshot || 0),
       createdAt: registration.createdAt,
       room: clubClass.room || "—",
@@ -861,6 +871,19 @@ async function directorySummary() {
     students: asInt(db.prepare("SELECT COUNT(*) AS count FROM students WHERE status = 'active'").get().count),
     lastSyncAt: db.prepare("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'SYNC_STUDENT_DIRECTORY'").get().at || null,
   };
+}
+
+/**
+ * Lớp còn chỗ trống không, tính theo đúng luật mới: chỉ đơn ĐÃ ĐÓNG PHÍ trở đi mới
+ * chiếm chỗ. Bỏ qua chính đơn đang xét, vì nó sắp đổi trạng thái.
+ */
+function classHasFreeSeat(classId, exceptRegistrationId) {
+  const lop = db.prepare("SELECT capacity, enrolled_base AS enrolledBase FROM club_classes WHERE id = ?").get(classId);
+  if (!lop) return { free: true, capacity: 0 };
+  const dem = db.prepare(`SELECT COUNT(*) AS n FROM registrations
+    WHERE class_id = ? AND status IN (${SEAT_HOLDING_SQL}) AND id <> ?`).get(classId, exceptRegistrationId || "");
+  const daDung = asInt(lop.enrolledBase) + asInt(dem?.n);
+  return { free: daDung < asInt(lop.capacity), capacity: asInt(lop.capacity), daDung };
 }
 
 async function countActiveStudents() {
@@ -1168,6 +1191,7 @@ async function adminCatalogData() {
         fee: asInt(row.fee), waitlistEnabled: row.waitlistEnabled !== false, sortOrder: asInt(row.sortOrder), active: row.active !== false,
         enrolled: asInt(catalog.enrolled[row.id] ?? row.enrolledBase),
         activeRegistrations: asInt(catalog.activeRegistrations[row.id]),
+        pendingRegistrations: asInt(catalog.pendingRegistrations?.[row.id]),
       })),
     };
   }
@@ -1178,9 +1202,10 @@ async function adminCatalogData() {
       emoji: club.emoji, visual: club.visual, grades: JSON.parse(club.gradesJson), sortOrder: asInt(club.sortOrder), active: club.active === 1,
     }));
   const counts = Object.fromEntries(db.prepare(`SELECT cc.id,
-    COALESCE(SUM(CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS activeRegistrations
+    COALESCE(SUM(CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS activeRegistrations,
+    COALESCE(SUM(CASE WHEN r.status IN (${PENDING_SEAT_SQL}) THEN 1 ELSE 0 END), 0) AS pendingRegistrations
     FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`).all()
-    .map((row) => [row.id, asInt(row.activeRegistrations)]));
+    .map((row) => [row.id, { held: asInt(row.activeRegistrations), pending: asInt(row.pendingRegistrations) }]));
   const classes = db.prepare(`SELECT id, club_id AS clubId, period_id AS periodId, name, day_of_week AS dayOfWeek,
     start_time AS startTime, end_time AS endTime, schedule_label AS scheduleLabel, room, teacher, capacity,
     min_capacity AS minCapacity, enrolled_base AS enrolledBase, fee, waitlist_enabled AS waitlistEnabled,
@@ -1190,7 +1215,9 @@ async function adminCatalogData() {
       capacity: asInt(row.capacity), minCapacity: asInt(row.minCapacity), enrolledBase: asInt(row.enrolledBase),
       fee: asInt(row.fee), sortOrder: asInt(row.sortOrder), dayOfWeek: asInt(row.dayOfWeek),
       waitlistEnabled: row.waitlistEnabled === 1, active: row.active === 1,
-      activeRegistrations: counts[row.id] || 0, enrolled: asInt(row.enrolledBase) + (counts[row.id] || 0),
+      activeRegistrations: counts[row.id]?.held || 0,
+      pendingRegistrations: counts[row.id]?.pending || 0,
+      enrolled: asInt(row.enrolledBase) + (counts[row.id]?.held || 0),
     }));
   return { clubs, classes };
 }
@@ -1232,13 +1259,16 @@ async function saveClassRecord({ actorUserId, classId, input }) {
   if (!club) throw httpError(404, "CLUB_NOT_FOUND", "CLB của lớp này không tồn tại.");
   const targetId = classId || id("class");
   const held = existing ? existing.activeRegistrations : 0;
+  const pending = existing ? (existing.pendingRegistrations || 0) : 0;
   const occupied = data.enrolledBase + held;
   if (data.capacity < occupied) {
     throw httpError(409, "CAPACITY_BELOW_ENROLLED",
       `Lớp đang dùng ${occupied} chỗ (${data.enrolledBase} ghi danh sẵn + ${held} đơn đang giữ chỗ), không thể đặt sĩ số tối đa nhỏ hơn.`);
   }
-  if (!data.active && held > 0) {
-    throw httpError(409, "CLASS_HAS_REGISTRATIONS", `Lớp đang có ${held} đơn hiệu lực. Hãy xử lý các đơn này trước khi ngừng mở lớp.`);
+  if (!data.active && held + pending > 0) {
+    throw httpError(409, "CLASS_HAS_REGISTRATIONS",
+      `Lớp đang có ${held + pending} đơn hiệu lực (${held} đã đóng phí, ${pending} đang chờ đóng phí).`
+      + " Hãy xử lý các đơn này trước khi ngừng mở lớp.");
   }
   // Một phòng không thể có hai lớp giao giờ trong cùng một đợt.
   const clash = catalog.classes.find((row) => row.id !== targetId && row.active && row.periodId === data.periodId
@@ -2357,7 +2387,7 @@ async function handleApi(req, res, url) {
       ? await businessStore.registrationDetail(registrationId)
       : (() => {
         const registration = db.prepare(`SELECT r.id, r.group_id AS groupId, r.student_id AS studentId, r.class_id AS classId,
-            r.status, r.fee_snapshot AS feeSnapshot, r.schedule_snapshot AS scheduleSnapshot,
+            r.status, r.fee_snapshot AS feeSnapshot, r.fee_paid AS feePaid, r.schedule_snapshot AS scheduleSnapshot,
             r.created_at AS createdAt, r.updated_at AS updatedAt,
             cc.name AS classLabel, cc.room, cc.teacher, c.name AS clubName
           FROM registrations r
@@ -2410,6 +2440,16 @@ async function handleApi(req, res, url) {
       throw httpError(422, "STATUS_INVALID", "Trạng thái không nằm trong vòng đời đơn đăng ký.");
     }
     const timestamp = nowIso();
+    if (holdsSeat(next) && !businessStore) {
+      const hienTai = db.prepare("SELECT class_id, status FROM registrations WHERE id = ?").get(registrationId);
+      if (hienTai && !holdsSeat(hienTai.status)) {
+        const cho = classHasFreeSeat(hienTai.class_id, registrationId);
+        if (!cho.free) {
+          throw httpError(409, "CLASS_FULL",
+            `Lớp đã đủ ${cho.capacity} chỗ (tính theo số em đã đóng phí). Không thể chuyển đơn này sang "${statusLabel(next)}".`);
+        }
+      }
+    }
     if (businessStore) {
       const result = await businessStore.changeRegistrationStatus({ registrationId, status: next, actorUserId: user.id, timestamp, reason });
       return sendJson(res, 200, { ...result, statusLabel: statusLabel(next) });
@@ -2435,12 +2475,18 @@ async function handleApi(req, res, url) {
     }
     const registration = db.prepare("SELECT * FROM registrations WHERE id = ?").get(confirmMatch[1]);
     if (!registration) throw httpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
-    if (!["payment", "submitted"].includes(registration.status)) throw httpError(409, "INVALID_TRANSITION", "Trạng thái hiện tại không cho phép xác nhận phí.");
-    db.prepare("UPDATE registrations SET status = 'confirmed', updated_at = ? WHERE id = ?").run(timestamp, registration.id);
-    db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, before_json, after_json, created_at)
-      VALUES (?, ?, 'CONFIRM_PAYMENT', 'registration', ?, ?, ?, ?)`)
-      .run(id("audit"), user.id, registration.id, JSON.stringify({ status: registration.status }), JSON.stringify({ status: "confirmed" }), timestamp);
-    return sendJson(res, 200, { id: registration.id, status: "confirmed" });
+    if (!["payment", "submitted", "waitlist"].includes(registration.status)) throw httpError(409, "INVALID_TRANSITION", "Trạng thái hiện tại không cho phép xác nhận phí.");
+    // Lớp đã đủ chỗ thì vẫn ghi nhận đã thu tiền, nhưng đơn sang xếp chờ.
+    const cho = classHasFreeSeat(registration.class_id, registration.id);
+    const trangThaiMoi = cho.free ? STATUS.daDongPhi : STATUS.xepCho;
+    db.prepare("UPDATE registrations SET status = ?, fee_paid = 1, updated_at = ? WHERE id = ?")
+      .run(trangThaiMoi, timestamp, registration.id);
+    await writeAudit({
+      actorUserId: user.id, action: "CONFIRM_PAYMENT", entityType: "registration", entityId: registration.id,
+      before: { status: registration.status }, after: { status: trangThaiMoi, feePaid: true },
+      reason: cho.free ? null : `Lớp đã đủ ${cho.capacity} chỗ nên đơn đã đóng phí được chuyển sang xếp chờ.`,
+    });
+    return sendJson(res, 200, { id: registration.id, status: trangThaiMoi, feePaid: true, lopDaDay: !cho.free });
   }
 
   // Danh sách vận hành, không phải bản trích xuất dữ liệu: giáo vụ cần nó để

@@ -1,10 +1,13 @@
 import { FieldPath, Firestore } from "@google-cloud/firestore";
 import { randomBytes } from "node:crypto";
 import { planDirectoryWrites } from "./directory-plan.mjs";
-import { SEAT_HOLDING_STATUSES } from "./registration-status.mjs";
+import { ACTIVE_REGISTRATION_STATUSES, PENDING_SEAT_STATUSES, SEAT_HOLDING_STATUSES, holdsSeat } from "./registration-status.mjs";
 import { CONFLICT_AT_COMMIT, intervalsOverlap } from "./schedule-conflict.mjs";
 
+// Chỗ đã có chủ trong lớp.
 const ACTIVE_STATUSES = new Set(SEAT_HOLDING_STATUSES);
+// Đơn còn hiệu lực của một học sinh — rộng hơn hẳn, gồm cả chưa đóng phí.
+const CON_HIEU_LUC = new Set(ACTIVE_REGISTRATION_STATUSES);
 
 function snapshotRows(snapshot) {
   return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
@@ -299,9 +302,16 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
             || String(left.startTime || "").localeCompare(String(right.startTime || "")));
       },
 
+      // Xem chú thích ở nhánh MySQL: hai con số chứ không phải một.
       async getEnrollmentCounts() {
-        const snapshot = await classCounters.get();
-        return Object.fromEntries(snapshot.docs.map((document) => [document.id, Number(document.data().enrolledCount || 0)]));
+        const [snapshot, choSnapshot] = await Promise.all([
+          classCounters.get(),
+          registrations.where("status", "in", PENDING_SEAT_STATUSES).get(),
+        ]);
+        const cho = {};
+        for (const row of snapshotRows(choSnapshot)) cho[row.classId] = (cho[row.classId] || 0) + 1;
+        return Object.fromEntries(snapshot.docs.map((document) =>
+          [document.id, { enrolled: Number(document.data().enrolledCount || 0), pending: cho[document.id] || 0 }]));
       },
 
       // Tra cứu hỗ trợ: trả cả tài khoản đang tắt để IT nhìn thấy đúng nguyên nhân.
@@ -363,15 +373,20 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           clubs.get(), clubClasses.get(), classCounters.get(), registrations.get(),
         ]);
         const activeRegistrations = {};
+        const pendingRegistrations = {};
         for (const row of snapshotRows(registrationSnapshot)) {
-          if (!ACTIVE_STATUSES.has(row.status)) continue;
-          activeRegistrations[row.classId] = (activeRegistrations[row.classId] || 0) + 1;
+          if (ACTIVE_STATUSES.has(row.status)) {
+            activeRegistrations[row.classId] = (activeRegistrations[row.classId] || 0) + 1;
+          } else if (CON_HIEU_LUC.has(row.status)) {
+            pendingRegistrations[row.classId] = (pendingRegistrations[row.classId] || 0) + 1;
+          }
         }
         return {
           clubs: snapshotRows(clubSnapshot),
           classes: snapshotRows(classSnapshot),
           enrolled: Object.fromEntries(counterSnapshot.docs.map((document) => [document.id, Number(document.data().enrolledCount || 0)])),
           activeRegistrations,
+          pendingRegistrations,
         };
       },
 
@@ -442,7 +457,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
       async createRegistrations({ actorUserId, studentId, groupId, periodId = null, clubs: selectedClubs, registrationIds, timestamp }) {
         return firestore.runTransaction(async (transaction) => {
           const existingSnapshot = await transaction.get(registrations.where("studentId", "==", studentId));
-          const existing = snapshotRows(existingSnapshot).filter((item) => ACTIVE_STATUSES.has(item.status));
+          const existing = snapshotRows(existingSnapshot).filter((item) => CON_HIEU_LUC.has(item.status));
           const counterRefs = selectedClubs.map((club) => classCounters.doc(club.id));
           const counterSnapshots = await Promise.all(counterRefs.map((reference) => transaction.get(reference)));
           for (const club of selectedClubs) {
@@ -525,6 +540,22 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           if (!snapshot.exists) throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
           const before = snapshot.data().status;
           if (before === status) return { id: registrationId, status, changed: false };
+
+          // Xem chú thích ở nhánh MySQL: đây là cửa sau vào trạng thái giữ chỗ.
+          if (holdsSeat(status) && !holdsSeat(before)) {
+            const classId = snapshot.data().classId;
+            const lopSnapshot = classId ? await transaction.get(clubClasses.doc(classId)) : null;
+            const lop = lopSnapshot?.exists ? lopSnapshot.data() : null;
+            if (lop) {
+              const demSnapshot = await transaction.get(registrations.where("classId", "==", classId));
+              const daDung = Number(lop.enrolledBase || 0) + snapshotRows(demSnapshot)
+                .filter((row) => row.id !== registrationId && ACTIVE_STATUSES.has(row.status)).length;
+              if (daDung >= Number(lop.capacity || 0)) {
+                throw createHttpError(409, "CLASS_FULL",
+                  `Lớp đã đủ ${Number(lop.capacity || 0)} chỗ (tính theo số em đã đóng phí). Không chuyển đơn này sang trạng thái giữ chỗ được.`);
+              }
+            }
+          }
           transaction.update(registrationRef, { status, updatedAt: timestamp });
           transaction.create(auditLogs.doc(`audit_${registrationId}_${timestamp}`), {
             actorUserId, action: "CHANGE_REGISTRATION_STATUS", entityType: "registration", entityId: String(registrationId),
@@ -534,19 +565,29 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         });
       },
 
+      // Xem chú thích ở nhánh MySQL: đây mới là thời điểm giành chỗ thật sự.
       async confirmPayment({ registrationId, actorUserId, timestamp }) {
         return firestore.runTransaction(async (transaction) => {
           const registrationRef = registrations.doc(registrationId);
           const registrationSnapshot = await transaction.get(registrationRef);
           if (!registrationSnapshot.exists) throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
           const registration = registrationSnapshot.data();
-          if (!["payment", "submitted"].includes(registration.status)) throw createHttpError(409, "INVALID_TRANSITION", "Trạng thái hiện tại không cho phép xác nhận phí.");
-          transaction.update(registrationRef, { status: "confirmed", updatedAt: timestamp });
+          if (!["payment", "submitted", "waitlist"].includes(registration.status)) throw createHttpError(409, "INVALID_TRANSITION", "Trạng thái hiện tại không cho phép xác nhận phí.");
+          const lopSnapshot = registration.classId ? await transaction.get(clubClasses.doc(registration.classId)) : null;
+          const lop = lopSnapshot?.exists ? lopSnapshot.data() : null;
+          const demSnapshot = await transaction.get(registrations.where("classId", "==", registration.classId));
+          const daDung = Number(lop?.enrolledBase || 0) + snapshotRows(demSnapshot)
+            .filter((row) => row.id !== registrationId && ACTIVE_STATUSES.has(row.status)).length;
+          const conCho = !lop || daDung < Number(lop.capacity || 0);
+          const trangThaiMoi = conCho ? "confirmed" : "waitlist";
+          transaction.update(registrationRef, { status: trangThaiMoi, feePaid: true, updatedAt: timestamp });
           transaction.create(auditLogs.doc(`audit_${registrationId}_${Date.now()}`), {
             actorUserId, action: "CONFIRM_PAYMENT", entityType: "registration", entityId: registrationId,
-            before: { status: registration.status }, after: { status: "confirmed" }, createdAt: timestamp,
+            before: { status: registration.status }, after: { status: trangThaiMoi, feePaid: true },
+            reason: conCho ? null : `Lớp đã đủ ${Number(lop.capacity || 0)} chỗ nên đơn đã đóng phí được chuyển sang xếp chờ.`,
+            createdAt: timestamp,
           });
-          return { id: registrationId, status: "confirmed" };
+          return { id: registrationId, status: trangThaiMoi, feePaid: true, lopDaDay: !conCho };
         });
       },
 

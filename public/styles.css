@@ -243,6 +243,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .capacity-track span { display: block; height: 100%; border-radius: inherit; background: var(--aqua); }
 .capacity-track.warning span { background: var(--gold); }
 .capacity-track.full span { background: var(--red); }
+.capacity-pending { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
 .club-price { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-top: 14px; padding-top: 13px; border-top: 1px solid #edeef4; }
 .club-price strong { font-family: "DM Sans", sans-serif; font-size: 14px; }
 .club-price small { color: var(--muted); font-size: 9px; }

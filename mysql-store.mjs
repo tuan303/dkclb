@@ -9,10 +9,12 @@ import { createPool } from "mysql2/promise";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { planDirectoryWrites } from "./directory-plan.mjs";
-import { SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL } from "./registration-status.mjs";
+import { ACTIVE_REGISTRATION_STATUSES, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, holdsSeat } from "./registration-status.mjs";
 import { CONFLICT_AT_COMMIT, intervalsOverlap } from "./schedule-conflict.mjs";
 import { createFieldCrypto } from "./field-crypto.mjs";
 
+// Hai danh sách khác nhau, đừng gộp lại: một cái đếm CHỖ trong lớp, một cái đếm
+// ĐƠN của học sinh. Gộp lại là chuyện đã từng suýt xảy ra và hậu quả đo được.
 const ACTIVE_STATUSES = SEAT_HOLDING_STATUSES;
 
 function createHttpError(status, code, message, details) {
@@ -259,6 +261,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       // mù (không có luồng nào tra theo email) và TUYỆT ĐỐI không UNIQUE: hai vợ
       // chồng khai chung một email là chuyện thường.
       ["users", "email", "VARCHAR(512) NULL"],
+      ["registrations", "fee_paid", "TINYINT(1) NOT NULL DEFAULT 0"],
     ];
     for (const [table, column, definition] of wanted) {
       const [rows] = await pool.query(
@@ -584,12 +587,16 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       return rows.map(normalizeCatalogRow);
     },
 
+    // Trả HAI con số cho mỗi lớp: chỗ ĐÃ CÓ CHỦ (đã đóng phí trở đi) và số đơn ĐANG
+    // CHỜ ĐÓNG PHÍ. Con số thứ hai không đổi sĩ số, nhưng thiếu nó thì màn hình nói
+    // thật một nửa — xem chú thích ở clubRows trong server.mjs.
     async getEnrollmentCounts() {
       const rows = await query(`SELECT cc.id, cc.enrolled_base + COALESCE(SUM(
-        CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS enrolled
+        CASE WHEN r.status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END), 0) AS enrolled,
+        COALESCE(SUM(CASE WHEN r.status IN (${PENDING_SEAT_SQL}) THEN 1 ELSE 0 END), 0) AS pending
         FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id
         GROUP BY cc.id, cc.enrolled_base`);
-      return Object.fromEntries(rows.map((row) => [row.id, toInt(row.enrolled)]));
+      return Object.fromEntries(rows.map((row) => [row.id, { enrolled: toInt(row.enrolled), pending: toInt(row.pending) }]));
     },
 
     async listPeriods() {
@@ -619,10 +626,13 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         query(`SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label, grades, room,
           teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active
           FROM club_classes ORDER BY sort_order, day_of_week, start_time`),
-        query(`SELECT class_id, COUNT(*) AS active_count FROM registrations
-          WHERE status IN (${SEAT_HOLDING_SQL}) GROUP BY class_id`),
+        query(`SELECT class_id,
+            SUM(CASE WHEN status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END) AS active_count,
+            SUM(CASE WHEN status IN (${PENDING_SEAT_SQL}) THEN 1 ELSE 0 END) AS pending_count
+          FROM registrations GROUP BY class_id`),
       ]);
       const activeRegistrations = Object.fromEntries(countRows.map((row) => [row.class_id, toInt(row.active_count)]));
+      const pendingRegistrations = Object.fromEntries(countRows.map((row) => [row.class_id, toInt(row.pending_count)]));
       const enrolled = Object.fromEntries(classRows.map((row) => [row.id, toInt(row.enrolled_base) + (activeRegistrations[row.id] || 0)]));
       return {
         clubs: clubRows.map((row) => ({
@@ -640,6 +650,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         })),
         enrolled,
         activeRegistrations,
+        pendingRegistrations,
       };
     },
 
@@ -696,7 +707,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       if (studentId) { conditions.push("r.student_id = ?"); params.push(studentId); }
       const rows = await query(
         `SELECT r.id, r.group_id AS groupId, r.student_id AS studentId, r.parent_user_id AS parentUserId,
-          r.class_id AS classId, r.period_id AS periodId, r.status, r.fee_snapshot AS feeSnapshot,
+          r.class_id AS classId, r.period_id AS periodId, r.status, r.fee_snapshot AS feeSnapshot, r.fee_paid AS feePaid,
           r.schedule_snapshot AS scheduleSnapshot, r.terms_accepted_at AS termsAcceptedAt,
           r.created_at AS createdAt, r.updated_at AS updatedAt,
           cc.club_id AS clubId, cc.day_of_week AS dayOfWeek, cc.start_time AS startTime, cc.end_time AS endTime
@@ -752,7 +763,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
           `SELECT r.class_id, cc.club_id, cc.day_of_week, cc.start_time, cc.end_time
            FROM registrations r JOIN club_classes cc ON cc.id = r.class_id
            WHERE r.student_id = ? AND r.status IN (?)`,
-          [studentId, ACTIVE_STATUSES],
+          [studentId, ACTIVE_REGISTRATION_STATUSES],
         );
         for (const club of selectedClubs) {
           for (const current of existingRows) {
@@ -822,7 +833,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       const registration = await first(
         `SELECT r.id, r.group_id AS groupId, r.student_id AS studentId, r.class_id AS classId, r.status,
            r.fee_snapshot AS feeSnapshot, r.schedule_snapshot AS scheduleSnapshot,
-           r.created_at AS createdAt, r.updated_at AS updatedAt,
+           r.created_at AS createdAt, r.updated_at AS updatedAt, r.fee_paid AS feePaid,
            cc.name AS classLabel, cc.room, cc.teacher, c.name AS clubName
          FROM registrations r
          LEFT JOIN club_classes cc ON cc.id = r.class_id
@@ -869,10 +880,26 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
     // lúc trạng thái đã đổi mà lịch sử không có dòng nào.
     async changeRegistrationStatus({ registrationId, status, actorUserId, timestamp, reason = null }) {
       return withTransaction(async (connection) => {
-        const [rows] = await connection.query("SELECT id, status FROM registrations WHERE id = ? FOR UPDATE", [registrationId]);
+        const [rows] = await connection.query(
+          "SELECT id, status, class_id FROM registrations WHERE id = ? FOR UPDATE", [registrationId]);
         const registration = rows[0];
         if (!registration) throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
         if (registration.status === status) return { id: registrationId, status, changed: false };
+
+        if (holdsSeat(status) && !holdsSeat(registration.status)) {
+          const [lopRows] = await connection.query(
+            "SELECT capacity, enrolled_base FROM club_classes WHERE id = ? FOR UPDATE", [registration.class_id]);
+          const lop = lopRows[0];
+          if (lop) {
+            const [demRows] = await connection.query(
+              `SELECT COUNT(*) AS n FROM registrations WHERE class_id = ? AND status IN (${SEAT_HOLDING_SQL}) AND id <> ?`,
+              [registration.class_id, registrationId]);
+            if (toInt(lop.enrolled_base) + toInt(demRows[0]?.n) >= toInt(lop.capacity)) {
+              throw createHttpError(409, "CLASS_FULL",
+                `Lớp đã đủ ${toInt(lop.capacity)} chỗ (tính theo số em đã đóng phí). Không chuyển đơn này sang trạng thái giữ chỗ được.`);
+            }
+          }
+        }
         await connection.query("UPDATE registrations SET status = ?, updated_at = ? WHERE id = ?", [status, timestamp, registrationId]);
         await insertAudit(connection, {
           actorUserId, action: "CHANGE_REGISTRATION_STATUS", entityType: "registration", entityId: registrationId,
@@ -882,20 +909,48 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       });
     },
 
+    /**
+     * Xác nhận đã đóng phí. Từ khi chỗ chỉ được giữ lúc đóng phí, ĐÂY mới là thời
+     * điểm giành chỗ thật sự — trước đây hàm này không hề đếm sĩ số, nên lớp 12 chỗ
+     * chốt được 13 đơn mà không ai cản (đã dựng máy chủ thật và đo).
+     *
+     * Lớp đã đủ chỗ thì đơn vẫn được ghi nhận ĐÃ THU TIỀN nhưng chuyển sang XẾP
+     * CHỜ, theo quyết định của nhà trường: tiền đã cầm rồi thì không chặn cứng
+     * người ta được, nhưng cũng không được nhận vượt trần lớp.
+     */
     async confirmPayment({ registrationId, actorUserId, timestamp }) {
       return withTransaction(async (connection) => {
-        const [rows] = await connection.query("SELECT id, status FROM registrations WHERE id = ? FOR UPDATE", [registrationId]);
+        const [rows] = await connection.query(
+          "SELECT id, status, class_id FROM registrations WHERE id = ? FOR UPDATE", [registrationId]);
         const registration = rows[0];
         if (!registration) throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
-        if (!["payment", "submitted"].includes(registration.status)) {
+        if (!["payment", "submitted", "waitlist"].includes(registration.status)) {
           throw createHttpError(409, "INVALID_TRANSITION", "Trạng thái hiện tại không cho phép xác nhận phí.");
         }
-        await connection.query("UPDATE registrations SET status = 'confirmed', updated_at = ? WHERE id = ?", [timestamp, registrationId]);
+
+        // Khoá dòng LỚP trước khi đếm: hai giáo vụ cùng chốt chỗ cuối trong một
+        // khoảnh khắc thì người sau phải nhìn thấy chỗ người trước vừa lấy.
+        const [lopRows] = await connection.query(
+          "SELECT id, capacity, enrolled_base FROM club_classes WHERE id = ? FOR UPDATE", [registration.class_id]);
+        const lop = lopRows[0];
+        const [demRows] = await connection.query(
+          `SELECT COUNT(*) AS n FROM registrations WHERE class_id = ? AND status IN (${SEAT_HOLDING_SQL}) AND id <> ?`,
+          [registration.class_id, registrationId]);
+        const daDung = toInt(lop?.enrolled_base) + toInt(demRows[0]?.n);
+        const conCho = !lop || daDung < toInt(lop.capacity);
+        const trangThaiMoi = conCho ? "confirmed" : "waitlist";
+
+        await connection.query(
+          "UPDATE registrations SET status = ?, fee_paid = 1, updated_at = ? WHERE id = ?",
+          [trangThaiMoi, timestamp, registrationId]);
         await insertAudit(connection, {
           actorUserId, action: "CONFIRM_PAYMENT", entityType: "registration", entityId: registrationId,
-          before: { status: registration.status }, after: { status: "confirmed" }, createdAt: timestamp,
+          before: { status: registration.status },
+          after: { status: trangThaiMoi, feePaid: true },
+          reason: conCho ? null : `Lớp đã đủ ${toInt(lop.capacity)} chỗ nên đơn đã đóng phí được chuyển sang xếp chờ.`,
+          createdAt: timestamp,
         });
-        return { id: registrationId, status: "confirmed" };
+        return { id: registrationId, status: trangThaiMoi, feePaid: true, lopDaDay: !conCho };
       });
     },
 

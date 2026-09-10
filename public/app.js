@@ -99,7 +99,11 @@ const pageMeta = {
 // so hai bảng với nhau, sửa một bên quên bên kia là test đỏ ngay.
 const LIFECYCLE_STATUSES = ["submitted", "waitlist", "payment", "confirmed", "dang_hoc", "hoc_xong"];
 const EXCEPTION_STATUSES = ["lui_khai_giang", "khong_khai_giang", "cancelled", "hoan_phi"];
-const SEAT_HOLDING_STATUSES = ["submitted", "payment", "confirmed", "dang_hoc", "hoc_xong", "lui_khai_giang"];
+// Chỗ đã có chủ trong lớp: chỉ tính từ khi ĐÃ ĐÓNG PHÍ trở đi.
+const SEAT_HOLDING_STATUSES = ["confirmed", "dang_hoc", "hoc_xong", "lui_khai_giang"];
+// Đơn còn hiệu lực của học sinh: rộng hơn, gồm cả chưa đóng phí và đang xếp chờ.
+// Dùng để chặn đăng ký trùng lớp và trùng khung giờ.
+const ACTIVE_REGISTRATION_STATUSES = ["submitted", "waitlist", "payment", "confirmed", "dang_hoc", "hoc_xong", "lui_khai_giang"];
 
 const statusMap = {
   submitted: ["Đăng ký", "blue"],
@@ -156,7 +160,7 @@ function conflictBadge(cu) {
 function donDaGuiCuaCon() {
   return state.registrations
     .filter((registration) => registration.studentId === state.studentId
-      && SEAT_HOLDING_STATUSES.includes(registration.status))
+      && ACTIVE_REGISTRATION_STATUSES.includes(registration.status))
     .map((registration) => ({
       id: registration.classId,
       clubId: registration.clubId,
@@ -542,8 +546,12 @@ function renderClubsPage() {
 function renderClubCard(club) {
   const left = club.capacity - club.enrolled;
   const ratio = Math.round((club.enrolled / club.capacity) * 100);
-  const statusClass = left === 0 ? "full" : left <= 3 ? "warning" : "";
-  const statusText = left === 0 ? "Đã đầy · Có DS chờ" : left <= 3 ? `Chỉ còn ${left} chỗ` : `Còn ${left} chỗ`;
+  // Số đơn đã đăng ký nhưng chưa đóng phí. Chỗ chỉ được giữ khi đóng phí, nên con
+  // số này KHÔNG trừ vào sĩ số — nhưng giấu nó đi thì "Còn 5 chỗ" là nói dối phụ
+  // huynh đang xếp sau 30 gia đình khác.
+  const dangCho = Number(club.pending || 0);
+  const statusClass = left <= 0 ? "full" : left <= 3 ? "warning" : "";
+  const statusText = left <= 0 ? "Đã đầy · Có DS chờ" : left <= 3 ? `Chỉ còn ${left} chỗ` : `Còn ${left} chỗ`;
   const inCart = state.cart.includes(club.id);
   // Báo trùng giờ NGAY TRÊN THẺ, không đợi phụ huynh bấm rồi mới biết. Nhà trường
   // yêu cầu nói rõ vướng CLB nào và vào khoảng giờ nào.
@@ -554,8 +562,8 @@ function renderClubCard(club) {
       <span class="category">${club.category}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</span><h3>${escapeHtml(club.name)}</h3>
       <div class="club-meta"><span>${icon("clock")}${club.schedule}</span><span>${icon("pin")}${club.room} · ${club.teacher}</span></div>
       ${canhBao ? `<p class="club-conflict">${icon("clock")}${escapeHtml(canhBao.nhan)}</p>` : ""}
-      <div class="capacity"><div class="capacity-head"><span>Sĩ số</span><strong>${club.enrolled}/${club.capacity}</strong></div><div class="capacity-track ${statusClass}"><span style="width:${ratio}%"></span></div></div>
-      <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>/ học kỳ</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${inCart || canhBao ? "disabled" : ""}>${inCart ? "Đã chọn" : canhBao ? canhBao.nut : left === 0 ? "Vào DS chờ" : "Chọn"}</button></div></div>
+      <div class="capacity"><div class="capacity-head"><span>Sĩ số đã đóng phí</span><strong>${club.enrolled}/${club.capacity}</strong></div><div class="capacity-track ${statusClass}"><span style="width:${ratio}%"></span></div>${dangCho > 0 ? `<p class="capacity-pending">${dangCho} đơn đang chờ đóng phí · chỗ chỉ được giữ khi đã đóng phí</p>` : ""}</div>
+      <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>/ học kỳ</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${inCart || canhBao ? "disabled" : ""}>${inCart ? "Đã chọn" : canhBao ? canhBao.nut : left <= 0 ? "Vào DS chờ" : "Chọn"}</button></div></div>
     </div>
   </article>`;
 }
@@ -633,14 +641,14 @@ function renderPeriodNotice() {
 
 const STATUS_GUIDE = {
   submitted: "Đơn đã được ghi nhận, nhà trường đang xử lý.",
-  payment: "Vui lòng hoàn tất học phí theo hướng dẫn của nhà trường để được xác nhận chính thức.",
+  payment: "Chỗ của con CHƯA được giữ. Chỗ chỉ được giữ khi nhà trường xác nhận đã đóng phí, nên vui lòng hoàn tất học phí sớm.",
   confirmed: "Đã đóng phí và có tên trong danh sách chính thức của lớp.",
   dang_hoc: "Lớp đã khai giảng, con đang theo học.",
   hoc_xong: "Con đã hoàn thành khóa học của lớp này.",
   lui_khai_giang: "Lớp lùi ngày khai giảng, suất học của con vẫn được giữ.",
   khong_khai_giang: "Lớp không đủ điều kiện khai giảng. Nhà trường sẽ liên hệ về phương án thay thế hoặc hoàn phí.",
   hoan_phi: "Nhà trường đã xử lý hoàn phí cho đăng ký này.",
-  waitlist: "Lớp đã đủ sĩ số. Nhà trường sẽ liên hệ nếu có chỗ trống.",
+  waitlist: "Lớp đã đủ sĩ số. Nhà trường sẽ liên hệ nếu có chỗ trống. Nếu con đã đóng phí, khoản phí vẫn được giữ nguyên.",
   conflict: "Lịch học bị trùng. Vui lòng gửi yêu cầu hỗ trợ để chọn ca khác.",
   cancelled: "Đơn đã hủy.",
   draft: "Đơn chưa gửi.",
@@ -648,7 +656,7 @@ const STATUS_GUIDE = {
 
 function renderSchedule() {
   const active = state.registrations.filter((registration) =>
-    registration.studentId === state.studentId && [...SEAT_HOLDING_STATUSES, "waitlist"].includes(registration.status));
+    registration.studentId === state.studentId && ACTIVE_REGISTRATION_STATUSES.includes(registration.status));
   const entries = active.map((registration) => {
     const clubClass = clubs.find((item) => item.id === registration.classId) || null;
     return {
@@ -1050,7 +1058,7 @@ function renderCatalogClubBlock(club, classes) {
         <td><strong>${escapeHtml(row.name || "Ca chính")}</strong><br><span style="color:var(--muted)">Khối ${grades.join(", ")}</span></td>
         <td>${escapeHtml(row.scheduleLabel)}</td>
         <td>${escapeHtml(row.room)}<br><span style="color:var(--muted)">${escapeHtml(row.teacher)}</span></td>
-        <td>${row.enrolled}/${row.capacity}${row.minCapacity ? `<br><span style="color:var(--muted)">tối thiểu ${row.minCapacity}</span>` : ""}</td>
+        <td>${row.enrolled}/${row.capacity}${row.pendingRegistrations ? `<br><span style="color:var(--muted)">+${row.pendingRegistrations} chờ đóng phí</span>` : ""}${row.minCapacity ? `<br><span style="color:var(--muted)">tối thiểu ${row.minCapacity}</span>` : ""}</td>
         <td>${formatMoney(row.fee)}</td>
         <td><span class="badge badge-${badge[1]}">${badge[0]}</span></td>
         <td>
@@ -1637,7 +1645,7 @@ function renderApplicationTable(rows, { rutGon = false } = {}) {
     { title: "Học sinh", cell: (row) => `<div class="student-cell"><span class="mini-avatar">${escapeHtml(row.student.split(" ").slice(-2).map((part) => part[0]).join(""))}</span><div><strong>${escapeHtml(row.student)}</strong><span>${escapeHtml(row.className)}</span></div></div>` },
     { title: "Ngày sinh", rieng: true, cell: (row) => escapeHtml(formatDateOfBirth(row.dateOfBirth)) },
     { title: "CLB", cell: (row) => `${escapeHtml(row.club)}${row.classLabel ? `<br><span style="color:var(--muted)">${escapeHtml(row.classLabel)}</span>` : ""}` },
-    { title: "Trạng thái", cell: (row) => { const [label, color] = statusBadge(row.status); return `<span class="badge badge-${color}">${label}</span>`; } },
+    { title: "Trạng thái", cell: (row) => { const [label, color] = statusBadge(row.status); return `<span class="badge badge-${color}">${label}</span>${row.feePaid && row.status !== "confirmed" ? '<br><span style="color:var(--muted)">đã thu phí</span>' : ""}`; } },
     // "Chi tiết" phải có ở MỌI dòng: popup là nơi duy nhất đổi được trạng thái, mà
     // đơn đang chờ thanh toán lại chính là loại hay phải đổi tay nhất (lùi khai
     // giảng, lớp hủy, hoàn phí). Nút xác nhận phí đứng cạnh như một lối tắt, kèm
@@ -1699,6 +1707,7 @@ function renderDetailStudentTab({ registration, student }) {
     ${detailField("Phòng", registration.room)}
     ${detailField("Giáo viên", registration.teacher)}
     ${detailField("Học phí", registration.feeSnapshot ? formatMoney(Number(registration.feeSnapshot)) : "")}
+    ${detailField("Đã đóng phí", registration.feePaid ? "Rồi" : "Chưa")}
   </div>`;
 }
 
@@ -1812,7 +1821,10 @@ async function saveRegistrationStatus() {
     renderApp();
     toast(`Đã chuyển đơn sang “${statusBadge(next)[0]}”.`, "success");
   } catch (error) {
+    // Cuộn câu báo lỗi vào tầm mắt: hộp lỗi nằm cuối popup, mà popup thì dài hơn
+    // màn hình laptop. Không cuộn thì người dùng chỉ thấy nút Lưu không ăn.
     box.textContent = error.message;
+    box.scrollIntoView({ block: "nearest" });
     button.disabled = false;
   }
 }
@@ -2438,7 +2450,7 @@ function closeCart() { $("#cart-drawer").classList.remove("open"); $("#drawer-ov
 function showDetail(clubId) {
   const club = clubs.find(c => c.id === clubId);
   const left = club.capacity - club.enrolled;
-  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.description}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${club.schedule}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${club.room}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${club.teacher}</strong></div><div class="detail-cell"><span>Sĩ số</span><strong>${left > 0 ? `Còn ${left}/${club.capacity} chỗ` : "Đã đầy · nhận DS chờ"}</strong></div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)} / học kỳ</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id)?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":left===0?"Vào DS chờ":"Chọn CLB"}</button></div>`);
+  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.description}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${club.schedule}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${club.room}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${club.teacher}</strong></div><div class="detail-cell"><span>Sĩ số đã đóng phí</span><strong>${left > 0 ? `Còn ${left}/${club.capacity} chỗ` : "Đã đầy · nhận DS chờ"}</strong>${club.pending ? `<small style="display:block;color:var(--muted)">${club.pending} đơn đang chờ đóng phí</small>` : ""}</div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)} / học kỳ</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id)?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":left<=0?"Vào DS chờ":"Chọn CLB"}</button></div>`);
 }
 
 function showModal(content, { wide = false } = {}) {
