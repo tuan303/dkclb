@@ -243,6 +243,15 @@ if ($maChu -eq 200) {
   Write-Tot "$PublicUrl trả 200."
 } elseif ($maChu -eq 522) {
   Write-Nhac "522: Cloudflare chưa gọi được vào máy chủ. Máy chủ ở local đã tốt, thường chỉ cần chờ vài giây rồi thử lại."
+} elseif ($maChu -eq 0) {
+  # Mã 0 = KHÔNG có phản hồi HTTP nào, tức là không mở nổi kết nối. Trên máy đặt
+  # trong mạng trường, đây gần như luôn là chuyện mạng nội bộ không tự gọi ra tên
+  # miền công cộng của chính mình (hairpin NAT) chứ KHÔNG phải trang chết. Đã đo:
+  # cùng lúc deploy.ps1 báo 0, gọi từ ngoài Internet vẫn trả 200.
+  Write-Nhac "Không mở được kết nối tới $PublicUrl TỪ CHÍNH MÁY CHỦ NÀY."
+  Write-Host "        Đây thường KHÔNG phải trang chết: máy trong mạng trường không tự gọi ra tên miền"
+  Write-Host "        công cộng của mình được. Bước 'Nghiệm thu (trong máy chủ)' ở trên mới là bước quyết định."
+  Write-Host "        Muốn chắc thì mở $PublicUrl bằng điện thoại dùng 4G."
 } else {
   Write-Nhac "$PublicUrl trả $maChu."
 }
