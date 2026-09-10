@@ -846,6 +846,23 @@ async function dashboardData() {
   };
 }
 
+/**
+ * Những gì ĐANG NẰM TRONG CƠ SỞ DỮ LIỆU, không phải trạng thái của tiến trình.
+ *
+ * Trạng thái đồng bộ (lần chạy gần nhất, kết quả) chỉ sống trong bộ nhớ tiến trình
+ * nên khởi động lại là về "chưa chạy lần nào" — đúng về mặt kỹ thuật nhưng làm
+ * người dùng tưởng mất dữ liệu. Ba con số dưới đây đọc thẳng từ cơ sở dữ liệu, nên
+ * chúng nói được sự thật: danh bạ vẫn còn nguyên, và lần đồng bộ gần nhất là lúc nào.
+ */
+async function directorySummary() {
+  if (businessStore) return businessStore.directorySummary();
+  return {
+    parents: asInt(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'parent'").get().count),
+    students: asInt(db.prepare("SELECT COUNT(*) AS count FROM students WHERE status = 'active'").get().count),
+    lastSyncAt: db.prepare("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'SYNC_STUDENT_DIRECTORY'").get().at || null,
+  };
+}
+
 async function countActiveStudents() {
   if (businessStore) return businessStore.countActiveStudents();
   return asInt(db.prepare("SELECT COUNT(*) AS n FROM students WHERE status = 'active'").get()?.n);
@@ -1373,13 +1390,7 @@ async function lookupAccount(rawAccount, { canSeeCode = false } = {}) {
     ? await businessStore.findAccount(normalized)
     : db.prepare("SELECT * FROM users WHERE lower(account) = lower(?)").get(normalized) || null;
 
-  const directory = businessStore
-    ? await businessStore.directorySummary()
-    : {
-      parents: asInt(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'parent'").get().count),
-      students: asInt(db.prepare("SELECT COUNT(*) AS count FROM students WHERE status = 'active'").get().count),
-      lastSyncAt: db.prepare("SELECT MAX(created_at) AS at FROM audit_logs WHERE action = 'SYNC_STUDENT_DIRECTORY'").get().at || null,
-    };
+  const directory = await directorySummary();
 
   if (!user) {
     return {
@@ -1977,7 +1988,15 @@ async function handleApi(req, res, url) {
 
   if (method === "GET" && url.pathname === "/api/admin/integrations/google-sheets") {
     await requireSchoolUser(req, CAP.dongBoDanhBa);
-    return sendJson(res, 200, { integration: { ...directorySource.getStatus(), schedule: syncScheduler.getStatus() } });
+    return sendJson(res, 200, {
+      integration: {
+        ...directorySource.getStatus(),
+        schedule: syncScheduler.getStatus(),
+        // Kèm số liệu đọc từ cơ sở dữ liệu, để màn hình phân biệt được "tiến trình
+        // chưa chạy lần nào kể từ lúc bật" với "hệ thống chưa có dữ liệu".
+        stored: await directorySummary(),
+      },
+    });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/integrations/google-sheets/preview") {

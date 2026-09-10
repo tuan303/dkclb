@@ -1862,7 +1862,7 @@ const SYNC_HEALTH_LABELS = {
 // Lỗi đồng bộ nền phải nhìn thấy ngay trên màn hình cấu hình. Giáo vụ thêm học
 // sinh mà việc đồng bộ chết lặng lẽ thì phụ huynh không đăng ký được, và không
 // ai truy ra được nguyên nhân.
-function renderSyncSchedule(schedule) {
+function renderSyncSchedule(schedule, luuTru) {
   if (!schedule) return "";
   const [tone, label] = SYNC_HEALTH_LABELS[schedule.health] || SYNC_HEALTH_LABELS["chua-chay"];
   const last = schedule.lastRun;
@@ -1876,7 +1876,7 @@ function renderSyncSchedule(schedule) {
     ? `Không đọc được: ${failed.map((source) => `${escapeHtml(source.label)} — ${escapeHtml(source.error || "lỗi không rõ")}`).join(" · ")}. Trong lúc chưa khắc phục, hệ thống <b>không đánh dấu học sinh nghỉ học</b> để tránh vô hiệu hóa nhầm cả một cấp.`
     : last?.error ? escapeHtml(last.error.message)
     : schedule.health === "qua-han" ? `Đã ${Math.round((schedule.msSinceLastSuccess || 0) / 60000)} phút không có lần đồng bộ nào thành công.`
-    : "Chưa có lần đồng bộ nào thành công.";
+    : "Chưa chạy lần đồng bộ nào kể từ lúc bật máy chủ. Đây là trạng thái của TIẾN TRÌNH, không phải của dữ liệu — danh bạ đã đồng bộ trước đó vẫn nằm nguyên trong cơ sở dữ liệu.";
 
   return `${schedule.healthy ? "" : `<div class="inline-alert">${icon("clock")}<span><b>${label}.</b> ${alert}</span></div>`}
     <div class="integration-source">
@@ -1884,6 +1884,11 @@ function renderSyncSchedule(schedule) {
       <div><span>Lần chạy gần nhất</span><strong>${last ? `${formatDateTime(new Date(last.finishedAt))} · ${last.trigger === "thu-cong" ? "bấm tay" : "theo lịch"}` : "Chưa chạy"}</strong></div>
       <div><span>Kết quả gần nhất</span><strong>${summary}</strong></div>
       <div><span>Lịch tự động</span><strong>${schedule.enabled ? `Mỗi ${Math.round(schedule.intervalMs / 60000)} phút` : "Đã tắt · chỉ chạy khi bấm tay"}</strong></div>
+    </div>
+    <div class="kpi-strip" style="margin-top:11px">
+      <div class="kpi-item"><span>Học sinh đang học · trong CSDL</span><strong>${luuTru ? luuTru.students : "—"}</strong></div>
+      <div class="kpi-item"><span>Tài khoản phụ huynh · trong CSDL</span><strong>${luuTru ? luuTru.parents : "—"}</strong></div>
+      <div class="kpi-item"><span>Đồng bộ gần nhất</span><strong>${luuTru?.lastSyncAt ? formatDateTime(luuTru.lastSyncAt) : "Chưa từng chạy"}</strong></div>
     </div>`;
 }
 
@@ -2347,7 +2352,7 @@ function renderSettings() {
   return `<section class="grid grid-3">${renderModuleCard("01","Người dùng & vai trò","8 nhóm vai trò với phạm vi xem/thao tác khác nhau.",["Phụ huynh","Vận hành/Giáo vụ/Kế toán","GV/BGH/IT Admin"])}${renderModuleCard("02","Quy tắc nghiệp vụ","Cấu hình giới hạn CLB, waitlist, thời hạn đổi/hủy.",["Không hard-code theo năm","Ghi log mọi ngoại lệ"])}${renderModuleCard("03","Tích hợp","Kết nối dữ liệu học sinh, OTP, thông báo và kế toán.",["Google Sheets chỉ đọc","Mã hóa trước khi ghi Firestore"])}</section>
   ${hasCap("dong-bo-danh-ba") ? renderExcelImport() : ""}
   ${hasCap("dong-bo-danh-ba") ? `<section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets · ${Number(integration.sourceCount || 0)} file theo cấp học</h3><p>${escapeHtml(integration.serviceAccountEmail || "—")} · quyền Viewer, chỉ đọc</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
-    ${renderSyncSchedule(integration.schedule)}
+    ${renderSyncSchedule(integration.schedule, integration.stored)}
     ${renderSheetSources(integration.sources, preview?.sources)}
     ${renderSheetPreview(preview)}
   </div></section>` : ""}
