@@ -1375,8 +1375,20 @@ function buildCatalogImportPlan(analysis, { catalog, periodId }) {
 
   for (const row of analysis.classes) {
     const clubId = clubIdByKey.get(row.clubKey);
-    const data = normalizeClassInput({ ...row, clubId, periodId, active: true }, { knownPeriodIds: [periodId] });
-    const match = existingClasses.get(classKey({ ...data }));
+    // Tìm ca đang có TRƯỚC rồi mới chuẩn hoá, để normalizeClassInput biết giá trị cũ
+    // mà giữ lại những trường file danh mục KHÔNG mang theo — quan trọng nhất là
+    // enrolled_base ("ghi danh sẵn ngoài hệ thống").
+    //
+    // Làm ngược thứ tự thì enrolledBase rơi về 0, và trên MySQL — nền máy chủ thật
+    // đang chạy — câu ghi là ON DUPLICATE KEY UPDATE enrolled_base = VALUES(...),
+    // tức mỗi lần nhập lại danh mục là XOÁ SẠCH số ghi danh sẵn của mọi ca, làm sĩ
+    // số cả trường tụt xuống trong im lặng. Nhánh SQLite không lộ ra vì câu UPDATE
+    // của nó không có cột đó — đúng kiểu lỗi chỉ sống ở nền mà kiểm thử không chạm.
+    const soBo = normalizeClassInput({ ...row, clubId, periodId, active: true }, { knownPeriodIds: [periodId] });
+    const match = existingClasses.get(classKey({ ...soBo }));
+    const data = match
+      ? normalizeClassInput({ ...row, clubId, periodId, active: true }, { knownPeriodIds: [periodId], existing: match })
+      : soBo;
     const targetId = match?.id || id("class");
     classWrites.push({ id: targetId, data, existing: match || null });
     if (match) counters.classesUpdated += 1;
@@ -1415,12 +1427,14 @@ async function commitCatalogImport({ actorUserId, analysis, periodId }) {
       }
       for (const item of plan.classWrites) {
         if (item.existing) {
+          // Ghi cả enrolled_base y như nhánh MySQL. Bỏ cột ra cho "an toàn" là để
+          // hai nền hành xử khác nhau, và khác nhau ở đâu thì kiểm thử mù ở đó.
           db.prepare(`UPDATE club_classes SET club_id = ?, period_id = ?, name = ?, day_of_week = ?, start_time = ?,
-            end_time = ?, schedule_label = ?, grades_json = ?, room = ?, teacher = ?, capacity = ?, min_capacity = ?, fee = ?,
-            waitlist_enabled = ?, sort_order = ?, active = 1 WHERE id = ?`)
+            end_time = ?, schedule_label = ?, grades_json = ?, room = ?, teacher = ?, capacity = ?, min_capacity = ?,
+            enrolled_base = ?, fee = ?, waitlist_enabled = ?, sort_order = ?, active = 1 WHERE id = ?`)
             .run(item.data.clubId, item.data.periodId, item.data.name, item.data.dayOfWeek, item.data.startTime,
               item.data.endTime, item.data.scheduleLabel, JSON.stringify(item.data.grades), item.data.room, item.data.teacher, item.data.capacity,
-              item.data.minCapacity, item.data.fee, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder, item.id);
+              item.data.minCapacity, item.data.enrolledBase, item.data.fee, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder, item.id);
         } else {
           db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time,
             schedule_label, grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active)
