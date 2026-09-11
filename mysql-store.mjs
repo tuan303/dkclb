@@ -149,13 +149,14 @@ const EXPORT_QUERIES = {
   },
   registrations: {
     sql: `SELECT r.id, r.group_id, r.student_id, r.parent_user_id, r.class_id, r.period_id, r.status,
-      r.fee_snapshot, r.schedule_snapshot, r.terms_accepted_at, r.created_at, r.updated_at,
+      r.fee_snapshot, r.fee_paid, r.schedule_snapshot, r.terms_accepted_at, r.created_at, r.updated_at,
       cc.club_id, cc.day_of_week, cc.start_time, cc.end_time
       FROM registrations r LEFT JOIN club_classes cc ON cc.id = r.class_id`,
     map: (row) => ({
       id: row.id, groupId: row.group_id, studentId: row.student_id, parentUserId: row.parent_user_id,
       classId: row.class_id, clubId: row.club_id || null, periodId: row.period_id || null, status: row.status,
-      feeSnapshot: toInt(row.fee_snapshot), scheduleSnapshot: row.schedule_snapshot,
+      feeSnapshot: toInt(row.fee_snapshot), feePaid: toInt(row.fee_paid) === 1,
+      scheduleSnapshot: row.schedule_snapshot,
       termsAcceptedAt: row.terms_accepted_at || null, createdAt: row.created_at, updatedAt: row.updated_at,
       dayOfWeek: row.day_of_week === null ? null : toInt(row.day_of_week),
       startTime: row.start_time || null, endTime: row.end_time || null,

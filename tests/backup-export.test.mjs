@@ -148,3 +148,29 @@ test("lần xuất được ghi vào nhật ký thao tác", async () => {
   assert.equal(entry.entityType, "backup");
   assert.equal(entry.reason, "Xuất toàn bộ dữ liệu");
 });
+
+test('bản sao lưu mang theo "đã thu phí", không để một lần khôi phục xoá sạch', async () => {
+  // fee_paid là sự thật về TIỀN, tách khỏi trạng thái là sự thật về CHỖ, và KHÔNG
+  // suy lại được từ cột nào khác: một đơn xếp chờ vẫn có thể đã thu tiền (lớp đầy
+  // thì đơn đã đóng phí bị đẩy sang xếp chờ), còn một đơn "đã đóng phí" có thể chỉ
+  // là do giáo vụ đổi trạng thái tay chứ chưa hề thu đồng nào.
+  //
+  // Thiếu cột này trong bản sao lưu thì một lần khôi phục là vài trăm em đang học
+  // về hết "chưa thu phí", và không có đường nào dựng lại con số đó.
+  const chuaThu = (await exportCollection("registrations")).rows;
+  assert.ok(chuaThu.length > 0, "dữ liệu mẫu phải có đơn đăng ký");
+  for (const row of chuaThu) {
+    assert.ok("feePaid" in row, `đơn ${row.id} thiếu hẳn trường feePaid trong bản sao lưu`);
+  }
+
+  // Thu tiền một đơn thật rồi xuất lại: giá trị phải đi theo.
+  const don = (await (await request("/api/registrations", adminCookie)).json())
+    .registrations.find((row) => !row.feePaid && ["payment", "submitted"].includes(row.status));
+  assert.ok(don, "dữ liệu mẫu phải có một đơn chưa thu tiền để xác nhận");
+  const xacNhan = await request(`/api/admin/registrations/${encodeURIComponent(don.id)}/confirm-payment`,
+    adminCookie, { method: "PATCH", body: "{}" });
+  assert.equal(xacNhan.status, 200);
+
+  const sau = (await exportCollection("registrations")).rows.find((row) => row.id === don.id);
+  assert.equal(sau.feePaid, true, "đã thu tiền rồi mà bản sao lưu vẫn ghi là chưa");
+});

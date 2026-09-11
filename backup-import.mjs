@@ -127,10 +127,13 @@ const INSERTS = {
   },
   registrations: {
     sql: `INSERT INTO registrations (id, group_id, student_id, parent_user_id, class_id, period_id, status,
-      fee_snapshot, schedule_snapshot, terms_accepted_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      fee_snapshot, fee_paid, schedule_snapshot, terms_accepted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    // fee_paid phải đi theo bản sao lưu: nó là sự thật về TIỀN, không suy lại được
+    // từ trạng thái. Bản sao lưu cũ (chưa có cột này) nạp vào sẽ ra false — đúng
+    // với dữ liệu nó mang, và đó là lý do phải sao lưu lại sau khi vá.
     values: (row) => [row.id, text(row.groupId, 64) || row.id, row.studentId, row.parentUserId || null,
-      row.classId, text(row.periodId, 64), row.status, int(row.feeSnapshot),
+      row.classId, text(row.periodId, 64), row.status, int(row.feeSnapshot), row.feePaid ? 1 : 0,
       text(row.scheduleSnapshot, 120) || "", text(row.termsAcceptedAt, 32), row.createdAt, row.updatedAt],
     requires: [["studentId", "students"], ["classId", "clubClasses"]],
   },
