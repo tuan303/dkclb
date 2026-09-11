@@ -45,6 +45,11 @@ const THIEU_O_FIRESTORE_DA_BIET = [
   "close", "findSchoolUserForLogin", "linkMicrosoftLogin", "createSchoolUser",
   "listSchoolUsers", "getUserById", "setSchoolUserDisplayName", "setSchoolUserRole",
   "setSchoolUserActive",
+  // Nhập đăng ký hàng loạt từ file Google Form: CỐ Ý chỉ làm cho MySQL. Đây là công
+  // cụ chuyển một đợt đăng ký cũ sang hệ thống, dùng vài lần rồi thôi, mà nhà trường
+  // thì chạy MySQL. Viết bản Firestore là viết cho một nền không ai dùng — nhưng
+  // server.mjs phải nói rõ khi gặp nền thiếu, xem kiemNenHoTroNhapHangLoat.
+  "listAllStudents", "listAllParentLinks", "nhapDangKyHangLoat",
 ].sort();
 
 test("khoảng lệch giữa hai kho dữ liệu không được rộng thêm", () => {

@@ -1235,7 +1235,23 @@ async function savePeriodRecord({ actorUserId, periodId, input }) {
  * hành phải đọc được "file 312 dòng, xếp được 305, 7 dòng này hỏng vì sao" trước
  * khi bấm ghi vài trăm đơn.
  */
+/**
+ * Nhập hàng loạt cố ý chỉ làm cho MySQL và SQLite — xem chú thích ở danh sách nợ
+ * trong tests/lech-mysql-sqlite.test.mjs. Nền nào thiếu thì phải nói thẳng ra, chứ
+ * không để người dùng nhận "TypeError: ... is not a function" dưới dạng lỗi 500.
+ */
+function kiemNenHoTroNhapHangLoat() {
+  if (!businessStore) return;
+  for (const ten of ["listAllStudents", "listAllParentLinks", "nhapDangKyHangLoat"]) {
+    if (typeof businessStore[ten] !== "function") {
+      throw httpError(501, "NEN_LUU_TRU_CHUA_HO_TRO",
+        "Nền lưu trữ đang dùng chưa hỗ trợ nhập đăng ký hàng loạt. Tính năng này làm cho MySQL.");
+    }
+  }
+}
+
 async function phanTichXepLop({ files = [], mapping = {}, periodId }) {
+  kiemNenHoTroNhapHangLoat();
   const doc = (files || []).map((file) => docFileXepLop({ rows: file.rows || [], label: file.label || "" }));
   const hong = doc.filter((item) => !item.ok);
   const dongFile = doc.filter((item) => item.ok).flatMap((item) => item.rows);
