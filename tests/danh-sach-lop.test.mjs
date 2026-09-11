@@ -22,6 +22,20 @@ let giaovuCookie;
 
 const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 
+/**
+ * Cắt đúng thân MỘT hàm cấp cao nhất: từ dòng khai báo tới dấu } ở cột 0.
+ *
+ * Dùng mốc "hàm kế tiếp" thì mỗi lần chèn mã mới vào giữa là bài kiểm quét trúng mã
+ * của tính năng khác rồi báo động nhầm — đã xảy ra khi thêm màn nhập đăng ký.
+ */
+function catHam(ten) {
+  const dau = app.indexOf(`function ${ten}(`);
+  assert.ok(dau >= 0, `app.js không còn hàm ${ten}`);
+  const cuoi = app.indexOf("\n}", dau);
+  assert.ok(cuoi > dau, `không tìm thấy dấu đóng của hàm ${ten}`);
+  return app.slice(dau, cuoi + 2);
+}
+
 /** Cắt nguồn có khẳng định mốc — xem lý do ở tests/cot-don-dang-ky.test.mjs. */
 function catDoan(tu, den) {
   const dau = app.indexOf(tu);
@@ -81,7 +95,7 @@ test("mã học sinh và ngày sinh chỉ hiện cho người có quyền duyệ
   // bên hệ thống quản lý học sinh. Nhưng roles.mjs ghi rõ phạm vi danh-sach-van-hanh
   // của giáo vụ KHÔNG gồm hai trường đó, mà chính giáo vụ là người mở trang này
   // nhiều nhất. Nên hai cột phải nằm sau đúng cái quyền đang chắn trang Đơn đăng ký.
-  const bang = catDoan("function renderRosterStudents(", "function renderReports()");
+  const bang = catHam("renderRosterStudents");
   assert.ok(bang.includes('const xemDinhDanh = hasCap("duyet-don")'),
     "bảng học sinh phải lấy quyền duyet-don làm cổng cho hai cột định danh");
   for (const truong of ["studentCode", "dateOfBirth"]) {

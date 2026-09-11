@@ -97,6 +97,7 @@ const pageMeta = {
   support: ["Yêu cầu hỗ trợ", "Trung tâm trợ giúp"], dashboard: ["Dashboard vận hành", "Cập nhật lúc 16:00 · 18/08/2026"],
   campaigns: ["Đợt đăng ký", "Học kỳ I · 2026–2027"], classes: ["CLB & lịch học", "Quản lý danh mục và quota"],
   applications: ["Đơn đăng ký", "158 bản ghi trong đợt hiện tại"], rosters: ["Danh sách lớp CLB", "Xếp lớp và điểm danh"],
+  nhapDangKy: ["Nhập đăng ký hàng loạt", "Chuyển đợt đăng ký cũ vào hệ thống"],
   reports: ["Báo cáo & xuất file", "Trung tâm dữ liệu vận hành"], structure: ["Cấu trúc hệ thống", "Bản đồ module MVP"],
   settings: ["Cấu hình & phân quyền", "Quản trị hệ thống"],
   accounts: ["Tài khoản nhà trường", "Chỉ quản trị cao nhất truy cập được"],
@@ -447,6 +448,7 @@ function renderPage() {
     schedule: renderSchedule, account: renderAccount, support: renderSupport, dashboard: renderAdminDashboard,
     campaigns: renderCampaigns, classes: renderClasses, applications: renderApplications,
     rosters: renderRosters, reports: renderReports, structure: renderStructure, settings: renderSettings,
+    nhapDangKy: renderNhapDangKy,
     accounts: renderSchoolAccounts,
   };
   $("#page-content").innerHTML = (pages[state.page] || renderParentHome)();
@@ -1626,7 +1628,7 @@ function renderApplications() {
     : state.adminStatus === "ngoai-le" ? adminApplications.filter((item) => EXCEPTION_STATUSES.includes(item.status))
     : adminApplications.filter((item) => item.status === state.adminStatus);
   const tabs = [["all", "Tất cả"], ...LIFECYCLE_STATUSES.map((status) => [status, statusBadge(status)[0]]), ["ngoai-le", "Ngoại lệ"]];
-  return `<section class="section" style="margin-top:0"><div class="section-head"><div><span class="eyebrow">Quản lý tập trung</span><h2>Danh sách đăng ký</h2><p>Lọc, xử lý ngoại lệ và theo dõi lịch sử trạng thái.</p></div><button class="button button-secondary" data-export>${icon("download")} Xuất CSV</button></div>
+  return `<section class="section" style="margin-top:0"><div class="section-head"><div><span class="eyebrow">Quản lý tập trung</span><h2>Danh sách đăng ký</h2><p>Lọc, xử lý ngoại lệ và theo dõi lịch sử trạng thái.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="button button-secondary" data-go="nhapDangKy">${icon("file")} Nhập từ file đăng ký</button><button class="button button-secondary" data-export>${icon("download")} Xuất CSV</button></div></div>
   <div class="filters"><label class="search-field">${icon("search")}<input id="admin-search" placeholder="Tìm mã đơn, mã học sinh, tên học sinh, CLB..." /></label><div class="status-tabs">${tabs.map(([id,label]) => `<button class="status-tab ${state.adminStatus === id ? "active" : ""}" data-status-tab="${id}">${label}</button>`).join("")}</div></div></section>
   <section class="section panel"><div class="panel-head"><div><h3>${filtered.length} đơn hiển thị</h3><p>${escapeHtml(pageContext("applications", ""))}</p></div></div><div id="applications-table">${renderApplicationTable(filtered)}</div></section>`;
 }
@@ -2170,6 +2172,222 @@ function renderRosterStudents(ca, rows, chiGiuCho, ghiDanhSan) {
             ${cot.map((item) => `<td>${item.cell(row)}</td>`).join("")}
           </tr>`).join("")}</tbody></table></div>`
       : `<p style="margin:0;color:var(--muted)">${escapeHtml(trong)}</p>`}`;
+}
+
+const KET_CUC_XEP_LOP = {
+  xepDuoc: ["Xếp được", "green"],
+  daCoDon: ["Đã có đơn — bỏ qua", "blue"],
+  chuaGhepCa: ["Chưa ghép ca học", "gold"],
+  khongTimThayHocSinh: ["Không có mã học sinh", "red"],
+  hocSinhNghiHoc: ["Học sinh đã nghỉ", "red"],
+  trungGio: ["Trùng giờ", "gold"],
+  saiKhoi: ["Sai khối", "gold"],
+  vuotHanMuc: ["Vượt hạn mức CLB", "gold"],
+  trungTrongFile: ["Trùng trong chính file", "blue"],
+  hong: ["Dòng hỏng", "red"],
+};
+
+/**
+ * Nhập đăng ký hàng loạt từ file Google Form.
+ *
+ * Đây là công cụ chuyển một đợt đăng ký CŨ vào hệ thống: vài trăm em đã đóng phí và
+ * đang học thật, nhưng chưa có đơn nào. Cả màn hình xoay quanh một việc: nói trước
+ * chuyện gì SẼ xảy ra, đủ rõ để người vận hành dám bấm ghi vài trăm đơn.
+ */
+function renderNhapDangKy() {
+  const draft = state.nhapDangKy || {};
+  const preview = draft.preview || null;
+  const dsDot = state.catalog?.periods || [];
+  const dotId = draft.periodId || state.catalog?.activePeriodId || dsDot[0]?.id || "";
+
+  return `<section class="section" style="margin-top:0">
+    <div class="section-head"><div><span class="eyebrow">Chuyển dữ liệu</span><h2>Nhập đăng ký hàng loạt</h2>
+    <p>Dành cho đợt đã đăng ký qua Google Form trước khi có cổng này. Mỗi dòng trong file thành một đơn thật, để các em có tên trong danh sách lớp và phụ huynh thấy được trong cổng.</p></div>
+    <button class="button button-secondary" data-go="applications">← Về danh sách đơn</button></div>
+  </section>
+
+  <section class="section panel"><div class="panel-head"><div><h3>1. Chọn đợt và file</h3>
+    <p>File cần ít nhất hai cột: <b>Mã học sinh</b> và <b>CLB</b>. Đọc ngay trên máy bạn, không tải lên đâu cả.</p></div></div>
+    <div class="panel-body">
+      <label class="form-field"><span>Đợt đăng ký sẽ ghi các đơn này vào</span>
+        <select id="nhap-dot" class="select-field">
+          ${dsDot.map((dot) => `<option value="${escapeHtml(dot.id)}" ${dot.id === dotId ? "selected" : ""}>${escapeHtml(dot.name)}</option>`).join("")}
+        </select></label>
+      <label class="form-field" style="margin-top:11px"><span>File .xlsx hoặc .csv kết quả Google Form</span>
+        <input id="nhap-file" type="file" accept=".xlsx,.csv" /></label>
+      ${(draft.sources || []).length
+        ? `<div class="mapping-list" style="margin-top:11px">${draft.sources.map((source) =>
+          `<span><b>${escapeHtml(source.label)}</b>${source.rows.length} dòng</span>`).join("")}</div>` : ""}
+      <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:13px">
+        <button class="button button-secondary" id="nhap-kiemtra" ${(draft.sources || []).length ? "" : "disabled"}>Kiểm tra file</button>
+      </div>
+      <div id="nhap-error" class="form-error" role="alert"></div>
+    </div>
+  </section>
+
+  ${preview ? renderNhapDangKyPreview(preview, draft) : ""}`;
+}
+
+function renderNhapDangKyPreview(preview, draft) {
+  const dem = preview.dem || {};
+  const chuaGhep = preview.oChon.filter((item) => !item.classId).length;
+  const xepDuoc = dem.xepDuoc || 0;
+
+  return `<section class="section panel"><div class="panel-head"><div><h3>2. Ghép ô chọn của Form với ca học</h3>
+    <p>Google Form chỉ có ${preview.oChon.length} giá trị khác nhau cho ${preview.tongDong} dòng. Ghép một lần ở đây, máy không tự đoán khi một CLB có nhiều ca.</p></div>
+    ${chuaGhep ? `<span class="badge badge-gold">${chuaGhep} ô chưa ghép</span>` : `<span class="badge badge-green">Đã ghép đủ</span>`}</div>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Ô chọn trong file</th><th style="width:90px">Số dòng</th><th>Ca học trong hệ thống</th></tr></thead>
+      <tbody>${preview.oChon.map((item) => `<tr>
+        <td><strong>${escapeHtml(item.mau)}</strong>${item.tuChon ? "" : item.classId ? `<br><span style="color:var(--muted)">máy ghép tự động</span>` : ""}</td>
+        <td>${item.soDong}</td>
+        <td><select class="select-field" data-ghep-ca="${escapeHtml(item.khoa)}">
+          <option value="">— chưa ghép —</option>
+          ${preview.caTrongDot.map((ca) => `<option value="${escapeHtml(ca.id)}" ${ca.id === item.classId ? "selected" : ""}>${escapeHtml(ca.nhan)}</option>`).join("")}
+        </select></td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+  </section>
+
+  <section class="section panel"><div class="panel-head"><div><h3>3. Từng dòng sẽ ra sao</h3>
+    <p>${preview.tongDong} dòng trong file. Không dòng nào bị bỏ im lặng.</p></div></div>
+    <div class="panel-body"><div class="mapping-list">${Object.entries(dem).map(([ketCuc, so]) => {
+      const [nhan, mau] = KET_CUC_XEP_LOP[ketCuc] || [ketCuc, "blue"];
+      return `<span><b>${escapeHtml(nhan)}</b><span class="badge badge-${mau}">${so}</span></span>`;
+    }).join("")}</div></div>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th style="width:60px">Dòng</th><th>Mã học sinh</th><th>Học sinh</th><th>Ô chọn trong file</th><th>Kết cục</th></tr></thead>
+      <tbody>${preview.rows.slice(0, 200).map((row) => {
+        const [nhan, mau] = KET_CUC_XEP_LOP[row.ketCuc] || [row.ketCuc, "blue"];
+        return `<tr>
+          <td>${row.dong}</td>
+          <td>${escapeHtml(row.studentCode || "—")}</td>
+          <td>${escapeHtml(row.studentTen || row.studentName || "—")}</td>
+          <td>${escapeHtml(row.clubText || "—")}</td>
+          <td><span class="badge badge-${mau}">${escapeHtml(nhan)}</span>${row.lyDo ? `<br><span style="color:var(--muted)">${escapeHtml(row.lyDo)}</span>` : row.caNhan ? `<br><span style="color:var(--muted)">→ ${escapeHtml(row.caNhan)}</span>` : ""}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table></div>
+    ${preview.rows.length > 200 ? `<div class="panel-body"><p class="roster-note">Chỉ hiện 200 dòng đầu; khi ghi thì xử lý đủ ${preview.rows.length} dòng.</p></div>` : ""}
+  </section>
+
+  ${preview.caAnhHuong.length ? `<section class="section panel"><div class="panel-head"><div><h3>4. Sĩ số từng ca sẽ thay đổi thế nào</h3>
+    <p>Các em trong file đang được đếm ở ô <b>ghi danh sẵn ngoài hệ thống</b>. Nhập thành đơn mà không hạ con số đó xuống là <b>đếm hai lần</b>.</p></div></div>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Ca học</th><th style="width:90px">Nhập vào</th><th>Ghi danh sẵn</th><th>Sĩ số nếu HẠ</th><th>Sĩ số nếu KHÔNG hạ</th></tr></thead>
+      <tbody>${preview.caAnhHuong.map((ca) => `<tr>
+        <td><strong>${escapeHtml(ca.nhan)}</strong></td>
+        <td>${ca.soEmNhapVao} em</td>
+        <td>${ca.enrolledBaseHienTai} → <b>${ca.enrolledBaseDeXuat}</b>${ca.thieuGhiDanhSan ? `<br><span style="color:var(--red)">nhập nhiều hơn số ghi danh sẵn</span>` : ""}</td>
+        <td><span class="badge badge-green">${ca.siSoSauNeuHaBase}/${ca.capacity}</span></td>
+        <td><span class="badge badge-red">${ca.siSoSauNeuGiuBase}/${ca.capacity}</span></td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+  </section>` : ""}
+
+  <section class="section panel"><div class="panel-head"><div><h3>5. Ghi vào hệ thống</h3>
+    <p>${xepDuoc} đơn sẽ được tạo. Thao tác này không hoàn tác được bằng một cú bấm — nên sao lưu trước nếu chưa.</p></div></div>
+    <div class="panel-body">
+      <label class="form-field"><span>Trạng thái của các đơn này</span>
+        <select id="nhap-trangthai" class="select-field">
+          ${LIFECYCLE_STATUSES.map((status) => `<option value="${status}" ${status === (draft.trangThai || "dang_hoc") ? "selected" : ""}>${escapeHtml(statusBadge(status)[0])}</option>`).join("")}
+        </select></label>
+      <label class="checkbox-row" style="margin-top:11px">
+        <input type="checkbox" id="nhap-dathuphi" ${draft.daThuPhi === false ? "" : "checked"} />
+        <span>Đánh dấu <b>đã thu phí</b> cho tất cả các đơn này</span></label>
+      <label class="checkbox-row" style="margin-top:7px">
+        <input type="checkbox" id="nhap-habase" ${draft.haGhiDanhSan === false ? "" : "checked"} />
+        <span>Hạ ô <b>ghi danh sẵn ngoài hệ thống</b> xuống tương ứng, để sĩ số không đếm hai lần</span></label>
+      <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:13px">
+        <button class="button button-primary" id="nhap-ghi" ${preview.sanSang ? "" : "disabled"}>Ghi ${xepDuoc} đơn vào hệ thống</button>
+      </div>
+      ${preview.sanSang ? "" : `<p class="field-hint">${preview.filesHong ? "Còn file không đọc được." : "Chưa có dòng nào xếp được — hãy ghép ô chọn với ca học ở bước 2."}</p>`}
+      <div id="nhap-error-2" class="form-error" role="alert"></div>
+    </div>
+  </section>`;
+}
+
+function bindNhapDangKy() {
+  const draft = () => (state.nhapDangKy = state.nhapDangKy || { sources: [], preview: null });
+  const loi = (text) => { const o = $("#nhap-error-2") || $("#nhap-error"); if (o) o.textContent = text; };
+
+  $("#nhap-dot")?.addEventListener("change", (event) => {
+    state.nhapDangKy = { ...draft(), periodId: event.target.value, preview: null };
+    renderPage();
+  });
+
+  $("#nhap-file")?.addEventListener("change", async (event) => {
+    loi("");
+    try {
+      const sources = await docFileExcel([...event.target.files]);
+      if (!sources.length) throw new Error("Không đọc được sheet nào có dữ liệu trong file đã chọn.");
+      // Đổi file thì bản xem trước cũ hết giá trị; giữ lại là mời người dùng bấm ghi
+      // theo một kết quả không còn đúng với file đang chọn.
+      state.nhapDangKy = { ...draft(), sources, preview: null, mapping: {} };
+      renderPage();
+    } catch (error) { loi(error.message); }
+  });
+
+  const xemTruoc = async () => {
+    const d = draft();
+    const payload = {
+      files: d.sources, periodId: d.periodId || state.catalog?.activePeriodId, mapping: d.mapping || {},
+    };
+    const { preview } = await api("/admin/registrations/import/preview", { method: "POST", body: JSON.stringify(payload) });
+    // Nhớ lại bảng ghép mà máy vừa đề xuất, để lần xem trước sau không mất lựa chọn
+    // người dùng đã sửa tay.
+    const mapping = { ...(d.mapping || {}) };
+    for (const item of preview.oChon) if (item.classId) mapping[item.khoa] = item.classId;
+    state.nhapDangKy = { ...d, preview, mapping, periodId: preview.periodId };
+    renderPage();
+  };
+
+  $("#nhap-kiemtra")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    loi("");
+    try { await xemTruoc(); } catch (error) { loi(error.message); button.disabled = false; }
+  });
+
+  $$("[data-ghep-ca]").forEach((select) => select.addEventListener("change", async () => {
+    const d = draft();
+    state.nhapDangKy = { ...d, mapping: { ...(d.mapping || {}), [select.dataset.ghepCa]: select.value } };
+    try { await xemTruoc(); } catch (error) { loi(error.message); }
+  }));
+
+  for (const [id, khoa] of [["nhap-trangthai", "trangThai"], ["nhap-dathuphi", "daThuPhi"], ["nhap-habase", "haGhiDanhSan"]]) {
+    $(`#${id}`)?.addEventListener("change", (event) => {
+      state.nhapDangKy = {
+        ...draft(),
+        [khoa]: event.target.type === "checkbox" ? event.target.checked : event.target.value,
+      };
+    });
+  }
+
+  $("#nhap-ghi")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const d = draft();
+    const soDon = d.preview?.dem?.xepDuoc || 0;
+    if (!window.confirm(`Ghi ${soDon} đơn đăng ký vào hệ thống? Thao tác này không hoàn tác được bằng một cú bấm.`)) return;
+    button.disabled = true;
+    loi("");
+    try {
+      const payload = {
+        files: d.sources, periodId: d.periodId || state.catalog?.activePeriodId, mapping: d.mapping || {},
+        confirmation: "NHAP_DANG_KY_HANG_LOAT",
+        status: d.trangThai || "dang_hoc",
+        feePaid: d.daThuPhi !== false,
+        haGhiDanhSan: d.haGhiDanhSan !== false,
+      };
+      const { result } = await api("/admin/registrations/import/commit", { method: "POST", body: JSON.stringify(payload) });
+      const [donMoi, lopMoi, danhMuc] = await Promise.all([api("/registrations"), api("/clubs"), refreshCatalog()]);
+      adminApplications = donMoi.registrations;
+      clubs = lopMoi.clubs;
+      state.nhapDangKy = null;
+      goTo("applications");
+      toast(`Đã tạo ${result.daTao} đơn và hạ ghi danh sẵn ở ${result.daHaBase} ca học.`, "success");
+    } catch (error) { loi(error.message); button.disabled = false; }
+  });
 }
 
 function renderReports() {
@@ -3027,6 +3245,7 @@ function bindPageEvents() {
     } catch (error) { el.disabled = false; toast(error.message, "error"); }
   }));
   bindExcelImport();
+  bindNhapDangKy();
   $("[data-preview-sheets]")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;

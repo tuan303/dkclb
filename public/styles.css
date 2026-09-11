@@ -249,6 +249,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    ô tìm kiếm ẩn dòng bằng display:none, mà phần tử display:none KHÔNG làm tăng
    bộ đếm — nên lọc xong vẫn được 1, 2, 3 liền mạch thay vì 1, 4, 9. */
 .roster-note { color: var(--muted); font-size: 9px; }
+.checkbox-row { display: flex; align-items: flex-start; gap: 8px; color: #353b5a; font-size: 10px; line-height: 1.5; }
+.checkbox-row input { margin-top: 2px; }
 .roster-index td { vertical-align: top; }
 .roster-index .table-action.active { color: #fff; border-color: var(--blue); background: var(--blue); }
 .empty-cell { padding: 28px 13px !important; color: var(--muted); text-align: center; }
