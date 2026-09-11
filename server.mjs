@@ -124,6 +124,12 @@ let db = null;
 
 const nowIso = () => new Date().toISOString();
 const id = (prefix) => `${prefix}_${randomBytes(7).toString("hex")}`;
+
+/**
+ * Mã người ta đọc cho nhau nghe: DK-260911-A3F92B1C. Giữ phần ngày vì giáo vụ dò
+ * theo ngày, nhưng phần ngẫu nhiên phải đủ rộng — xem chú thích ở taoMaDonDuyNhat.
+ */
+const maTheoNgay = (prefix) => `${prefix}-${new Date().toISOString().slice(2, 10).replaceAll("-", "")}-${randomBytes(5).toString("hex").toUpperCase()}`;
 const sessionStorageKey = (token) => createHash("sha256").update(String(token)).digest("hex");
 const asInt = (value) => Number(value || 0);
 const publicUser = (user) => {
@@ -884,6 +890,20 @@ function classHasFreeSeat(classId, exceptRegistrationId) {
     WHERE class_id = ? AND status IN (${SEAT_HOLDING_SQL}) AND id <> ?`).get(classId, exceptRegistrationId || "");
   const daDung = asInt(lop.enrolledBase) + asInt(dem?.n);
   return { free: daDung < asInt(lop.capacity), capacity: asInt(lop.capacity), daDung };
+}
+
+/**
+ * Trả về một mã đơn CHẮC CHẮN chưa có trong bảng. Nới rộng không gian mã là đủ để
+ * xác suất đụng trùng về gần không, nhưng "gần không" nhân với 4.445 gia đình vẫn
+ * là một gia đình nào đó nhận lỗi hệ thống vào đúng ngày mở đăng ký.
+ */
+function maDonConTrong(maDeXuat, taoMaMoi, soLanThu = 8) {
+  let ma = maDeXuat;
+  for (let lan = 0; lan < soLanThu; lan += 1) {
+    if (!db.prepare("SELECT 1 FROM registrations WHERE id = ?").get(ma)) return ma;
+    ma = taoMaMoi();
+  }
+  throw httpError(500, "REGISTRATION_ID_EXHAUSTED", "Không sinh được mã đơn mới. Vui lòng thử lại.");
 }
 
 async function countActiveStudents() {
@@ -1956,13 +1976,13 @@ async function handleApi(req, res, url) {
     if (!acceptedTerms) throw httpError(422, "TERMS_REQUIRED", "Vui lòng xác nhận lịch, phí và quy định đổi/hủy.");
     const validation = await validateRegistration(user, studentId, clubIds);
     if (!validation.valid) throw httpError(422, "VALIDATION_FAILED", "Đăng ký chưa hợp lệ.", validation.issues);
-    const dateCode = new Date().toISOString().slice(2,10).replaceAll("-", "");
-    const groupId = `GR-${dateCode}-${randomBytes(3).toString("hex").toUpperCase()}`;
-    const registrationIds = validation.clubs.map(() => `DK-${dateCode}-${randomBytes(2).toString("hex").toUpperCase()}`);
+const groupId = maTheoNgay("GR");
+    const taoMaDon = () => maTheoNgay("DK");
+    const registrationIds = validation.clubs.map(taoMaDon);
     const timestamp = nowIso();
 
     if (businessStore) {
-      const created = await businessStore.createRegistrations({ actorUserId: user.id, studentId, groupId, periodId: validation.period.id, clubs: validation.clubs, registrationIds, timestamp });
+      const created = await businessStore.createRegistrations({ actorUserId: user.id, studentId, groupId, periodId: validation.period.id, clubs: validation.clubs, registrationIds, taoMaDon, timestamp });
       return sendJson(res, 201, { groupId, registrations: created });
     }
 
@@ -1976,7 +1996,7 @@ async function handleApi(req, res, url) {
         const club = validation.clubs[index];
         const refreshed = (await clubRows(studentId, validation.period.id)).find((item) => item.id === club.id);
         const status = refreshed.enrolled >= refreshed.capacity ? "waitlist" : "payment";
-        const registrationId = registrationIds[index];
+        const registrationId = maDonConTrong(registrationIds[index], taoMaDon);
         insert.run(registrationId, groupId, studentId, user.id, club.id, validation.period.id, status, club.fee, club.schedule, timestamp, timestamp, timestamp);
         db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, created_at)
           VALUES (?, ?, 'CREATE_REGISTRATION', 'registration', ?, ?, ?)`)
@@ -1995,7 +2015,7 @@ async function handleApi(req, res, url) {
     const user = await requireUser(req, "parent");
     const { registrationId = null, topic = "Hỗ trợ đăng ký", message = "" } = await readJson(req);
     if (String(message).trim().length < 10) throw httpError(422, "MESSAGE_REQUIRED", "Vui lòng mô tả yêu cầu tối thiểu 10 ký tự.");
-    const requestId = `HT-${new Date().toISOString().slice(2,10).replaceAll("-","")}-${randomBytes(2).toString("hex").toUpperCase()}`;
+    const requestId = maTheoNgay("HT");
     const supportRequest = {
       id: requestId,
       parentUserId: user.id,

@@ -748,7 +748,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       });
     },
 
-    async createRegistrations({ actorUserId, studentId, groupId, periodId = null, clubs: selectedClubs, registrationIds, timestamp }) {
+    async createRegistrations({ actorUserId, studentId, groupId, periodId = null, clubs: selectedClubs, registrationIds, taoMaDon, timestamp }) {
       return withTransaction(async (connection) => {
         // Khóa dòng lớp trước khi đếm chỗ: hai phụ huynh cùng giành chỗ cuối thì
         // người sau phải nhìn thấy chỗ người trước vừa giữ.
@@ -792,13 +792,26 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         );
         const activeByClass = new Map(countRows.map((row) => [row.class_id, toInt(row.active_count)]));
 
+        // Mã đơn phải chắc chắn chưa có, kiểm ngay trong giao dịch này. Xem chú
+        // thích ở maDonConTrong trong server.mjs: đụng trùng mã là phụ huynh nhận
+        // lỗi hệ thống, mà mã cũ chỉ có 65.536 giá trị mỗi ngày.
+        const maConTrong = async (maDeXuat) => {
+          let ma = maDeXuat;
+          for (let lan = 0; lan < 8; lan += 1) {
+            const [co] = await connection.query("SELECT 1 FROM registrations WHERE id = ? LIMIT 1", [ma]);
+            if (!co.length) return ma;
+            ma = typeof taoMaDon === "function" ? taoMaDon() : `${ma}X`;
+          }
+          throw createHttpError(500, "REGISTRATION_ID_EXHAUSTED", "Không sinh được mã đơn mới. Vui lòng thử lại.");
+        };
+
         const created = [];
         for (const [index, club] of selectedClubs.entries()) {
           const locked = lockedById.get(club.id);
           if (!locked) throw createHttpError(404, "CLUB_NOT_FOUND", "Có lớp không còn tồn tại hoặc đã bị ẩn.");
           const taken = toInt(locked.enrolled_base) + (activeByClass.get(club.id) || 0);
           const status = taken >= toInt(locked.capacity) ? "waitlist" : "payment";
-          const registrationId = registrationIds[index];
+          const registrationId = await maConTrong(registrationIds[index]);
           await connection.query(
             `INSERT INTO registrations (id, group_id, student_id, parent_user_id, class_id, period_id, status,
               fee_snapshot, schedule_snapshot, terms_accepted_at, created_at, updated_at)
