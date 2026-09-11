@@ -20,6 +20,7 @@ import { isUnchanged } from "./record-diff.mjs";
 import { ACTIVE_REGISTRATION_STATUSES, ASSIGNABLE_STATUSES, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, holdsSeat, statusLabel } from "./registration-status.mjs";
 import { conflictMessage, intervalsOverlap } from "./schedule-conflict.mjs";
 import { IMPORT_MODES, buildExcelDirectory } from "./directory-excel.mjs";
+import { doanCaHoc, docFileXepLop, gomOChonClb } from "./xep-lop-import.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
 import {
@@ -1223,6 +1224,236 @@ async function savePeriodRecord({ actorUserId, periodId, input }) {
   return { id: targetId, ...data, updatedAt: timestamp };
 }
 
+/**
+ * Phân tích một lần nhập đăng ký hàng loạt từ file Google Form.
+ *
+ * Dùng chung cho cả màn XEM TRƯỚC lẫn lúc GHI: lúc ghi phân tích LẠI từ chính dữ
+ * liệu thô, không tin vào kết quả trình duyệt gửi lên. Cùng một khuôn với ba luồng
+ * nhập đang chạy (danh bạ học sinh, tài khoản nhà trường, danh mục CLB).
+ *
+ * Trả về từng dòng kèm KẾT CỤC dự kiến, chứ không lặng lẽ bỏ dòng hỏng: người vận
+ * hành phải đọc được "file 312 dòng, xếp được 305, 7 dòng này hỏng vì sao" trước
+ * khi bấm ghi vài trăm đơn.
+ */
+async function phanTichXepLop({ files = [], mapping = {}, periodId }) {
+  const doc = (files || []).map((file) => docFileXepLop({ rows: file.rows || [], label: file.label || "" }));
+  const hong = doc.filter((item) => !item.ok);
+  const dongFile = doc.filter((item) => item.ok).flatMap((item) => item.rows);
+
+  const periods = await listPeriodRows();
+  const dot = periods.find((item) => item.id === periodId);
+  if (!dot) throw httpError(404, "PERIOD_NOT_FOUND", "Đợt đăng ký không tồn tại.");
+
+  const catalog = await adminCatalogData();
+  const clubById = new Map(catalog.clubs.map((club) => [club.id, club]));
+  const caTrongDot = catalog.classes
+    .filter((row) => row.periodId === periodId && row.active)
+    .map((row) => ({ ...row, clubName: clubById.get(row.clubId)?.name || row.clubId }));
+  const caById = new Map(caTrongDot.map((ca) => [ca.id, ca]));
+
+  const hocSinh = businessStore
+    ? await businessStore.listAllStudents()
+    : db.prepare("SELECT id, code, name, grade, homeroom, level, status FROM students").all();
+  const hocSinhTheoMa = new Map(hocSinh.map((em) => [String(em.code || "").trim().toUpperCase(), em]));
+
+  const lienKet = businessStore
+    ? await businessStore.listAllParentLinks()
+    : db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId FROM parent_students").all();
+  const phuHuynhTheoHocSinh = new Map();
+  for (const link of lienKet) {
+    if (!phuHuynhTheoHocSinh.has(link.studentId)) phuHuynhTheoHocSinh.set(link.studentId, link.parentUserId);
+  }
+
+  // Đơn còn hiệu lực hiện có, để không tạo trùng khi chạy lại lần nhập, và để bắt
+  // trùng giờ với những CLB em ấy đã đăng ký từ trước.
+  const donHienCo = await rawRegistrationRows({});
+  const donTheoHocSinh = new Map();
+  for (const don of donHienCo) {
+    if (!ACTIVE_REGISTRATION_STATUSES.includes(don.status)) continue;
+    if (!donTheoHocSinh.has(don.studentId)) donTheoHocSinh.set(don.studentId, []);
+    donTheoHocSinh.get(don.studentId).push(don);
+  }
+
+  // Ghép ô chọn của Form với ca học: lấy bảng người vận hành đã chốt, chỗ nào chưa
+  // chốt thì thử đoán — và chỉ đoán khi CHẮC CHẮN (xem doanCaHoc).
+  const oChon = gomOChonClb(dongFile).map((item) => {
+    const daChon = chuoiRong(mapping[item.khoa]) ? null : String(mapping[item.khoa]);
+    const doan = daChon ? { classId: daChon, ungVien: [] } : doanCaHoc(item.mau, caTrongDot);
+    const classId = caById.has(doan.classId) ? doan.classId : null;
+    return {
+      ...item, classId,
+      tuChon: Boolean(daChon && classId),
+      ungVien: doan.ungVien.map((ca) => ({ id: ca.id, nhan: nhanCaHoc(ca) })),
+    };
+  });
+  const caTheoOChon = new Map(oChon.map((item) => [item.khoa, item.classId]));
+
+  // Đếm dần trong lúc duyệt: hai dòng cùng một em, cùng một ca thì dòng thứ hai là
+  // trùng ngay trong chính file, không phải trùng với cơ sở dữ liệu.
+  const daXepTrongFile = new Map();
+  const ketQua = [];
+  for (const row of dongFile) {
+    const ghi = (ketCuc, lyDo, them = {}) => ketQua.push({ ...row, ketCuc, lyDo, ...them });
+    if (row.loi) { ghi("hong", row.loi); continue; }
+
+    const em = hocSinhTheoMa.get(row.studentCode.toUpperCase());
+    if (!em) { ghi("khongTimThayHocSinh", `Không có mã học sinh ${row.studentCode} trong danh bạ.`); continue; }
+    if (em.status !== "active") { ghi("hocSinhNghiHoc", `${em.name} đang ở trạng thái nghỉ học.`, { studentId: em.id }); continue; }
+
+    const classId = caTheoOChon.get(boDauChuoi(row.clubText));
+    if (!classId) { ghi("chuaGhepCa", `Chưa ghép "${row.clubText}" với ca học nào.`, { studentId: em.id }); continue; }
+    const ca = caById.get(classId);
+
+    const chung = { studentId: em.id, studentTen: em.name, classId, caNhan: nhanCaHoc(ca) };
+    const khoaFile = `${em.id}|${classId}`;
+    if (daXepTrongFile.has(khoaFile)) { ghi("trungTrongFile", `Dòng ${daXepTrongFile.get(khoaFile)} đã xếp em này vào đúng ca này.`, chung); continue; }
+
+    const donCu = donTheoHocSinh.get(em.id) || [];
+    if (donCu.some((don) => don.classId === classId)) { ghi("daCoDon", "Em đã có đơn còn hiệu lực cho ca này — bỏ qua.", chung); continue; }
+
+    const trung = donCu.find((don) => intervalsOverlap(ca, {
+      dayOfWeek: don.dayOfWeek, startTime: don.startTime, endTime: don.endTime,
+    }));
+    if (trung) {
+      const caTrung = caById.get(trung.classId);
+      ghi("trungGio", `Trùng giờ với ${caTrung ? nhanCaHoc(caTrung) : trung.classId} em ấy đã đăng ký.`, chung);
+      continue;
+    }
+
+    const khoiApDung = (ca.grades?.length ? ca.grades : clubById.get(ca.clubId)?.grades) || [];
+    if (khoiApDung.length && !khoiApDung.includes(asInt(em.grade))) {
+      ghi("saiKhoi", `Ca này dành cho khối ${khoiApDung.join(", ")}, em đang học khối ${em.grade}.`, chung);
+      continue;
+    }
+
+    const soDaCo = donCu.length + [...daXepTrongFile.keys()].filter((khoa) => khoa.startsWith(`${em.id}|`)).length;
+    if (soDaCo >= asInt(dot.maxClubsPerStudent || 3)) {
+      ghi("vuotHanMuc", `Em đã có ${soDaCo} CLB, vượt mức tối đa ${dot.maxClubsPerStudent} của đợt này.`, chung);
+      continue;
+    }
+
+    daXepTrongFile.set(khoaFile, row.dong);
+    ghi("xepDuoc", null, { ...chung, parentUserId: phuHuynhTheoHocSinh.get(em.id) || null });
+  }
+
+  // Mỗi ca: nhập vào bao nhiêu em, và con số ghi danh sẵn nên hạ xuống bao nhiêu.
+  // Đây là chỗ dễ sai nhất của cả lần nhập: các em này ĐANG được đếm trong
+  // enrolled_base, nhập vào mà không hạ là sĩ số phồng lên gấp đôi.
+  const theoCa = new Map();
+  for (const row of ketQua) {
+    if (row.ketCuc !== "xepDuoc") continue;
+    if (!theoCa.has(row.classId)) {
+      const ca = caById.get(row.classId);
+      theoCa.set(row.classId, {
+        classId: row.classId, nhan: nhanCaHoc(ca), capacity: asInt(ca.capacity),
+        enrolledBaseHienTai: asInt(ca.enrolledBase), donGiuChoHienTai: asInt(ca.activeRegistrations),
+        soEmNhapVao: 0,
+      });
+    }
+    theoCa.get(row.classId).soEmNhapVao += 1;
+  }
+  const caAnhHuong = [...theoCa.values()].map((item) => {
+    const baseMoi = Math.max(0, item.enrolledBaseHienTai - item.soEmNhapVao);
+    return {
+      ...item,
+      enrolledBaseDeXuat: baseMoi,
+      siSoTruoc: item.enrolledBaseHienTai + item.donGiuChoHienTai,
+      siSoSauNeuHaBase: baseMoi + item.donGiuChoHienTai + item.soEmNhapVao,
+      siSoSauNeuGiuBase: item.enrolledBaseHienTai + item.donGiuChoHienTai + item.soEmNhapVao,
+      thieuGhiDanhSan: item.soEmNhapVao > item.enrolledBaseHienTai,
+    };
+  }).sort((a, b) => b.soEmNhapVao - a.soEmNhapVao);
+
+  const dem = {};
+  for (const row of ketQua) dem[row.ketCuc] = (dem[row.ketCuc] || 0) + 1;
+
+  return {
+    periodId, periodName: dot.name,
+    files: doc.map((item) => ({ label: item.label, ok: item.ok, error: item.error || null, headerRow: item.headerRow || null, mapping: item.mapping || {} })),
+    filesHong: hong.length,
+    tongDong: dongFile.length,
+    dem,
+    oChon,
+    caAnhHuong,
+    rows: ketQua,
+    sanSang: hong.length === 0 && (dem.xepDuoc || 0) > 0,
+    caTrongDot: caTrongDot.map((ca) => ({ id: ca.id, nhan: nhanCaHoc(ca) })),
+  };
+}
+
+const chuoiRong = (value) => !String(value ?? "").trim();
+const boDauChuoi = (value) => String(value ?? "")
+  .normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replaceAll("đ", "d").replaceAll("Đ", "D")
+  .toLowerCase().replace(/\s+/g, " ").trim();
+const nhanCaHoc = (ca) => (ca ? `${ca.clubName || ca.clubId}${ca.name ? ` · ${ca.name}` : ""}` : "");
+
+/**
+ * Ghi một lần nhập hàng loạt.
+ *
+ * Hai việc phải nằm trong CÙNG một giao dịch, không thể tách ra hai bước bấm tay:
+ *   1. tạo đơn cho từng em
+ *   2. hạ enrolled_base ("ghi danh sẵn ngoài hệ thống") xuống đúng số em vừa nhập
+ *
+ * Vì các em này ĐANG được đếm trong enrolled_base. Nhập mà không hạ là sĩ số phồng
+ * lên gấp đôi — đã đo: ca sức chứa 20, base 15, nhập 5 đơn thì hệ thống báo 20/20
+ * "đã đầy". Còn hạ trước rồi mới nhập là mở toang hàng chục chỗ trống thật cho
+ * 4.445 học sinh trong khoảng giữa hai bước.
+ */
+async function nhapDangKyHangLoat({ actorUserId, groupId, timestamp, trangThai, daThuPhi, haGhiDanhSan, periodId, rows, caAnhHuong }) {
+  // Sinh mã đơn ở đây cho cả hai nền, để chỉ có MỘT bộ sinh mã trong hệ thống.
+  const kemMa = rows.map((row) => ({ ...row, maDon: maTheoNgay("DK") }));
+  if (businessStore) {
+    return businessStore.nhapDangKyHangLoat({
+      actorUserId, groupId, timestamp, trangThai, daThuPhi, haGhiDanhSan, periodId, rows: kemMa, caAnhHuong,
+    });
+  }
+
+  const catalog = await adminCatalogData();
+  const caById = new Map(catalog.classes.map((ca) => [ca.id, ca]));
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const insert = db.prepare(`INSERT INTO registrations
+      (id, group_id, student_id, parent_user_id, class_id, period_id, status, fee_snapshot, fee_paid,
+       schedule_snapshot, terms_accepted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    let daTao = 0;
+    for (const row of kemMa) {
+      const ca = caById.get(row.classId);
+      if (!ca) continue;
+      const registrationId = maDonConTrong(row.maDon, () => maTheoNgay("DK"));
+      insert.run(registrationId, groupId, row.studentId, row.parentUserId || null, row.classId, periodId,
+        trangThai, asInt(ca.fee), daThuPhi ? 1 : 0, ca.scheduleLabel || "", timestamp, timestamp, timestamp);
+      db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, reason, created_at)
+        VALUES (?, ?, 'IMPORT_REGISTRATION', 'registration', ?, ?, ?, ?)`)
+        .run(id("audit"), actorUserId, registrationId,
+          JSON.stringify({ status: trangThai, feePaid: daThuPhi, classId: row.classId, studentId: row.studentId, groupId }),
+          `Nhập hàng loạt từ file đăng ký, dòng ${row.dong}.`, timestamp);
+      daTao += 1;
+    }
+
+    let daHaBase = 0;
+    if (haGhiDanhSan) {
+      for (const ca of caAnhHuong) {
+        if (ca.enrolledBaseDeXuat === ca.enrolledBaseHienTai) continue;
+        db.prepare("UPDATE club_classes SET enrolled_base = ? WHERE id = ?").run(ca.enrolledBaseDeXuat, ca.classId);
+        db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, before_json, after_json, reason, created_at)
+          VALUES (?, ?, 'ADJUST_ENROLLED_BASE', 'club_class', ?, ?, ?, ?, ?)`)
+          .run(id("audit"), actorUserId, ca.classId,
+            JSON.stringify({ enrolledBase: ca.enrolledBaseHienTai }), JSON.stringify({ enrolledBase: ca.enrolledBaseDeXuat }),
+            `Hạ theo ${ca.soEmNhapVao} em vừa nhập thành đơn, để không đếm hai lần.`, timestamp);
+        daHaBase += 1;
+      }
+    }
+
+    db.exec("COMMIT");
+    return { daTao, daHaBase };
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 async function adminCatalogData() {
   if (businessStore) {
     const catalog = await businessStore.adminCatalog();
@@ -2182,6 +2413,54 @@ const groupId = maTheoNgay("GR");
         sources: ketQua.sources, duplicates: ketQua.duplicates,
       },
     });
+  }
+
+  // ------------------------------------------------- Nhập đăng ký hàng loạt
+  //
+  // Vài trăm em đã đóng phí và đang học từ đợt đăng ký qua Google Form trước khi có
+  // cổng này. Hai đường dưới đây biến từng dòng của file Form thành một đơn thật.
+  //
+  // Gác bằng quyền duyet-don: đây là tạo đơn thay cho học sinh, cùng loại việc với
+  // xác nhận phí và đổi trạng thái. Giáo vụ KHÔNG có quyền này.
+  if (method === "POST" && url.pathname === "/api/admin/registrations/import/preview") {
+    await requireSchoolUser(req, CAP.duyetDon);
+    const payload = await readJson(req, EXCEL_IMPORT_LIMIT);
+    return sendJson(res, 200, {
+      preview: await phanTichXepLop({
+        files: payload.files || [], mapping: payload.mapping || {}, periodId: String(payload.periodId || ""),
+      }),
+    });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/registrations/import/commit") {
+    const user = await requireSchoolUser(req, CAP.duyetDon);
+    const payload = await readJson(req, EXCEL_IMPORT_LIMIT);
+    if (payload.confirmation !== "NHAP_DANG_KY_HANG_LOAT") {
+      throw httpError(422, "IMPORT_CONFIRMATION_REQUIRED",
+        "Cần xác nhận rõ trước khi ghi hàng loạt đơn đăng ký vào hệ thống.");
+    }
+    // Phân tích LẠI từ dữ liệu thô, không tin kết quả trình duyệt gửi lên: giữa lúc
+    // xem trước và lúc bấm ghi, một ca có thể đã bị tắt hoặc một em đã có đơn khác.
+    const phanTich = await phanTichXepLop({
+      files: payload.files || [], mapping: payload.mapping || {}, periodId: String(payload.periodId || ""),
+    });
+    if (!phanTich.sanSang) {
+      throw httpError(422, "IMPORT_NOT_READY",
+        phanTich.filesHong ? "Còn file không đọc được, chưa thể ghi." : "Không có dòng nào xếp được.");
+    }
+
+    const trangThai = ASSIGNABLE_STATUSES.includes(payload.status) ? payload.status : STATUS.dangHoc;
+    const daThuPhi = payload.feePaid !== false;
+    const haGhiDanhSan = payload.haGhiDanhSan !== false;
+    const xepDuoc = phanTich.rows.filter((row) => row.ketCuc === "xepDuoc");
+
+    const timestamp = nowIso();
+    const groupId = maTheoNgay("NH");
+    const ketQua = await nhapDangKyHangLoat({
+      actorUserId: user.id, groupId, timestamp, trangThai, daThuPhi, haGhiDanhSan,
+      periodId: phanTich.periodId, rows: xepDuoc, caAnhHuong: phanTich.caAnhHuong,
+    });
+    return sendJson(res, 200, { result: { ...ketQua, groupId, trangThai, daThuPhi, dem: phanTich.dem } });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/export/collections") {

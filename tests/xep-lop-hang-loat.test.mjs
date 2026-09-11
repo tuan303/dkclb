@@ -150,3 +150,106 @@ test("ô chọn không khớp CLB nào thì nói thẳng là không có ứng vi
   assert.equal(ketQua.classId, null);
   assert.deepEqual(ketQua.ungVien, []);
 });
+
+/* ---------- Chạy thật qua HTTP ---------- */
+
+import { after, before } from "node:test";
+import { startTestServer } from "./helpers/test-server.mjs";
+
+let server;
+let quanTri;
+let phuHuynh;
+let dotId;
+
+before(async () => {
+  server = await startTestServer({ prefix: "nshm-xeplop-" });
+  quanTri = await server.loginCookie("admin@nshm.edu.vn", "Admin@123");
+  phuHuynh = await server.loginCookie("0901234567", "123456");
+  dotId = (await (await server.request("/api/admin/periods", quanTri)).json())
+    .periods.find((item) => item.status === "open").id;
+});
+
+after(async () => server.stop());
+
+const fileForm = (...dongs) => ({ label: "form.xlsx", rows: [["Mã học sinh", "CLB đăng ký"], ...dongs] });
+const goiNhap = (duong, body, cookie = quanTri) => server.request(`/api/admin/registrations/import/${duong}`, cookie,
+  { method: "POST", body: JSON.stringify({ periodId: dotId, ...body }) });
+const caPainting = async () => (await (await server.request("/api/admin/catalog", quanTri)).json())
+  .classes.find((row) => row.id === "painting");
+
+test("nhập vào KHÔNG làm sĩ số phồng lên gấp đôi", async () => {
+  // Đây là bài quan trọng nhất tệp này. Các em trong file ĐANG được đếm ở
+  // enrolled_base ("ghi danh sẵn ngoài hệ thống"); nhập thành đơn mà không hạ con
+  // số đó xuống là đếm hai lần. Đã đo trên máy chủ thật trước khi vá: ca sức chứa
+  // 20, base 15, nhập 5 đơn thì hệ thống báo 20/20 "đã đầy".
+  const truoc = await caPainting();
+  assert.ok(truoc.enrolledBase >= 2, `ca mẫu phải có ghi danh sẵn, đang là ${truoc.enrolledBase}`);
+
+  const body = { files: [fileForm(["NSHM260301", "Mỹ thuật sáng tạo"], ["NSHM260601", "Mỹ thuật sáng tạo"])] };
+  const xem = (await (await goiNhap("preview", body)).json()).preview;
+  assert.equal(xem.dem.xepDuoc, 2);
+  assert.equal(xem.caAnhHuong[0].enrolledBaseDeXuat, truoc.enrolledBase - 2,
+    "màn xem trước phải nói trước con số ghi danh sẵn sẽ hạ xuống bao nhiêu");
+  assert.equal(xem.caAnhHuong[0].siSoSauNeuHaBase, xem.caAnhHuong[0].siSoTruoc);
+  assert.equal(xem.caAnhHuong[0].siSoSauNeuGiuBase, xem.caAnhHuong[0].siSoTruoc + 2,
+    "và nói luôn nếu KHÔNG hạ thì sĩ số phồng lên bao nhiêu");
+
+  const ghi = await goiNhap("commit", { ...body, confirmation: "NHAP_DANG_KY_HANG_LOAT" });
+  const than = await ghi.text();
+  assert.equal(ghi.status, 200, than);
+  assert.equal(JSON.parse(than).result.daTao, 2);
+
+  const sau = await caPainting();
+  assert.equal(sau.enrolled, truoc.enrolled, "sĩ số phải KHÔNG đổi: hai em này vốn đã được đếm rồi");
+  assert.equal(sau.enrolledBase, truoc.enrolledBase - 2);
+  assert.equal(sau.activeRegistrations, truoc.activeRegistrations + 2);
+});
+
+test("chạy lại đúng file đó KHÔNG tạo đơn trùng", async () => {
+  // Không có khoá idempotency nào trong hệ thống; chống trùng dựa vào luật "em này
+  // đã có đơn còn hiệu lực cho ca đó". Bấm ghi hai lần vì mạng chậm là chuyện sẽ
+  // xảy ra với một lần nhập vài trăm dòng.
+  const body = { files: [fileForm(["NSHM260301", "Mỹ thuật sáng tạo"], ["NSHM260601", "Mỹ thuật sáng tạo"])] };
+  const xem = (await (await goiNhap("preview", body)).json()).preview;
+  assert.equal(xem.dem.daCoDon, 2, "cả hai dòng phải bị nhận ra là đã có đơn");
+  assert.equal(xem.dem.xepDuoc, undefined);
+  assert.equal(xem.sanSang, false, "không còn dòng nào xếp được thì không cho bấm ghi");
+
+  const ghi = await goiNhap("commit", { ...body, confirmation: "NHAP_DANG_KY_HANG_LOAT" });
+  assert.equal(ghi.status, 422);
+  assert.equal((await ghi.json()).error.code, "IMPORT_NOT_READY");
+});
+
+test("đơn nhập vào gắn đúng phụ huynh, không thì cả trăm gia đình không thấy đơn của con", async () => {
+  // parent_user_id để trống thì không màn nào vỡ, nhưng nó là BỘ LỌC DUY NHẤT của
+  // màn "Đăng ký của tôi" — đã đo: mẹ của một em không thấy đơn của chính con mình.
+  const cuaPhuHuynh = (await (await server.request("/api/registrations", phuHuynh)).json()).registrations;
+  const don = cuaPhuHuynh.find((row) => row.classId === "painting");
+  assert.ok(don, "phụ huynh phải thấy đơn vừa nhập cho con mình trong cổng");
+  assert.equal(don.status, "dang_hoc");
+  assert.equal(don.feePaid, true, "các em này đã đóng phí, cột đã thu tiền phải ghi nhận");
+});
+
+test("trùng giờ với CLB em ấy đã học thì không xếp, nói rõ trùng với ca nào", async () => {
+  const trung = (await (await goiNhap("preview", {
+    files: [fileForm(["NSHM260301", "Bóng rổ nền tảng"])],
+  })).json()).preview;
+  const dong = trung.rows[0];
+  assert.equal(dong.ketCuc, "trungGio", `mong đợi trùng giờ, nhận được ${dong.ketCuc}: ${dong.lyDo}`);
+  assert.match(dong.lyDo, /Trùng giờ với/);
+});
+
+test("giáo vụ không nhập đăng ký hàng loạt được", async () => {
+  // Tạo đơn thay học sinh là cùng loại việc với xác nhận phí và đổi trạng thái —
+  // đều do quyền duyet-don gác, mà giáo vụ không có.
+  const giaoVu = await server.loginCookie("giaovu@nshm.edu.vn", "Admin@123");
+  const body = { files: [fileForm(["NSHM260301", "Mỹ thuật sáng tạo"])] };
+  assert.equal((await goiNhap("preview", body, giaoVu)).status, 403);
+  assert.equal((await goiNhap("commit", { ...body, confirmation: "NHAP_DANG_KY_HANG_LOAT" }, giaoVu)).status, 403);
+});
+
+test("bấm nhầm nút không đủ để ghi vài trăm đơn", async () => {
+  const ghi = await goiNhap("commit", { files: [fileForm(["NSHM260301", "Mỹ thuật sáng tạo"])] });
+  assert.equal(ghi.status, 422);
+  assert.equal((await ghi.json()).error.code, "IMPORT_CONFIRMATION_REQUIRED");
+});

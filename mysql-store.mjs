@@ -574,6 +574,26 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       return row ? { ...row, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name), grade: toInt(row.grade) } : null;
     },
 
+    /**
+     * Toàn bộ danh bạ học sinh, dùng cho việc nhập hàng loạt.
+     *
+     * Nạp cả bảng chứ không tra từng em: tên học sinh được mã hoá nên không tra
+     * ngược được, chỉ mã mới có chỉ mục mù — và một file Form vài trăm dòng tra
+     * từng dòng là vài trăm lượt đi về cơ sở dữ liệu. 4.445 bản ghi nạp một lượt
+     * là chuyện nhỏ, còn giải mã thì chỉ tốn vài phần nghìn giây mỗi bản.
+     */
+    async listAllStudents() {
+      const rows = await query("SELECT id, code, name, grade, homeroom, level, status FROM students");
+      return rows.map((row) => ({
+        ...row, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name), grade: toInt(row.grade),
+      }));
+    },
+
+    /** Liên kết phụ huynh–học sinh, để đơn nhập vào gắn đúng phụ huynh. */
+    async listAllParentLinks() {
+      return query("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students");
+    },
+
     async getStudent(studentId) {
       const row = await first("SELECT id, code, name, grade, homeroom, level, status FROM students WHERE id = ? LIMIT 1", [studentId]);
       return row ? { ...row, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name), grade: toInt(row.grade) } : null;
@@ -828,6 +848,78 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
           created.push({ id: registrationId, status, clubId: club.id });
         }
         return created;
+      });
+    },
+
+    /**
+     * Ghi một lần nhập đăng ký hàng loạt — bản chạy thật của nhà trường.
+     *
+     * Tạo đơn và hạ enrolled_base nằm trong CÙNG một giao dịch, không tách được:
+     * các em này đang được đếm trong enrolled_base ("ghi danh sẵn ngoài hệ thống"),
+     * nhập mà không hạ là sĩ số phồng lên gấp đôi; hạ trước rồi mới nhập là mở
+     * toang hàng chục chỗ trống thật cho 4.445 học sinh trong khoảng giữa hai bước.
+     *
+     * KHÔNG chặn theo sĩ số. Các em này đã đóng phí và đang ngồi trong phòng học
+     * thật rồi — chặn ở đây là bắt hệ thống nói khác sự thật. Màn xem trước đã nói
+     * trước sĩ số sẽ thành bao nhiêu để người vận hành quyết trước khi bấm.
+     */
+    async nhapDangKyHangLoat({ actorUserId, groupId, timestamp, trangThai, daThuPhi, haGhiDanhSan, periodId, rows, caAnhHuong }) {
+      return withTransaction(async (connection) => {
+        const classIds = [...new Set(rows.map((row) => row.classId))];
+        if (!classIds.length) return { daTao: 0, daHaBase: 0 };
+        // Khoá dòng lớp: một lượt nhập vài trăm đơn chạy song song với phụ huynh
+        // đang giành chỗ cuối là chuyện phải tránh.
+        const [lop] = await connection.query(
+          "SELECT id, fee, schedule_label, enrolled_base FROM club_classes WHERE id IN (?) FOR UPDATE", [classIds]);
+        const lopById = new Map(lop.map((row) => [row.id, row]));
+
+        const maConTrong = async (ma) => {
+          let thu = ma;
+          for (let lan = 0; lan < 8; lan += 1) {
+            const [co] = await connection.query("SELECT 1 FROM registrations WHERE id = ? LIMIT 1", [thu]);
+            if (!co.length) return thu;
+            thu = `${thu}${lan}`;
+          }
+          throw createHttpError(500, "REGISTRATION_ID_EXHAUSTED", "Không sinh được mã đơn mới. Vui lòng thử lại.");
+        };
+
+        let daTao = 0;
+        for (const row of rows) {
+          const ca = lopById.get(row.classId);
+          if (!ca) continue;
+          const registrationId = await maConTrong(row.maDon);
+          await connection.query(
+            `INSERT INTO registrations (id, group_id, student_id, parent_user_id, class_id, period_id, status,
+              fee_snapshot, fee_paid, schedule_snapshot, terms_accepted_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [registrationId, groupId, row.studentId, row.parentUserId || null, row.classId, periodId, trangThai,
+              toInt(ca.fee), daThuPhi ? 1 : 0, ca.schedule_label || "", timestamp, timestamp, timestamp],
+          );
+          await insertAudit(connection, {
+            actorUserId, action: "IMPORT_REGISTRATION", entityType: "registration", entityId: registrationId,
+            after: { status: trangThai, feePaid: daThuPhi, classId: row.classId, studentId: row.studentId, groupId },
+            reason: `Nhập hàng loạt từ file đăng ký, dòng ${row.dong}.`, createdAt: timestamp,
+          });
+          daTao += 1;
+        }
+
+        let daHaBase = 0;
+        if (haGhiDanhSan) {
+          for (const ca of caAnhHuong) {
+            const hienTai = toInt(lopById.get(ca.classId)?.enrolled_base);
+            if (ca.enrolledBaseDeXuat === hienTai) continue;
+            await connection.query("UPDATE club_classes SET enrolled_base = ? WHERE id = ?",
+              [ca.enrolledBaseDeXuat, ca.classId]);
+            await insertAudit(connection, {
+              actorUserId, action: "ADJUST_ENROLLED_BASE", entityType: "club_class", entityId: ca.classId,
+              before: { enrolledBase: hienTai }, after: { enrolledBase: ca.enrolledBaseDeXuat },
+              reason: `Hạ theo ${ca.soEmNhapVao} em vừa nhập thành đơn, để không đếm hai lần.`, createdAt: timestamp,
+            });
+            daHaBase += 1;
+          }
+        }
+
+        return { daTao, daHaBase };
       });
     },
 
