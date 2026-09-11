@@ -20,15 +20,27 @@ const em = (ma, ten, lop, cap, sdtBo) =>
 const fileTieuHoc = () => [HANG_GOP, TIEU_DE, em("HS001", "Trần Tuệ An", "3A4", "Tiểu học", "0902116163")];
 const fileTHCS = () => [HANG_GOP, TIEU_DE, em("HS002", "Lê Minh Khang", "6A1", "THCS", "0903116163")];
 
-let server;
+let server;        // máy chủ CÓ bật đối chiếu, để kiểm các van an toàn của nó
 let quanTri;
+let mayChuThat;    // máy chủ đúng cấu hình đang chạy: đối chiếu TẮT
+let quanTriThat;
 
 before(async () => {
-  server = await startTestServer({ prefix: "nshm-excel-" });
+  // Đối chiếu toàn trường mặc định đã TẮT (xem CHO_PHEP_DOI_CHIEU trong server.mjs).
+  // Các van an toàn của nó vẫn phải còn nguyên và vẫn phải hoạt động cho ngày nhà
+  // trường bật lại để làm sạch danh bạ đầu năm — nên kiểm chúng trên một máy chủ
+  // có bật, và kiểm riêng việc "mặc định là tắt" trên một máy chủ đúng cấu hình thật.
+  server = await startTestServer({ prefix: "nshm-excel-", env: { CHO_PHEP_DOI_CHIEU: "1" } });
   quanTri = await server.loginCookie("admin@nshm.edu.vn", "Admin@123");
+
+  mayChuThat = await startTestServer({ prefix: "nshm-excel-tat-" });
+  quanTriThat = await mayChuThat.loginCookie("admin@nshm.edu.vn", "Admin@123");
 });
 
-after(async () => server.stop());
+after(async () => {
+  await server.stop();
+  await mayChuThat.stop();
+});
 
 const goi = (duong, cookie, body) => server.request(duong, cookie, { method: "POST", body: JSON.stringify(body) });
 
@@ -189,4 +201,64 @@ test("đối chiếu bằng danh sách co rút bất thường thì bị chặn"
     mode: IMPORT_MODES.boSung, files: [{ key: "a", label: "th.xlsx", rows: fileTieuHoc() }],
   })).json()).preview.activeStudentsNow;
   assert.ok(conLai >= 20, `phải còn nguyên số học sinh đang học, còn ${conLai}`);
+});
+
+/* ---------- Đối chiếu toàn trường: mặc định TẮT ---------- */
+
+const goiThat = (duong, body) => mayChuThat.request(duong, quanTriThat, { method: "POST", body: JSON.stringify(body) });
+/**
+ * Số học sinh đang học, đọc thẳng từ con số mà chính màn xem trước dùng để người
+ * vận hành dám bấm ghi (activeStudentsNow → countActiveStudents). Không dùng số
+ * trên dashboard: số đó đếm em CÓ ĐƠN ĐĂNG KÝ, không phải em có trong danh bạ.
+ */
+const soDangHoc = async () => (await (await goiThat("/api/admin/directory/excel/preview", {
+  files: [{ key: "dem", label: "dem.xlsx", rows: fileTieuHoc() }],
+})).json()).preview.activeStudentsNow;
+
+test("máy chủ đúng cấu hình thật TỪ CHỐI chế độ đối chiếu, dù có gửi kèm câu xác nhận", async () => {
+  // Nhà trường đã ngừng nuôi file Google Sheet: danh bạ nay do phần mềm làm chủ.
+  // Từ lúc đó "vắng mặt trong file = cho nghỉ học" không còn việc gì để làm, mà nó
+  // lại là thao tác nguy hiểm nhất hệ thống — đã đo: van co rút chỉ dừng khi tụt
+  // QUÁ 20% VÀ thiếu từ 10 em trở lên, nên với 4.445 em một lần bấm nhầm cho tới
+  // 889 em nghỉ học mà không gì chặn.
+  const response = await goiThat("/api/admin/directory/excel/commit", {
+    mode: IMPORT_MODES.doiChieu,
+    confirmation: "DOI_CHIEU_TOAN_TRUONG",
+    files: [{ key: "a", label: "th.xlsx", rows: fileTieuHoc() }],
+  });
+  assert.equal(response.status, 403);
+  const loi = (await response.json()).error;
+  assert.equal(loi.code, "DOI_CHIEU_DA_TAT");
+  assert.match(loi.message, /CHO_PHEP_DOI_CHIEU/, "câu báo phải chỉ ra cách bật lại khi thật sự cần");
+});
+
+test("nạp một file NHỎ lên máy chủ thật KHÔNG cho em nào nghỉ học", async () => {
+  // Đây là kịch bản làm mất dữ liệu thật: lô Google Form 30 dòng nạp nhầm chế độ,
+  // hoặc một file thiếu cấp học. Trên cấu hình thật, số em đang học phải KHÔNG giảm.
+  const truoc = await soDangHoc();
+  assert.ok(truoc > 1, `dữ liệu mẫu phải có nhiều hơn một em, đang có ${truoc}`);
+
+  const response = await goiThat("/api/admin/directory/excel/commit", {
+    files: [{ key: "a", label: "mot-em.xlsx", rows: fileTieuHoc() }],
+  });
+  const than = await response.text();
+  assert.equal(response.status, 200, `nhập bổ sung phải chạy được: ${than}`);
+  const ketQua = JSON.parse(than).result;
+  assert.equal(ketQua.counters.studentsDeactivated, 0, "không lượt nhập nào được cho em nào nghỉ");
+  assert.deepEqual(ketQua.deactivated, [], "danh sách em bị cho nghỉ phải rỗng");
+  assert.equal(ketQua.allSourcesLoaded, false, "lượt nhập này không được coi là đã nạp đủ toàn trường");
+
+  const sau = await soDangHoc();
+  assert.ok(sau >= truoc, `có em bị cho nghỉ học: trước ${truoc}, sau ${sau}`);
+  assert.equal(sau, truoc + 1, "file mang một em mới nên tổng phải tăng đúng một");
+});
+
+test("màn xem trước trên máy chủ thật nói rõ đối chiếu đang tắt và không ai bị nghỉ", async () => {
+  const response = await goiThat("/api/admin/directory/excel/preview", {
+    files: [{ key: "a", label: "th.xlsx", rows: fileTieuHoc() }],
+  });
+  assert.equal(response.status, 200);
+  const { preview } = await response.json();
+  assert.equal(preview.choPhepDoiChieu, false, "xem trước phải nói thẳng là đối chiếu đang tắt");
+  assert.equal(preview.willDeactivate, 0);
 });

@@ -160,7 +160,19 @@ Mã học sinh trùng giữa hai file được báo rõ (giữ bản gặp trư�
 
 ### Tự đồng bộ và theo dõi
 
-Máy chủ tự chạy đồng bộ mỗi **15 phút**. Bấm tay trong lúc lịch đang chạy thì cùng chờ lượt đó, không mở thêm một lượt ghi song song.
+Lịch tự đồng bộ **mặc định TẮT** (`SHEETS_SYNC_INTERVAL_MINUTES` không đặt hoặc đặt 0). Đặt `SHEETS_SYNC_INTERVAL_MINUTES=15` nếu muốn máy chủ tự chạy 15 phút một lần. Bấm tay trong lúc lịch đang chạy thì cùng chờ lượt đó, không mở thêm một lượt ghi song song.
+
+### Đối chiếu toàn trường — mặc định TẮT
+
+Chế độ **đối chiếu** coi các file vừa nạp là TOÀN BỘ danh sách trường và đánh dấu nghỉ học những em vắng mặt. Từ khi nhà trường ngừng nuôi file Google Sheet và sửa thẳng trong phần mềm, chế độ này không còn việc gì để làm, mà nó lại là thao tác nguy hiểm nhất hệ thống — nên nó bị khoá sau biến môi trường `CHO_PHEP_DOI_CHIEU=1`.
+
+Đã đo trên máy chủ thật, không phải suy đoán:
+
+- Van co rút chỉ dừng khi tụt **quá 20%** VÀ thiếu **từ 10 em trở lên**. Với 4.445 em đang học, một lần bấm nhầm cho tới **889 em** nghỉ học mà không van nào chặn.
+- Ô "sẽ cho nghỉ học" ở màn xem trước đếm bằng **hiệu số lượng**, không so mã học sinh — đã dựng được trường hợp màn hình ghi "Không em nào bị cho nghỉ học" rồi ghi xong thì 3 em vừa nhập biến mất thật.
+- Em bị cho nghỉ thì mất khỏi cổng phụ huynh và phụ huynh không đăng ký tiếp được, **nhưng đơn đã đóng phí vẫn giữ chỗ trong lớp** — sai lệch im lặng ở cả hai đầu.
+
+Bật lại thì sao lưu trước (`POST /api/admin/export/backup`). Nhập lại đúng em đó ở chế độ **bổ sung** phục hồi được id cũ, liên kết phụ huynh và đơn cũ.
 
 Màn hình **Cấu hình & phân quyền → Google Sheets** hiện từng file kèm trạng thái đọc, tình trạng đồng bộ và kết quả lần chạy gần nhất. Trạng thái chuyển sang **quá hạn** khi đã quá ba chu kỳ không có lần nào thành công — bắt được cả trường hợp tác vụ nền chết mà không ném ra lỗi nào. Đây chính là thứ giữ cho một sự cố đồng bộ không nằm im hàng tuần.
 

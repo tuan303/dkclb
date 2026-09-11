@@ -99,6 +99,34 @@ const directorySource = createMultiSourceDirectory({
 // từng mất phân giải tên miền cả buổi. Đặt SHEETS_SYNC_INTERVAL_MINUTES=15 để bật
 // lại nếu vẫn muốn dùng Google Sheets.
 const SYNC_INTERVAL_MS = Math.max(0, Number(process.env.SHEETS_SYNC_INTERVAL_MINUTES) || 0) * 60 * 1000;
+
+/**
+ * Chế độ ĐỐI CHIẾU TOÀN TRƯỜNG — "vắng mặt trong file = cho nghỉ học" — mặc định TẮT.
+ *
+ * Nhà trường đã chốt ngừng nuôi file Google Sheet: học sinh mới nhập bằng tay hoặc
+ * bằng file bổ sung, và danh bạ từ nay do phần mềm làm chủ. Từ lúc đó, đối chiếu
+ * không còn việc gì để làm, mà nó lại là thao tác nguy hiểm nhất trong cả hệ thống.
+ *
+ * Đã đo trên máy chủ thật, không phải suy đoán:
+ *   - Van co rút chỉ dừng khi tụt QUÁ 20% VÀ thiếu từ 10 em trở lên. Với 4.445 em,
+ *     một lần bấm nhầm cho tới 889 em nghỉ học mà không có gì chặn.
+ *   - Ô "sẽ cho nghỉ học" ở màn xem trước đếm bằng HIỆU SỐ LƯỢNG chứ không so mã
+ *     học sinh: đã dựng được trường hợp màn hình ghi "Không em nào bị cho nghỉ học"
+ *     rồi ghi xong thì 3 em vừa nhập biến mất thật.
+ *   - Em bị cho nghỉ thì mất khỏi cổng phụ huynh và phụ huynh không đăng ký tiếp
+ *     được, NHƯNG đơn đã đóng phí vẫn giữ chỗ trong lớp — sai lệch im lặng hai đầu.
+ *
+ * Đặt CHO_PHEP_DOI_CHIEU=1 khi nào thật sự cần làm sạch danh bạ đầu năm học, và
+ * nhớ sao lưu trước (POST /api/admin/export/backup).
+ */
+const CHO_PHEP_DOI_CHIEU = process.env.CHO_PHEP_DOI_CHIEU === "1";
+
+/**
+ * Chỉ lượt nào được phép ĐỐI CHIẾU mới được phép cho học sinh nghỉ học. Trong
+ * planDirectoryWrites, allSourcesLoaded chính là công tắc đó — ép nó về false là
+ * khoá toàn bộ đường vô hiệu hoá, dù lượt ghi đến từ file Excel hay từ Google Sheets.
+ */
+const chapNhanCoNghiHoc = (allSourcesLoaded) => Boolean(allSourcesLoaded) && CHO_PHEP_DOI_CHIEU;
 const SYNC_SCHEDULE_ENABLED = SYNC_INTERVAL_MS > 0 && !process.env.VERCEL;
 const EXCEL_IMPORT_LIMIT = 12_000_000;
 
@@ -916,7 +944,8 @@ async function syncGoogleDirectory(actorUserId) {
   const timestamp = nowIso();
   const context = {
     snapshot: loaded.snapshot, actorUserId, timestamp, idFactory: id,
-    source: loaded.source, analysis: loaded.analysis, allSourcesLoaded: loaded.allSourcesLoaded,
+    source: loaded.source, analysis: loaded.analysis,
+    allSourcesLoaded: chapNhanCoNghiHoc(loaded.allSourcesLoaded),
   };
   const result = businessStore ? await businessStore.syncDirectory(context) : syncDirectoryLocal(context);
   // Kết quả từng file được trả về nguyên vẹn để màn hình quản trị chỉ đúng file
@@ -925,7 +954,7 @@ async function syncGoogleDirectory(actorUserId) {
     ...result,
     sources: loaded.sources,
     duplicates: loaded.duplicates,
-    allSourcesLoaded: loaded.allSourcesLoaded,
+    allSourcesLoaded: chapNhanCoNghiHoc(loaded.allSourcesLoaded),
   };
 }
 
@@ -938,7 +967,7 @@ function syncDirectoryLocal({ snapshot, actorUserId, timestamp, idFactory, sourc
     users: db.prepare("SELECT id, account, lower(account) AS accountLower, role, active, email FROM users").all()
       .map((row) => ({ ...row, active: asInt(row.active) === 1 })),
     links: db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students").all(),
-    timestamp, idFactory, allSourcesLoaded,
+    timestamp, idFactory, allSourcesLoaded: chapNhanCoNghiHoc(allSourcesLoaded),
   });
 
   db.exec("BEGIN IMMEDIATE");
@@ -2085,7 +2114,8 @@ const groupId = maTheoNgay("GR");
         studentsInFile: ketQua.snapshot.students.length,
         guardiansInFile: ketQua.snapshot.guardians.length,
         activeStudentsNow: dangCo,
-        willDeactivate: ketQua.allSourcesLoaded ? Math.max(0, dangCo - ketQua.snapshot.students.length) : 0,
+        choPhepDoiChieu: CHO_PHEP_DOI_CHIEU,
+        willDeactivate: chapNhanCoNghiHoc(ketQua.allSourcesLoaded) ? Math.max(0, dangCo - ketQua.snapshot.students.length) : 0,
         sources: ketQua.results.map((source) => ({
           key: source.key, label: source.label, ok: source.ok, error: source.error || null,
           headerRow: source.headerRow || null, headers: source.headers || [],
@@ -2102,6 +2132,12 @@ const groupId = maTheoNgay("GR");
 
     // Chế độ đối chiếu có thể cho hàng nghìn em nghỉ học chỉ vì thiếu một file, nên
     // nó đòi một câu xác nhận riêng — bấm nhầm nút không đủ để kích hoạt.
+    if (mode === IMPORT_MODES.doiChieu && !CHO_PHEP_DOI_CHIEU) {
+      throw httpError(403, "DOI_CHIEU_DA_TAT",
+        "Chế độ đối chiếu toàn trường đang tắt. Danh bạ nay do phần mềm làm chủ: thêm học sinh mới bằng tay "
+        + "hoặc bằng chế độ bổ sung, và cho nghỉ học từng em ở màn danh bạ. Cần bật lại để làm sạch đầu năm "
+        + "học thì đặt CHO_PHEP_DOI_CHIEU=1 trong .env và sao lưu trước.");
+    }
     if (mode === IMPORT_MODES.doiChieu && payload.confirmation !== "DOI_CHIEU_TOAN_TRUONG") {
       throw httpError(422, "SYNC_CONFIRMATION_REQUIRED",
         "Chế độ đối chiếu toàn trường cần xác nhận rõ vì có thể cho học sinh nghỉ học hàng loạt.");
@@ -2118,7 +2154,7 @@ const groupId = maTheoNgay("GR");
       snapshot: ketQua.snapshot, actorUserId: user.id, timestamp, idFactory: id,
       source: { kind: "excel", mode, files: ketQua.results.map((item) => ({ key: item.key, label: item.label, ok: item.ok })) },
       analysis: { scannedRows: ketQua.scannedRows },
-      allSourcesLoaded: ketQua.allSourcesLoaded,
+      allSourcesLoaded: chapNhanCoNghiHoc(ketQua.allSourcesLoaded),
     };
     // Đi qua cùng cái khóa với đồng bộ theo lịch: hai lượt ghi song song lên bảng
     // học sinh là chuyện phải tránh tuyệt đối.

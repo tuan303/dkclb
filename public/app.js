@@ -2562,17 +2562,13 @@ function renderExcelImport() {
         `<span><b>${escapeHtml(source.label)}</b>${source.rows.length} dòng</span>`).join("")}</div>` : ""}
 
       <div class="import-modes">
-        <label class="import-mode ${doiChieu ? "" : "active"}">
-          <input type="radio" name="excel-mode" value="${IMPORT_MODES.boSung}" ${doiChieu ? "" : "checked"} />
+        <label class="import-mode active">
+          <input type="radio" name="excel-mode" value="${IMPORT_MODES.boSung}" checked />
           <div><strong>Bổ sung học sinh mới</strong>
-            <span>Chỉ thêm và cập nhật. Không em nào bị cho nghỉ học, kể cả khi vắng mặt trong file. Dùng cho tuyển ngang hàng tháng.</span></div>
-        </label>
-        <label class="import-mode ${doiChieu ? "active canh-bao" : ""}">
-          <input type="radio" name="excel-mode" value="${IMPORT_MODES.doiChieu}" ${doiChieu ? "checked" : ""} />
-          <div><strong>Đối chiếu toàn trường</strong>
-            <span>Coi các file vừa chọn là TOÀN BỘ danh sách trường. Em nào không có trong đó sẽ bị đánh dấu nghỉ học. Chỉ dùng đầu năm, và phải nạp đủ cả ba cấp cùng lúc.</span></div>
+            <span>Chỉ thêm và cập nhật. Không em nào bị cho nghỉ học, kể cả khi vắng mặt trong file. Đây là chế độ duy nhất, và là chế độ đúng cho mọi lần nhập.</span></div>
         </label>
       </div>
+      <p class="field-hint">Chế độ <b>đối chiếu toàn trường</b> — coi file là toàn bộ danh sách trường và cho nghỉ học những em vắng mặt — đã được tắt. Danh bạ nay do phần mềm làm chủ; cho nghỉ học thì làm từng em ở màn danh bạ, để không ai bị mất tên vì một file thiếu dòng.</p>
 
       <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:13px">
         <button class="button button-secondary" id="excel-preview" ${files.length ? "" : "disabled"}>Kiểm tra file</button>
