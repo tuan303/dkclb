@@ -1251,17 +1251,6 @@ async function savePeriodRecord({ actorUserId, periodId, input }) {
 }
 
 /**
- * Phân tích một lần nhập đăng ký hàng loạt từ file Google Form.
- *
- * Dùng chung cho cả màn XEM TRƯỚC lẫn lúc GHI: lúc ghi phân tích LẠI từ chính dữ
- * liệu thô, không tin vào kết quả trình duyệt gửi lên. Cùng một khuôn với ba luồng
- * nhập đang chạy (danh bạ học sinh, tài khoản nhà trường, danh mục CLB).
- *
- * Trả về từng dòng kèm KẾT CỤC dự kiến, chứ không lặng lẽ bỏ dòng hỏng: người vận
- * hành phải đọc được "file 312 dòng, xếp được 305, 7 dòng này hỏng vì sao" trước
- * khi bấm ghi vài trăm đơn.
- */
-/**
  * Nhập hàng loạt cố ý chỉ làm cho MySQL và SQLite — xem chú thích ở danh sách nợ
  * trong tests/lech-mysql-sqlite.test.mjs. Nền nào thiếu thì phải nói thẳng ra, chứ
  * không để người dùng nhận "TypeError: ... is not a function" dưới dạng lỗi 500.
@@ -1276,7 +1265,21 @@ function kiemNenHoTroNhapHangLoat() {
   }
 }
 
-async function phanTichXepLop({ files = [], mapping = {}, periodId }) {
+/**
+ * Phân tích một lần nhập đăng ký hàng loạt từ file Google Form.
+ *
+ * Dùng chung cho cả màn XEM TRƯỚC lẫn lúc GHI: lúc ghi phân tích LẠI từ chính dữ
+ * liệu thô, không tin vào kết quả trình duyệt gửi lên.
+ *
+ * Trả về từng dòng kèm KẾT CỤC dự kiến, chứ không lặng lẽ bỏ dòng hỏng: người vận
+ * hành phải đọc được "file 312 dòng, xếp được 305, 7 dòng này hỏng vì sao" trước
+ * khi bấm ghi vài trăm đơn.
+ *
+ * Mọi luật chặn ở đây phải KHỚP với luật của cổng phụ huynh (validateRegistration).
+ * Lệch nhau là cùng một học sinh được xếp bằng đường này mà bị chặn ở đường kia —
+ * và ngược lại, điều nguy hiểm hơn: xếp được bằng đường này thứ mà cổng đã cấm.
+ */
+async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = STATUS.dangHoc }) {
   kiemNenHoTroNhapHangLoat();
   const doc = (files || []).map((file) => docFileXepLop({ rows: file.rows || [], label: file.label || "" }));
   const hong = doc.filter((item) => !item.ok);
@@ -1285,11 +1288,18 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId }) {
   const periods = await listPeriodRows();
   const dot = periods.find((item) => item.id === periodId);
   if (!dot) throw httpError(404, "PERIOD_NOT_FOUND", "Đợt đăng ký không tồn tại.");
+  const giuCho = SEAT_HOLDING_STATUSES.includes(trangThai);
 
   const catalog = await adminCatalogData();
   const clubById = new Map(catalog.clubs.map((club) => [club.id, club]));
+  // Nhãn tra cứu lấy từ MỌI ca, kể cả ca của đợt khác: câu "trùng giờ với cu_a" thì
+  // người vận hành không tra ra được đó là lớp nào.
+  const nhanMoiCa = new Map(catalog.classes.map((row) =>
+    [row.id, `${clubById.get(row.clubId)?.name || row.clubId}${row.name ? ` · ${row.name}` : ""}`]));
+  // CLB đã tắt thì cổng phụ huynh trả 404; đường này cũng phải từ chối, không thì
+  // nhập được vào một CLB nhà trường vừa đóng.
   const caTrongDot = catalog.classes
-    .filter((row) => row.periodId === periodId && row.active)
+    .filter((row) => row.periodId === periodId && row.active && clubById.get(row.clubId)?.active !== false)
     .map((row) => ({ ...row, clubName: clubById.get(row.clubId)?.name || row.clubId }));
   const caById = new Map(caTrongDot.map((ca) => [ca.id, ca]));
 
@@ -1300,39 +1310,50 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId }) {
 
   const lienKet = businessStore
     ? await businessStore.listAllParentLinks()
-    : db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId FROM parent_students").all();
+    : db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students").all();
+  // Một em có thể có cả bố lẫn mẹ. Chọn theo thứ tự ỔN ĐỊNH (mã tài khoản) chứ
+  // không theo thứ tự cơ sở dữ liệu trả về, để chạy lại cho cùng kết quả. Đơn chỉ
+  // gắn được MỘT phụ huynh, giống hệt đơn phụ huynh tự tạo.
   const phuHuynhTheoHocSinh = new Map();
-  for (const link of lienKet) {
+  const soPhuHuynh = new Map();
+  for (const link of [...lienKet].sort((a, b) => String(a.parentUserId).localeCompare(String(b.parentUserId)))) {
+    soPhuHuynh.set(link.studentId, (soPhuHuynh.get(link.studentId) || 0) + 1);
     if (!phuHuynhTheoHocSinh.has(link.studentId)) phuHuynhTheoHocSinh.set(link.studentId, link.parentUserId);
   }
 
-  // Đơn còn hiệu lực hiện có, để không tạo trùng khi chạy lại lần nhập, và để bắt
-  // trùng giờ với những CLB em ấy đã đăng ký từ trước.
   const donHienCo = await rawRegistrationRows({});
   const donTheoHocSinh = new Map();
+  // Từng có đơn cho ca này chưa, BẤT KỂ trạng thái — kể cả đã huỷ. Dùng để không hạ
+  // enrolled_base lần thứ hai cho cùng một em: huỷ đơn không đưa em ấy trở lại
+  // nhóm "ghi danh ngoài hệ thống", nên con số đó đã trừ rồi thì thôi.
+  const daTungCoDon = new Set();
   for (const don of donHienCo) {
+    daTungCoDon.add(`${don.studentId}|${don.classId}`);
     if (!ACTIVE_REGISTRATION_STATUSES.includes(don.status)) continue;
     if (!donTheoHocSinh.has(don.studentId)) donTheoHocSinh.set(don.studentId, []);
     donTheoHocSinh.get(don.studentId).push(don);
   }
 
-  // Ghép ô chọn của Form với ca học: lấy bảng người vận hành đã chốt, chỗ nào chưa
-  // chốt thì thử đoán — và chỉ đoán khi CHẮC CHẮN (xem doanCaHoc).
+  // Ghép ô chọn của Form với ca học. Chuỗi rỗng nghĩa là NGƯỜI VẬN HÀNH ĐÃ CHỌN bỏ
+  // qua ô này — khác hẳn "chưa có trong bảng ghép"; nhầm hai cái đó thì máy cứ đoán
+  // lại và lựa chọn bỏ qua không bao giờ dính.
   const oChon = gomOChonClb(dongFile).map((item) => {
-    const daChon = chuoiRong(mapping[item.khoa]) ? null : String(mapping[item.khoa]);
-    const doan = daChon ? { classId: daChon, ungVien: [] } : doanCaHoc(item.mau, caTrongDot);
+    const daQuyetDinh = Object.hasOwn(mapping, item.khoa);
+    const daChon = daQuyetDinh ? String(mapping[item.khoa] || "") : "";
+    const doan = daQuyetDinh ? { classId: daChon, ungVien: [] } : doanCaHoc(item.mau, caTrongDot);
     const classId = caById.has(doan.classId) ? doan.classId : null;
     return {
       ...item, classId,
-      tuChon: Boolean(daChon && classId),
-      ungVien: doan.ungVien.map((ca) => ({ id: ca.id, nhan: nhanCaHoc(ca) })),
+      tuChon: daQuyetDinh,
+      ungVien: (daQuyetDinh ? doanCaHoc(item.mau, caTrongDot).ungVien : doan.ungVien)
+        .map((ca) => ({ id: ca.id, nhan: nhanCaHoc(ca) })),
     };
   });
   const caTheoOChon = new Map(oChon.map((item) => [item.khoa, item.classId]));
 
-  // Đếm dần trong lúc duyệt: hai dòng cùng một em, cùng một ca thì dòng thứ hai là
-  // trùng ngay trong chính file, không phải trùng với cơ sở dữ liệu.
-  const daXepTrongFile = new Map();
+  const daXepTrongFile = new Map();   // "studentId|classId" -> số dòng
+  const clubTrongFile = new Map();    // "studentId|clubId"   -> số dòng
+  const gioTrongFile = new Map();     // studentId -> [{ca, dong}]
   const ketQua = [];
   for (const row of dongFile) {
     const ghi = (ketCuc, lyDo, them = {}) => ketQua.push({ ...row, ketCuc, lyDo, ...them });
@@ -1353,12 +1374,33 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId }) {
     const donCu = donTheoHocSinh.get(em.id) || [];
     if (donCu.some((don) => don.classId === classId)) { ghi("daCoDon", "Em đã có đơn còn hiệu lực cho ca này — bỏ qua.", chung); continue; }
 
-    const trung = donCu.find((don) => intervalsOverlap(ca, {
+    // Trùng CLB: hai ca khác nhau của CÙNG một CLB. Cổng phụ huynh chặn việc này,
+    // đường nhập cũng phải chặn — không thì em bị tính học hai ca và hai lần học phí.
+    const khoaClub = `${em.id}|${ca.clubId}`;
+    if (clubTrongFile.has(khoaClub)) {
+      ghi("trungClbTrongFile", `Dòng ${clubTrongFile.get(khoaClub)} đã xếp em này vào một ca khác của ${ca.clubName}.`, chung);
+      continue;
+    }
+    const donCungClb = donCu.find((don) => caById.get(don.classId)?.clubId === ca.clubId
+      || catalog.classes.find((item) => item.id === don.classId)?.clubId === ca.clubId);
+    if (donCungClb) {
+      ghi("trungClb", `Em đã có đơn cho một ca khác của ${ca.clubName}.`, chung);
+      continue;
+    }
+
+    // Trùng giờ: so với đơn cũ VÀ với những dòng vừa nhận trong chính file này. Một
+    // em tick hai CLB trùng khung giờ trong Form thì chỉ học được một buổi, nhưng
+    // hai đơn đều giữ chỗ — hai lớp cùng mất một suất.
+    const trungCu = donCu.find((don) => intervalsOverlap(ca, {
       dayOfWeek: don.dayOfWeek, startTime: don.startTime, endTime: don.endTime,
     }));
-    if (trung) {
-      const caTrung = caById.get(trung.classId);
-      ghi("trungGio", `Trùng giờ với ${caTrung ? nhanCaHoc(caTrung) : trung.classId} em ấy đã đăng ký.`, chung);
+    if (trungCu) {
+      ghi("trungGio", `Trùng giờ với ${nhanMoiCa.get(trungCu.classId) || trungCu.classId} em ấy đã đăng ký.`, chung);
+      continue;
+    }
+    const trungFile = (gioTrongFile.get(em.id) || []).find((item) => intervalsOverlap(ca, item.ca));
+    if (trungFile) {
+      ghi("trungGioTrongFile", `Trùng giờ với ${nhanCaHoc(trungFile.ca)} ở dòng ${trungFile.dong} trong chính file này.`, chung);
       continue;
     }
 
@@ -1368,19 +1410,42 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId }) {
       continue;
     }
 
-    const soDaCo = donCu.length + [...daXepTrongFile.keys()].filter((khoa) => khoa.startsWith(`${em.id}|`)).length;
-    if (soDaCo >= asInt(dot.maxClubsPerStudent || 3)) {
-      ghi("vuotHanMuc", `Em đã có ${soDaCo} CLB, vượt mức tối đa ${dot.maxClubsPerStudent} của đợt này.`, chung);
+    // Hạn mức đếm theo ĐÚNG ĐỢT và theo CLB, giống hệt validateRegistration. Đếm cả
+    // đợt cũ thì em từng học đủ 3 CLB một học kỳ sẽ bị khoá khỏi mọi lần nhập sau.
+    const clbTrongDot = new Set(donCu
+      .filter((don) => (don.periodId || null) === periodId)
+      .map((don) => caById.get(don.classId)?.clubId || catalog.classes.find((item) => item.id === don.classId)?.clubId)
+      .filter(Boolean));
+    for (const khoa of clubTrongFile.keys()) {
+      if (khoa.startsWith(`${em.id}|`)) clbTrongDot.add(khoa.slice(em.id.length + 1));
+    }
+    const hanMuc = asInt(dot.maxClubsPerStudent) || 3;
+    if (clbTrongDot.size >= hanMuc) {
+      ghi("vuotHanMuc", `Em đã có ${clbTrongDot.size} CLB trong đợt ${dot.name}, vượt mức tối đa ${hanMuc}.`, chung);
       continue;
     }
 
     daXepTrongFile.set(khoaFile, row.dong);
-    ghi("xepDuoc", null, { ...chung, parentUserId: phuHuynhTheoHocSinh.get(em.id) || null });
+    clubTrongFile.set(khoaClub, row.dong);
+    if (!gioTrongFile.has(em.id)) gioTrongFile.set(em.id, []);
+    gioTrongFile.get(em.id).push({ ca, dong: row.dong });
+    ghi("xepDuoc", null, {
+      ...chung,
+      parentUserId: phuHuynhTheoHocSinh.get(em.id) || null,
+      soPhuHuynh: soPhuHuynh.get(em.id) || 0,
+      laMoiVoiCa: !daTungCoDon.has(khoaFile),
+    });
   }
 
   // Mỗi ca: nhập vào bao nhiêu em, và con số ghi danh sẵn nên hạ xuống bao nhiêu.
-  // Đây là chỗ dễ sai nhất của cả lần nhập: các em này ĐANG được đếm trong
-  // enrolled_base, nhập vào mà không hạ là sĩ số phồng lên gấp đôi.
+  //
+  // CHỈ trừ những em CHƯA TỪNG có đơn cho ca đó. Em đã từng được nhập rồi bị huỷ
+  // đơn thì enrolled_base đã trừ cho em ấy một lần; trừ tiếp là mở ra chỗ trống
+  // không có thật — đã đo: ca 100 em, nhập 40, huỷ 40, nhập lại thì hệ thống báo
+  // 60/100 trong khi vẫn đủ 100 em đang học.
+  //
+  // Và chỉ hạ khi trạng thái đích THỰC SỰ GIỮ CHỖ. Nhập ở "Chờ thanh toán" mà vẫn
+  // hạ là sĩ số tụt xuống thật, mở chỗ cho 4.445 học sinh khác giành.
   const theoCa = new Map();
   for (const row of ketQua) {
     if (row.ketCuc !== "xepDuoc") continue;
@@ -1389,36 +1454,48 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId }) {
       theoCa.set(row.classId, {
         classId: row.classId, nhan: nhanCaHoc(ca), capacity: asInt(ca.capacity),
         enrolledBaseHienTai: asInt(ca.enrolledBase), donGiuChoHienTai: asInt(ca.activeRegistrations),
-        soEmNhapVao: 0,
+        soEmNhapVao: 0, soEmMoiVoiCa: 0,
       });
     }
-    theoCa.get(row.classId).soEmNhapVao += 1;
+    const muc = theoCa.get(row.classId);
+    muc.soEmNhapVao += 1;
+    if (row.laMoiVoiCa) muc.soEmMoiVoiCa += 1;
   }
   const caAnhHuong = [...theoCa.values()].map((item) => {
-    const baseMoi = Math.max(0, item.enrolledBaseHienTai - item.soEmNhapVao);
+    const truGiaDanh = giuCho ? item.soEmMoiVoiCa : 0;
+    const baseMoi = Math.max(0, item.enrolledBaseHienTai - truGiaDanh);
+    const themGiuCho = giuCho ? item.soEmNhapVao : 0;
     return {
       ...item,
+      giuCho,
+      soEmTruVaoGhiDanhSan: truGiaDanh,
       enrolledBaseDeXuat: baseMoi,
       siSoTruoc: item.enrolledBaseHienTai + item.donGiuChoHienTai,
-      siSoSauNeuHaBase: baseMoi + item.donGiuChoHienTai + item.soEmNhapVao,
-      siSoSauNeuGiuBase: item.enrolledBaseHienTai + item.donGiuChoHienTai + item.soEmNhapVao,
-      thieuGhiDanhSan: item.soEmNhapVao > item.enrolledBaseHienTai,
+      siSoSauNeuHaBase: baseMoi + item.donGiuChoHienTai + themGiuCho,
+      siSoSauNeuGiuBase: item.enrolledBaseHienTai + item.donGiuChoHienTai + themGiuCho,
+      thieuGhiDanhSan: truGiaDanh > item.enrolledBaseHienTai,
+      vuotSucChua: baseMoi + item.donGiuChoHienTai + themGiuCho > asInt(item.capacity),
     };
   }).sort((a, b) => b.soEmNhapVao - a.soEmNhapVao);
 
   const dem = {};
   for (const row of ketQua) dem[row.ketCuc] = (dem[row.ketCuc] || 0) + 1;
+  const xepDuoc = ketQua.filter((row) => row.ketCuc === "xepDuoc");
 
   return {
-    periodId, periodName: dot.name,
+    periodId, periodName: dot.name, trangThai, giuCho,
     files: doc.map((item) => ({ label: item.label, ok: item.ok, error: item.error || null, headerRow: item.headerRow || null, mapping: item.mapping || {} })),
     filesHong: hong.length,
     tongDong: dongFile.length,
     dem,
+    // Đơn không gắn được phụ huynh thì gia đình KHÔNG thấy đơn của con trong cổng —
+    // màn xem trước phải nói ra, không thì vài trăm nhà im lặng không biết gì.
+    soDonKhongCoPhuHuynh: xepDuoc.filter((row) => !row.parentUserId).length,
+    soEmNhieuPhuHuynh: xepDuoc.filter((row) => asInt(row.soPhuHuynh) > 1).length,
     oChon,
     caAnhHuong,
     rows: ketQua,
-    sanSang: hong.length === 0 && (dem.xepDuoc || 0) > 0,
+    sanSang: hong.length === 0 && xepDuoc.length > 0,
     caTrongDot: caTrongDot.map((ca) => ({ id: ca.id, nhan: nhanCaHoc(ca) })),
   };
 }
@@ -1583,7 +1660,8 @@ async function saveClassRecord({ actorUserId, classId, input }) {
   const held = existing ? existing.activeRegistrations : 0;
   const pending = existing ? (existing.pendingRegistrations || 0) : 0;
   const occupied = data.enrolledBase + held;
-  if (data.capacity < occupied) {
+  const sucChuaCu = existing ? asInt(existing.capacity) : null;
+  if (data.capacity < occupied && (sucChuaCu === null || data.capacity < sucChuaCu)) {
     throw httpError(409, "CAPACITY_BELOW_ENROLLED",
       `Lớp đang dùng ${occupied} chỗ (${data.enrolledBase} ghi danh sẵn + ${held} đơn đang giữ chỗ), không thể đặt sĩ số tối đa nhỏ hơn.`);
   }
@@ -2478,6 +2556,7 @@ const groupId = maTheoNgay("GR");
     return sendJson(res, 200, {
       preview: await phanTichXepLop({
         files: payload.files || [], mapping: payload.mapping || {}, periodId: String(payload.periodId || ""),
+        trangThai: ASSIGNABLE_STATUSES.includes(payload.status) ? payload.status : STATUS.dangHoc,
       }),
     });
   }
@@ -2489,28 +2568,53 @@ const groupId = maTheoNgay("GR");
       throw httpError(422, "IMPORT_CONFIRMATION_REQUIRED",
         "Cần xác nhận rõ trước khi ghi hàng loạt đơn đăng ký vào hệ thống.");
     }
-    // Phân tích LẠI từ dữ liệu thô, không tin kết quả trình duyệt gửi lên: giữa lúc
-    // xem trước và lúc bấm ghi, một ca có thể đã bị tắt hoặc một em đã có đơn khác.
-    const phanTich = await phanTichXepLop({
-      files: payload.files || [], mapping: payload.mapping || {}, periodId: String(payload.periodId || ""),
-    });
-    if (!phanTich.sanSang) {
-      throw httpError(422, "IMPORT_NOT_READY",
-        phanTich.filesHong ? "Còn file không đọc được, chưa thể ghi." : "Không có dòng nào xếp được.");
-    }
-
     const trangThai = ASSIGNABLE_STATUSES.includes(payload.status) ? payload.status : STATUS.dangHoc;
-    const daThuPhi = payload.feePaid !== false;
-    const haGhiDanhSan = payload.haGhiDanhSan !== false;
-    const xepDuoc = phanTich.rows.filter((row) => row.ketCuc === "xepDuoc");
 
-    const timestamp = nowIso();
-    const groupId = maTheoNgay("NH");
-    const ketQua = await nhapDangKyHangLoat({
-      actorUserId: user.id, groupId, timestamp, trangThai, daThuPhi, haGhiDanhSan,
-      periodId: phanTich.periodId, rows: xepDuoc, caAnhHuong: phanTich.caAnhHuong,
+    // Cả lượt ghi đi qua CÙNG một khoá với đồng bộ danh bạ. Không có khoá thì hai
+    // lượt bấm Ghi song song (mạng chậm, người dùng bấm lại) đều đọc "em này chưa có
+    // đơn" rồi cùng chèn — đã đo trên MySQL thật: mỗi em HAI đơn, sĩ số vọt 22/20.
+    //
+    // Khoá này còn gánh một việc thứ hai: trên SQLite hai lượt ghi song song giành
+    // nhau BEGIN IMMEDIATE và TREO hẳn. Thử gỡ khoá ra rồi chạy bài kiểm "bấm Ghi
+    // hai lần cùng lúc" thì bộ kiểm thử đứng im tới khi hết giờ, không phải đỏ.
+    return syncScheduler.runExclusive(async () => {
+      // Phân tích LẠI từ dữ liệu thô, không tin kết quả trình duyệt gửi lên: giữa lúc
+      // xem trước và lúc bấm ghi, một ca có thể đã bị tắt hoặc một em đã có đơn khác.
+      const phanTich = await phanTichXepLop({
+        files: payload.files || [], mapping: payload.mapping || {}, periodId: String(payload.periodId || ""),
+        trangThai,
+      });
+      if (!phanTich.sanSang) {
+        throw httpError(422, "IMPORT_NOT_READY",
+          phanTich.filesHong ? "Còn file không đọc được, chưa thể ghi." : "Không có dòng nào xếp được.");
+      }
+
+      const xepDuoc = phanTich.rows.filter((row) => row.ketCuc === "xepDuoc");
+      // Bản xem trước người ta vừa đọc phải khớp với thứ sắp ghi. Lệch đi mà cứ ghi
+      // là ghi một số đơn khác với con số trên nút họ vừa bấm — đã đo: xem trước 40
+      // dòng, có người tắt một ca giữa chừng, ghi xong chỉ còn 20 mà không báo gì.
+      const soDaXem = Number(payload.soDongXepDuoc);
+      if (Number.isFinite(soDaXem) && soDaXem !== xepDuoc.length) {
+        throw httpError(409, "IMPORT_DA_DOI",
+          `Dữ liệu đã đổi từ lúc bạn xem trước: khi đó ${soDaXem} dòng xếp được, bây giờ là ${xepDuoc.length}. `
+          + "Hãy bấm Kiểm tra file lại để xem bản mới trước khi ghi.");
+      }
+
+      const daThuPhi = payload.feePaid !== false;
+      // Chỉ hạ "ghi danh sẵn" khi trạng thái đích THỰC SỰ giữ chỗ. Nhập ở Chờ thanh
+      // toán mà vẫn hạ là sĩ số tụt xuống thật, mở chỗ cho 4.445 học sinh khác giành.
+      const haGhiDanhSan = payload.haGhiDanhSan !== false && phanTich.giuCho;
+
+      const timestamp = nowIso();
+      const groupId = maTheoNgay("NH");
+      const ketQua = await nhapDangKyHangLoat({
+        actorUserId: user.id, groupId, timestamp, trangThai, daThuPhi, haGhiDanhSan,
+        periodId: phanTich.periodId, rows: xepDuoc, caAnhHuong: phanTich.caAnhHuong,
+      });
+      return sendJson(res, 200, {
+        result: { ...ketQua, groupId, trangThai, daThuPhi, haGhiDanhSan, dem: phanTich.dem },
+      });
     });
-    return sendJson(res, 200, { result: { ...ketQua, groupId, trangThai, daThuPhi, dem: phanTich.dem } });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/export/collections") {

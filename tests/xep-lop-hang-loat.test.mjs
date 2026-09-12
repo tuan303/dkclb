@@ -296,3 +296,213 @@ test("bấm nhầm nút không đủ để ghi vài trăm đơn", async () => {
   assert.equal(ghi.status, 422);
   assert.equal((await ghi.json()).error.code, "IMPORT_CONFIRMATION_REQUIRED");
 });
+
+/* ---------- Mười lỗi rà soát tìm ra, mỗi lỗi một bài ---------- */
+
+const doiTrangThai = (id, status) => server.request(`/api/admin/registrations/${encodeURIComponent(id)}/status`,
+  quanTri, { method: "PATCH", body: JSON.stringify({ status }) });
+
+test("một em tick HAI CLB TRÙNG GIỜ trong cùng file thì chỉ xếp được một", async () => {
+  // Đo được trước khi vá: cả hai dòng đều "xếp được", em học một buổi nhưng chiếm
+  // hai chỗ, và nhà trường ghi nhận đã thu phí cả hai. Dữ liệu mẫu có Bóng rổ và
+  // Piano đều Thứ 3 16:15–17:30.
+  const xem = (await (await goiNhap("preview", {
+    files: [fileForm(["NSHM260311", "Bóng rổ nền tảng"], ["NSHM260311", "Piano nhập môn"])],
+  })).json()).preview;
+  assert.equal(xem.dem.xepDuoc, 1, "chỉ được xếp một trong hai buổi trùng giờ");
+  assert.equal(xem.dem.trungGioTrongFile, 1);
+  assert.match(xem.rows[1].lyDo, /ở dòng 2 trong chính file này/);
+});
+
+test("hai ca khác nhau của CÙNG một CLB thì chỉ xếp được một", async () => {
+  // Cổng phụ huynh chặn đúng việc này ("Học sinh đã đăng ký một lớp khác của ..."),
+  // đường nhập trước đây thì không — em bị tính học hai ca và hai lần học phí.
+  const painting = await caPainting();
+  const them = await server.request("/api/admin/classes", quanTri, {
+    method: "POST",
+    body: JSON.stringify({
+      clubId: "painting", periodId: dotId, name: "Ca chiều thứ 6", dayOfWeek: 6,
+      startTime: "16:15", endTime: "17:30", room: painting.room, teacher: painting.teacher,
+      capacity: 20, minCapacity: 0, enrolledBase: 0, fee: painting.fee, grades: painting.grades,
+    }),
+  });
+  assert.equal(them.status, 201, `tạo ca thứ hai thất bại: ${await them.text()}`);
+  const caMoi = (await (await server.request("/api/admin/catalog", quanTri)).json())
+    .classes.find((row) => row.name === "Ca chiều thứ 6");
+
+  const xem = (await (await goiNhap("preview", {
+    files: [fileForm(["NSHM260311", "Mỹ thuật A"], ["NSHM260311", "Mỹ thuật B"])],
+    mapping: { "my thuat a": "painting", "my thuat b": caMoi.id },
+  })).json()).preview;
+  assert.equal(xem.dem.xepDuoc, 1);
+  assert.equal(xem.dem.trungClbTrongFile, 1);
+  assert.match(xem.rows[1].lyDo, /một ca khác của Mỹ thuật sáng tạo/);
+
+  // Dọn lại: để ca thứ hai tồn tại thì mọi bài sau gõ "Mỹ thuật sáng tạo" đều rơi
+  // vào "chưa ghép ca" — đúng hành vi mới, nhưng che mất thứ những bài đó muốn đo.
+  assert.equal((await server.request(`/api/admin/classes/${caMoi.id}`, quanTri, {
+    method: "PATCH", body: JSON.stringify({ active: false }),
+  })).status, 200);
+});
+
+test("hạn mức CLB đếm theo ĐÚNG ĐỢT, không chặn oan em đã học học kỳ trước", async () => {
+  // Đo được trước khi vá: em có đơn hoc_xong ở đợt ĐÃ ĐÓNG bị loại khỏi lần nhập,
+  // trong khi cổng phụ huynh cùng lúc vẫn cho em ấy đăng ký bình thường. Trạng thái
+  // hoc_xong nằm trong ACTIVE_REGISTRATION_STATUSES vĩnh viễn, cố ý, để giữ chỗ.
+  const xem = (await (await goiNhap("preview", { files: [fileForm(["NSHM260622", "Mỹ thuật sáng tạo"])] })).json()).preview;
+  assert.notEqual(xem.rows[0].ketCuc, "vuotHanMuc", `không được chặn oan: ${xem.rows[0].lyDo}`);
+});
+
+test("nhập ở trạng thái KHÔNG giữ chỗ thì không hạ ghi danh sẵn", async () => {
+  // Đo được trước khi vá: chọn "Chờ thanh toán" mà vẫn hạ enrolled_base, sĩ số tụt
+  // xuống thật và mở chỗ cho 4.445 học sinh khác giành.
+  const xem = (await (await goiNhap("preview", {
+    files: [fileForm(["NSHM260311", "Mỹ thuật sáng tạo"])], status: "payment",
+  })).json()).preview;
+  assert.equal(xem.giuCho, false, "Chờ thanh toán không giữ chỗ");
+  const ca = xem.caAnhHuong[0];
+  assert.equal(ca.enrolledBaseDeXuat, ca.enrolledBaseHienTai, "không được hạ ghi danh sẵn");
+  assert.equal(ca.siSoSauNeuHaBase, ca.siSoTruoc, "sĩ số phải không đổi, vì đơn này chưa giữ chỗ");
+});
+
+test("máy chủ TỪ CHỐI hạ ghi danh sẵn khi trạng thái không giữ chỗ, dù giao diện có gửi lên", async () => {
+  const truoc = await caPainting();
+  const ghi = await goiNhap("commit", {
+    files: [fileForm(["NSHM260311", "Mỹ thuật sáng tạo"])],
+    status: "payment", feePaid: false, haGhiDanhSan: true,
+    confirmation: "NHAP_DANG_KY_HANG_LOAT",
+  });
+  const than = await ghi.text();
+  assert.equal(ghi.status, 200, than);
+  assert.equal(JSON.parse(than).result.haGhiDanhSan, false, "máy chủ phải tự tắt việc hạ");
+  const sau = await caPainting();
+  assert.equal(sau.enrolledBase, truoc.enrolledBase, "ghi danh sẵn phải giữ nguyên");
+});
+
+test("nhập lại sau khi HUỶ đơn KHÔNG hạ ghi danh sẵn lần thứ hai", async () => {
+  // Đây là thao tác sửa sai bình thường nhất của giáo vụ: nhập nhầm, huỷ lô, nhập
+  // lại. Đo được trước khi vá: ca có 100 em thật, hệ thống báo 60/100 và mở 40 chỗ
+  // không có thật. Huỷ đơn không đưa em ấy trở lại nhóm "ghi danh ngoài hệ thống".
+  const body = {
+    files: [fileForm(["NSHM260411", "Mỹ thuật sáng tạo"])],
+    mapping: { "my thuat sang tao": "painting" },
+    confirmation: "NHAP_DANG_KY_HANG_LOAT",
+  };
+  const truoc = await caPainting();
+
+  const lan1 = await goiNhap("commit", body);
+  assert.equal(lan1.status, 200, await lan1.text());
+  const sauLan1 = await caPainting();
+  assert.equal(sauLan1.enrolledBase, truoc.enrolledBase - 1, "lần đầu thì hạ đúng một");
+
+  const donMoi = (await (await server.request("/api/registrations", quanTri)).json())
+    .registrations.find((row) => row.studentId === "hs06" && row.classId === "painting" && row.status === "dang_hoc");
+  assert.ok(donMoi, "phải tìm được đơn vừa nhập");
+  assert.equal((await doiTrangThai(donMoi.id, "cancelled")).status, 200);
+
+  const lan2 = await goiNhap("commit", body);
+  assert.equal(lan2.status, 200, await lan2.text());
+  const sauLan2 = await caPainting();
+  assert.equal(sauLan2.enrolledBase, sauLan1.enrolledBase,
+    "nhập lại KHÔNG được hạ tiếp: em này đã được trừ khỏi ghi danh sẵn một lần rồi");
+});
+
+test("màn xem trước nói ra số đơn KHÔNG gắn được phụ huynh", async () => {
+  // Để trống parent_user_id thì không màn nào vỡ, nhưng gia đình không thấy đơn của
+  // con trong cổng. Vài trăm nhà im lặng không biết gì là hậu quả nặng nhất.
+  const xem = (await (await goiNhap("preview", {
+    files: [fileForm(["NSHM260344", "Mỹ thuật sáng tạo"])],
+  })).json()).preview;
+  assert.equal(xem.dem.xepDuoc, 1);
+  assert.equal(xem.soDonKhongCoPhuHuynh, 1, "phải đếm và nói ra, không im lặng");
+});
+
+test("bản xem trước lệch với lúc ghi thì DỪNG lại, không ghi một số đơn khác", async () => {
+  // Đo được trước khi vá: xem trước 40 dòng, có người tắt một ca giữa chừng, ghi
+  // xong chỉ còn 20 mà không báo một chữ nào.
+  const ghi = await goiNhap("commit", {
+    files: [fileForm(["NSHM260311", "Piano nhập môn"])],
+    soDongXepDuoc: 7,
+    confirmation: "NHAP_DANG_KY_HANG_LOAT",
+  });
+  assert.equal(ghi.status, 409);
+  const loi = (await ghi.json()).error;
+  assert.equal(loi.code, "IMPORT_DA_DOI");
+  assert.match(loi.message, /khi đó 7 dòng xếp được, bây giờ là 1/);
+});
+
+test("CLB đã tắt thì không nhập được, giống hệt cổng phụ huynh", async () => {
+  assert.equal((await server.request("/api/admin/clubs/debate", quanTri, {
+    method: "PATCH", body: JSON.stringify({ active: false }),
+  })).status, 200);
+  const xem = (await (await goiNhap("preview", { files: [fileForm(["NSHM260311", "English Debate"])] })).json()).preview;
+  assert.equal(xem.dem.chuaGhepCa, 1, "CLB đã tắt thì không còn ca nào để ghép");
+  assert.equal((await server.request("/api/admin/clubs/debate", quanTri, {
+    method: "PATCH", body: JSON.stringify({ active: true }),
+  })).status, 200);
+});
+
+test("chọn bỏ qua một ô thì lựa chọn đó DÍNH, máy không đoán lại", async () => {
+  // Người vận hành cố ý loại một ô chọn ra khỏi lần nhập. Trước đây máy cứ đoán lại
+  // và ô tự nhảy về giá trị cũ, không một dòng chữ giải thích.
+  const xem = (await (await goiNhap("preview", {
+    files: [fileForm(["NSHM260311", "Mỹ thuật sáng tạo"])],
+    mapping: { "my thuat sang tao": "" },
+  })).json()).preview;
+  assert.equal(xem.oChon[0].classId, null, "lựa chọn bỏ qua phải được giữ");
+  assert.equal(xem.dem.chuaGhepCa, 1);
+});
+
+test("sửa ca học vẫn lưu được khi lớp đang quá tải, miễn là không hạ sức chứa thêm", async () => {
+  // Nhập vượt sức chứa từng khoá cứng ca học: đổi tên giáo viên cũng 409. Luật đúng
+  // là "không được HẠ sức chứa xuống dưới số chỗ đang dùng", chứ không phải "không
+  // được lưu khi đang quá tải" — người ta có thể đang lưu để sửa chính chỗ đó.
+  const ca = await caPainting();
+  const doiTen = await server.request(`/api/admin/classes/${ca.id}`, quanTri, {
+    method: "PATCH", body: JSON.stringify({ teacher: "Cô Minh Trang (đã đổi)" }),
+  });
+  assert.equal(doiTen.status, 200, `đổi tên giáo viên phải lưu được: ${await doiTen.text()}`);
+
+  const haThem = await server.request(`/api/admin/classes/${ca.id}`, quanTri, {
+    method: "PATCH", body: JSON.stringify({ capacity: 1 }),
+  });
+  assert.equal(haThem.status, 409, "nhưng hạ sức chứa xuống sâu hơn thì vẫn phải chặn");
+  assert.equal((await haThem.json()).error.code, "CAPACITY_BELOW_ENROLLED");
+});
+
+test("mọi kết cục máy chủ sinh ra đều có nhãn tiếng Việt trên màn hình", async () => {
+  // Thiếu nhãn thì bảng hiện thẳng mã máy ("trungGioTrongFile") — người vận hành
+  // đọc không ra, mà đó lại đúng là lúc họ cần hiểu vì sao một em không được xếp.
+  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const srv = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
+  const bang = app.slice(app.indexOf("const KET_CUC_XEP_LOP"), app.indexOf("function renderNhapDangKy"));
+  const coNhan = new Set([...bang.matchAll(/^\s{2}(\w+):/gm)].map((m) => m[1]));
+  const maySinh = new Set([...srv.matchAll(/ghi\("(\w+)"/g)].map((m) => m[1]));
+  assert.ok(maySinh.size >= 10, `không đọc được danh sách kết cục: ${[...maySinh]}`);
+  const thieu = [...maySinh].filter((khoa) => !coNhan.has(khoa));
+  assert.deepEqual(thieu, [], `thiếu nhãn tiếng Việt cho: ${thieu.join(", ")}`);
+});
+
+test("bấm Ghi HAI LẦN cùng lúc không tạo đơn trùng", async () => {
+  // Lỗi nặng nhất rà soát tìm ra, đo trên MySQL thật: hai lượt commit song song đều
+  // đọc "em này chưa có đơn" rồi cùng chèn — mỗi em HAI đơn, sĩ số vọt 22/20. Mạng
+  // chậm là người dùng bấm lại, nên đây không phải tình huống hiếm.
+  //
+  // Nay cả lượt ghi đi qua cùng một khoá với đồng bộ danh bạ, và phân tích lại nằm
+  // TRONG khoá đó, nên lượt thứ hai nhìn thấy đơn lượt đầu vừa tạo.
+  const body = {
+    files: [fileForm(["NSHM260411", "Nhảy hiện đại"])],
+    mapping: { "nhay hien dai": "dance" },
+    confirmation: "NHAP_DANG_KY_HANG_LOAT",
+  };
+  const [a, b] = await Promise.all([goiNhap("commit", body), goiNhap("commit", body)]);
+  const ja = await a.json();
+  const jb = await b.json();
+
+  const daTao = [ja, jb].filter((item) => item.result).reduce((tong, item) => tong + item.result.daTao, 0);
+  assert.equal(daTao, 1, `chỉ được tạo đúng một đơn, đang tạo ${daTao}`);
+
+  const cuaEm = (await (await server.request("/api/registrations", quanTri)).json())
+    .registrations.filter((row) => row.studentId === "hs06" && row.classId === "dance");
+  assert.equal(cuaEm.length, 1, `em này có ${cuaEm.length} đơn cho cùng một ca`);
+});

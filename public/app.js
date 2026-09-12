@@ -2180,7 +2180,10 @@ const KET_CUC_XEP_LOP = {
   chuaGhepCa: ["Chưa ghép ca học", "gold"],
   khongTimThayHocSinh: ["Không có mã học sinh", "red"],
   hocSinhNghiHoc: ["Học sinh đã nghỉ", "red"],
-  trungGio: ["Trùng giờ", "gold"],
+  trungGio: ["Trùng giờ với đơn cũ", "gold"],
+  trungGioTrongFile: ["Trùng giờ với dòng khác trong file", "gold"],
+  trungClb: ["Đã học ca khác của CLB này", "gold"],
+  trungClbTrongFile: ["Hai ca của cùng một CLB trong file", "gold"],
   saiKhoi: ["Sai khối", "gold"],
   vuotHanMuc: ["Vượt hạn mức CLB", "gold"],
   trungTrongFile: ["Trùng trong chính file", "blue"],
@@ -2224,7 +2227,7 @@ function renderNhapDangKy() {
         <input id="nhap-file" type="file" accept=".xlsx,.csv" /></label>
       ${(draft.sources || []).length
         ? `<div class="mapping-list" style="margin-top:11px">${draft.sources.map((source) =>
-          `<span><b>${escapeHtml(source.label)}</b>${source.rows.length} dòng</span>`).join("")}</div>` : ""}
+          `<span><b>${escapeHtml(source.label)}</b>${source.rows.length} hàng${preview ? ` · ${preview.tongDong} dòng dữ liệu` : ""}</span>`).join("")}</div>` : ""}
       <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:13px">
         <button class="button button-secondary" id="nhap-kiemtra" ${(draft.sources || []).length ? "" : "disabled"}>Kiểm tra file</button>
       </div>
@@ -2261,7 +2264,9 @@ function renderNhapDangKyPreview(preview, draft) {
     <div class="panel-body"><div class="mapping-list">${Object.entries(dem).map(([ketCuc, so]) => {
       const [nhan, mau] = KET_CUC_XEP_LOP[ketCuc] || [ketCuc, "blue"];
       return `<span><b>${escapeHtml(nhan)}</b><span class="badge badge-${mau}">${so}</span></span>`;
-    }).join("")}</div></div>
+    }).join("")}</div>
+      ${preview.soDonKhongCoPhuHuynh ? `<p class="roster-canh-bao" style="margin-top:11px">${icon("clock")} <b>${preview.soDonKhongCoPhuHuynh} đơn</b> sẽ không gắn được phụ huynh nào — gia đình các em đó <b>sẽ không thấy đơn trong cổng</b>. Liên kết tài khoản phụ huynh cho các em này trước, hoặc chấp nhận rồi bổ sung sau.</p>` : ""}
+      ${preview.soEmNhieuPhuHuynh ? `<p class="field-hint">${preview.soEmNhieuPhuHuynh} em có cả bố lẫn mẹ trong hệ thống. Đơn chỉ gắn được một người (giống hệt đơn phụ huynh tự tạo), nên người còn lại sẽ không thấy đơn này.</p>` : ""}</div>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th style="width:60px">Dòng</th><th>Mã học sinh</th><th>Học sinh</th><th>Ô chọn trong file</th><th>Kết cục</th></tr></thead>
       <tbody>${preview.rows.slice(0, 200).map((row) => {
@@ -2279,15 +2284,17 @@ function renderNhapDangKyPreview(preview, draft) {
   </section>
 
   ${preview.caAnhHuong.length ? `<section class="section panel"><div class="panel-head"><div><h3>4. Sĩ số từng ca sẽ thay đổi thế nào</h3>
-    <p>Các em trong file đang được đếm ở ô <b>ghi danh sẵn ngoài hệ thống</b>. Nhập thành đơn mà không hạ con số đó xuống là <b>đếm hai lần</b>.</p></div></div>
+    <p>${preview.giuCho
+      ? "Các em trong file đang được đếm ở ô <b>ghi danh sẵn ngoài hệ thống</b>. Nhập thành đơn mà không hạ con số đó xuống là <b>đếm hai lần</b>."
+      : `Trạng thái <b>${escapeHtml(statusBadge(preview.trangThai)[0])}</b> KHÔNG giữ chỗ, nên lần nhập này không đụng tới sĩ số và không hạ ô ghi danh sẵn.`}</p></div></div>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th>Ca học</th><th style="width:90px">Nhập vào</th><th>Ghi danh sẵn</th><th>Sĩ số nếu HẠ</th><th>Sĩ số nếu KHÔNG hạ</th></tr></thead>
       <tbody>${preview.caAnhHuong.map((ca) => `<tr>
         <td><strong>${escapeHtml(ca.nhan)}</strong></td>
         <td>${ca.soEmNhapVao} em</td>
-        <td>${ca.enrolledBaseHienTai} → <b>${ca.enrolledBaseDeXuat}</b>${ca.thieuGhiDanhSan ? `<br><span style="color:var(--red)">nhập nhiều hơn số ghi danh sẵn</span>` : ""}</td>
-        <td><span class="badge badge-green">${ca.siSoSauNeuHaBase}/${ca.capacity}</span></td>
-        <td><span class="badge badge-red">${ca.siSoSauNeuGiuBase}/${ca.capacity}</span></td>
+        <td>${ca.enrolledBaseHienTai} → <b>${ca.enrolledBaseDeXuat}</b>${ca.soEmTruVaoGhiDanhSan !== ca.soEmNhapVao ? `<br><span style="color:var(--muted)">chỉ trừ ${ca.soEmTruVaoGhiDanhSan} em chưa từng có đơn ở ca này</span>` : ""}${ca.thieuGhiDanhSan ? `<br><span style="color:var(--red)">nhập nhiều hơn số ghi danh sẵn</span>` : ""}</td>
+        <td><span class="badge badge-${ca.vuotSucChua ? "red" : "green"}">${ca.siSoSauNeuHaBase}/${ca.capacity}</span>${ca.vuotSucChua ? `<br><span style="color:var(--red)">vượt sức chứa</span>` : ""}</td>
+        <td><span class="badge badge-${ca.siSoSauNeuGiuBase > ca.capacity ? "red" : "green"}">${ca.siSoSauNeuGiuBase}/${ca.capacity}</span></td>
       </tr>`).join("")}</tbody>
     </table></div>
   </section>` : ""}
@@ -2303,8 +2310,8 @@ function renderNhapDangKyPreview(preview, draft) {
         <input type="checkbox" id="nhap-dathuphi" ${draft.daThuPhi === false ? "" : "checked"} />
         <span>Đánh dấu <b>đã thu phí</b> cho tất cả các đơn này</span></label>
       <label class="checkbox-row" style="margin-top:7px">
-        <input type="checkbox" id="nhap-habase" ${draft.haGhiDanhSan === false ? "" : "checked"} />
-        <span>Hạ ô <b>ghi danh sẵn ngoài hệ thống</b> xuống tương ứng, để sĩ số không đếm hai lần</span></label>
+        <input type="checkbox" id="nhap-habase" ${preview.giuCho ? "" : "disabled"} ${preview.giuCho && draft.haGhiDanhSan !== false ? "checked" : ""} />
+        <span>Hạ ô <b>ghi danh sẵn ngoài hệ thống</b> xuống tương ứng, để sĩ số không đếm hai lần${preview.giuCho ? "" : " — không dùng được với trạng thái không giữ chỗ, vì hạ xuống là mở ra chỗ trống thật"}</span></label>
       <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:13px">
         <button class="button button-primary" id="nhap-ghi" ${preview.sanSang ? "" : "disabled"}>Ghi ${xepDuoc} đơn vào hệ thống</button>
       </div>
@@ -2332,13 +2339,18 @@ function bindNhapDangKy() {
       // theo một kết quả không còn đúng với file đang chọn.
       state.nhapDangKy = { ...draft(), sources, preview: null, mapping: {} };
       renderPage();
-    } catch (error) { loi(error.message); }
+    } catch (error) {
+      state.nhapDangKy = { ...draft(), sources: [], preview: null, mapping: {} };
+      renderPage();
+      loi(error.message);
+    }
   });
 
   const xemTruoc = async () => {
     const d = draft();
     const payload = {
       files: d.sources, periodId: d.periodId || state.catalog?.activePeriodId, mapping: d.mapping || {},
+      status: d.trangThai || "dang_hoc",
     };
     const { preview } = await api("/admin/registrations/import/preview", { method: "POST", body: JSON.stringify(payload) });
     // Nhớ lại bảng ghép mà máy vừa đề xuất, để lần xem trước sau không mất lựa chọn
@@ -2368,6 +2380,9 @@ function bindNhapDangKy() {
         ...draft(),
         [khoa]: event.target.type === "checkbox" ? event.target.checked : event.target.value,
       };
+      // Đổi trạng thái là đổi cả bảng sĩ số ở bước 4: phải xem trước lại, không thì
+      // bảng đang hứa một con số của trạng thái cũ.
+      if (khoa === "trangThai") xemTruoc().catch((error) => loi(error.message));
     });
   }
 
@@ -2385,6 +2400,7 @@ function bindNhapDangKy() {
         status: d.trangThai || "dang_hoc",
         feePaid: d.daThuPhi !== false,
         haGhiDanhSan: d.haGhiDanhSan !== false,
+        soDongXepDuoc: soDon,
       };
       const { result } = await api("/admin/registrations/import/commit", { method: "POST", body: JSON.stringify(payload) });
       const [donMoi, lopMoi, danhMuc] = await Promise.all([api("/registrations"), api("/clubs"), refreshCatalog()]);
