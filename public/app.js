@@ -1628,7 +1628,7 @@ function renderApplications() {
     : state.adminStatus === "ngoai-le" ? adminApplications.filter((item) => EXCEPTION_STATUSES.includes(item.status))
     : adminApplications.filter((item) => item.status === state.adminStatus);
   const tabs = [["all", "Tất cả"], ...LIFECYCLE_STATUSES.map((status) => [status, statusBadge(status)[0]]), ["ngoai-le", "Ngoại lệ"]];
-  return `<section class="section" style="margin-top:0"><div class="section-head"><div><span class="eyebrow">Quản lý tập trung</span><h2>Danh sách đăng ký</h2><p>Lọc, xử lý ngoại lệ và theo dõi lịch sử trạng thái.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="button button-secondary" data-go="nhapDangKy">${icon("file")} Nhập từ file đăng ký</button><button class="button button-secondary" data-export>${icon("download")} Xuất CSV</button></div></div>
+  return `<section class="section" style="margin-top:0"><div class="section-head"><div><span class="eyebrow">Quản lý tập trung</span><h2>Danh sách đăng ký</h2><p>Lọc, xử lý ngoại lệ và theo dõi lịch sử trạng thái.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap">${state.me?.tinhNang?.nhapHangLoat ? `<button class="button button-secondary" data-go="nhapDangKy">${icon("file")} Nhập từ file đăng ký</button>` : ""}<button class="button button-secondary" data-export>${icon("download")} Xuất CSV</button></div></div>
   <div class="filters"><label class="search-field">${icon("search")}<input id="admin-search" placeholder="Tìm mã đơn, mã học sinh, tên học sinh, CLB..." /></label><div class="status-tabs">${tabs.map(([id,label]) => `<button class="status-tab ${state.adminStatus === id ? "active" : ""}" data-status-tab="${id}">${label}</button>`).join("")}</div></div></section>
   <section class="section panel"><div class="panel-head"><div><h3>${filtered.length} đơn hiển thị</h3><p>${escapeHtml(pageContext("applications", ""))}</p></div></div><div id="applications-table">${renderApplicationTable(filtered)}</div></section>`;
 }
@@ -2195,6 +2195,13 @@ const KET_CUC_XEP_LOP = {
  * chuyện gì SẼ xảy ra, đủ rõ để người vận hành dám bấm ghi vài trăm đơn.
  */
 function renderNhapDangKy() {
+  if (!state.me?.tinhNang?.nhapHangLoat) {
+    return `<section class="panel empty-state"><div class="empty-icon">${icon("clock")}</div>
+      <h3>Nhập đăng ký hàng loạt đang khoá</h3>
+      <p>Tính năng chưa hoàn thiện: vòng rà soát còn 10 lỗi nặng chưa vá, trong đó có lỗi bấm Ghi hai lần
+      tạo hai đơn cho cùng một em, và lỗi nhập lại sau khi huỷ làm sĩ số tụt xuống dưới số em đang học thật.</p>
+      <button class="button button-secondary" data-go="applications">← Về danh sách đơn</button></section>`;
+  }
   const draft = state.nhapDangKy || {};
   const preview = draft.preview || null;
   const dsDot = state.catalog?.periods || [];

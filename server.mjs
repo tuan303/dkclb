@@ -123,6 +123,29 @@ const SYNC_INTERVAL_MS = Math.max(0, Number(process.env.SHEETS_SYNC_INTERVAL_MIN
 const CHO_PHEP_DOI_CHIEU = process.env.CHO_PHEP_DOI_CHIEU === "1";
 
 /**
+ * Nhập đăng ký hàng loạt — mặc định TẮT vì CHƯA XONG.
+ *
+ * Vòng rà soát đối kháng tìm 18 lỗi, 10 lỗi nặng, tất cả tái hiện được bằng mã chạy
+ * thật trên MySQL. Bốn cái đủ để khoá lại:
+ *
+ *   - Bấm Ghi hai lần (mạng chậm) thì mỗi em thành HAI đơn cho cùng một ca: đã đo
+ *     trên MySQL thật, hs01:2 hs02:2, sĩ số vọt 22/20. Không có khoá nào giữa lúc
+ *     phân tích và lúc ghi, cũng không có ràng buộc UNIQUE(student_id, class_id).
+ *   - Huỷ lô vừa nhập rồi nhập lại — thao tác sửa sai bình thường nhất của giáo vụ
+ *     — thì enrolled_base bị hạ LẦN HAI: ca có 100 em thật, hệ thống báo 60/100 và
+ *     mở 40 chỗ không có thật cho 4.445 học sinh.
+ *   - Một em tick hai CLB TRÙNG GIỜ trong Form thì cả hai thành đơn giữ chỗ: em học
+ *     một buổi nhưng chiếm hai chỗ, và nhà trường ghi nhận đã thu phí cả hai.
+ *   - Hai ca khác nhau của CÙNG một CLB đều được xếp, trong khi cổng phụ huynh chặn
+ *     đúng việc đó: phanTichXepLop so theo mã CA, validateRegistration so theo CLB.
+ *
+ * Bốn commit sửa lỗi nền đi cùng nhánh này thì AN TOÀN và cần triển khai sớm, nên
+ * khoá riêng tính năng chưa xong thay vì giữ lại cả nhánh. Đặt
+ * CHO_PHEP_NHAP_HANG_LOAT=1 khi các lỗi trên đã vá xong.
+ */
+const CHO_PHEP_NHAP_HANG_LOAT = process.env.CHO_PHEP_NHAP_HANG_LOAT === "1";
+
+/**
  * Chỉ lượt nào được phép ĐỐI CHIẾU mới được phép cho học sinh nghỉ học. Trong
  * planDirectoryWrites, allSourcesLoaded chính là công tắc đó — ép nó về false là
  * khoá toàn bộ đường vô hiệu hoá, dù lượt ghi đến từ file Excel hay từ Google Sheets.
@@ -171,6 +194,9 @@ const publicUser = (user) => {
     roleLabel: ROLE_LABELS[role] || role,
     // Giao diện ẩn/hiện theo quyền thật của máy chủ, không tự suy từ tên vai trò.
     capabilities: Object.values(CAP).filter((capability) => can(role, capability)),
+    // Tính năng đang khoá vì chưa xong. Giao diện đọc từ đây chứ không tự đoán, để
+    // nút và đường API bật/tắt cùng một lúc bằng cùng một biến môi trường.
+    tinhNang: { nhapHangLoat: CHO_PHEP_NHAP_HANG_LOAT },
     authProvider: user.auth_provider || "local",
     mustChangePassword: Boolean(user.must_change_password),
   };
@@ -2438,6 +2464,14 @@ const groupId = maTheoNgay("GR");
   //
   // Gác bằng quyền duyet-don: đây là tạo đơn thay cho học sinh, cùng loại việc với
   // xác nhận phí và đổi trạng thái. Giáo vụ KHÔNG có quyền này.
+  if (method === "POST" && url.pathname.startsWith("/api/admin/registrations/import/")) {
+    if (!CHO_PHEP_NHAP_HANG_LOAT) {
+      throw httpError(403, "NHAP_HANG_LOAT_DANG_KHOA",
+        "Nhập đăng ký hàng loạt đang khoá vì tính năng chưa hoàn thiện — rà soát còn 10 lỗi nặng chưa vá. "
+        + "Xem chú thích CHO_PHEP_NHAP_HANG_LOAT trong server.mjs.");
+    }
+  }
+
   if (method === "POST" && url.pathname === "/api/admin/registrations/import/preview") {
     await requireSchoolUser(req, CAP.duyetDon);
     const payload = await readJson(req, EXCEL_IMPORT_LIMIT);

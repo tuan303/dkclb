@@ -154,22 +154,65 @@ test("ô chọn không khớp CLB nào thì nói thẳng là không có ứng vi
 /* ---------- Chạy thật qua HTTP ---------- */
 
 import { after, before } from "node:test";
+import { readFile } from "node:fs/promises";
 import { startTestServer } from "./helpers/test-server.mjs";
 
-let server;
+let server;        // máy chủ CÓ bật tính năng, để kiểm phần nghiệp vụ của nó
 let quanTri;
 let phuHuynh;
 let dotId;
+let mayChuThat;    // máy chủ đúng cấu hình đang chạy: tính năng TẮT
+let quanTriThat;
 
 before(async () => {
-  server = await startTestServer({ prefix: "nshm-xeplop-" });
+  // Nhập hàng loạt mặc định TẮT vì chưa hoàn thiện — xem CHO_PHEP_NHAP_HANG_LOAT
+  // trong server.mjs. Phần nghiệp vụ đã viết vẫn phải được kiểm, nên kiểm nó trên
+  // một máy chủ có bật, và kiểm riêng việc "mặc định là khoá" trên cấu hình thật.
+  server = await startTestServer({ prefix: "nshm-xeplop-", env: { CHO_PHEP_NHAP_HANG_LOAT: "1" } });
   quanTri = await server.loginCookie("admin@nshm.edu.vn", "Admin@123");
   phuHuynh = await server.loginCookie("0901234567", "123456");
   dotId = (await (await server.request("/api/admin/periods", quanTri)).json())
     .periods.find((item) => item.status === "open").id;
+
+  mayChuThat = await startTestServer({ prefix: "nshm-xeplop-khoa-" });
+  quanTriThat = await mayChuThat.loginCookie("admin@nshm.edu.vn", "Admin@123");
 });
 
-after(async () => server.stop());
+after(async () => {
+  await server.stop();
+  await mayChuThat.stop();
+});
+
+/* ---------- Khoá trên cấu hình thật ---------- */
+
+test("máy chủ đúng cấu hình thật KHOÁ cả hai đường nhập hàng loạt", async () => {
+  // Rà soát đối kháng tìm 10 lỗi nặng còn chưa vá, trong đó bấm Ghi hai lần tạo hai
+  // đơn cho cùng một em (đo trên MySQL thật: sĩ số vọt 22/20), và nhập lại sau khi
+  // huỷ làm sĩ số tụt xuống dưới số em đang học thật. Khoá lại cho tới khi vá xong.
+  for (const duong of ["preview", "commit"]) {
+    const response = await mayChuThat.request(`/api/admin/registrations/import/${duong}`, quanTriThat,
+      { method: "POST", body: JSON.stringify({ periodId: "x", files: [], confirmation: "NHAP_DANG_KY_HANG_LOAT" }) });
+    assert.equal(response.status, 403, `đường ${duong} phải bị khoá`);
+    assert.equal((await response.json()).error.code, "NHAP_HANG_LOAT_DANG_KHOA");
+  }
+});
+
+test("giao diện đọc cờ tính năng từ máy chủ, không tự đoán", async () => {
+  // Nút và đường API phải bật/tắt cùng một lúc bằng cùng một biến môi trường; ẩn nút
+  // mà để đường API mở là khoá giả.
+  const tat = await (await mayChuThat.request("/api/me", quanTriThat)).json();
+  assert.equal(tat.user.tinhNang.nhapHangLoat, false);
+  const bat = await (await server.request("/api/me", quanTri)).json();
+  assert.equal(bat.user.tinhNang.nhapHangLoat, true);
+
+  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const dongNut = app.split("\n").find((row) => row.includes('data-go="nhapDangKy"') && row.includes("Nhập từ file"));
+  assert.ok(dongNut, "không tìm thấy nút vào màn nhập hàng loạt");
+  assert.ok(dongNut.includes("state.me?.tinhNang?.nhapHangLoat ?"),
+    `nút vào phải nằm sau cờ tính năng, dòng: ${dongNut.trim().slice(0, 160)}`);
+  assert.ok(app.includes("if (!state.me?.tinhNang?.nhapHangLoat) {"),
+    "gõ thẳng đường dẫn cũng phải gặp màn hình khoá");
+});
 
 const fileForm = (...dongs) => ({ label: "form.xlsx", rows: [["Mã học sinh", "CLB đăng ký"], ...dongs] });
 const goiNhap = (duong, body, cookie = quanTri) => server.request(`/api/admin/registrations/import/${duong}`, cookie,
