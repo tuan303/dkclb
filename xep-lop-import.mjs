@@ -197,23 +197,64 @@ export const THEO_KHOI = "@theo-khoi:";
 export const khoaTenClb = (name) => KHONG_DAU(name);
 
 const THU_BANG_CHU = { hai: 1, ba: 2, tu: 3, nam: 4, sau: 5, bay: 6 };
+const SO_HAY_CHU_THU = "(?:[2-7]|hai|ba|tu|nam|sau|bay)";
+// "Thứ 2 buổi" trong "học thử 2 buổi" là số lượng, không phải thứ trong tuần.
+const KHONG_PHAI_THU = "(?!\\s*(?:buoi|lan|tuan|thang|ngay|tiet|gio|phut)(?![a-z0-9]))";
+// Một thứ, cùng các thứ viết nối sau nó mà KHÔNG lặp lại chữ "Thứ": "Thứ 3, 5",
+// "Thứ 2 & 4", "T3-5", "Thứ Hai, Tư". "T" chỉ đi với chữ số — "t" + "hai" là "Thái".
+// "T2" dính liền chữ hay gạch nối phía trước ("BD-T3") là mã, không phải thứ.
+const DAU_THU = `(?:thu\\s*${SO_HAY_CHU_THU}|(?<![a-z0-9-])t[2-7])(?![a-z0-9])${KHONG_PHAI_THU}`;
+const NOI_THU = `(?:\\s*(?:,|&|\\/|-|\\+|va|hoac)\\s*(?:(?:thu\\s*)?${SO_HAY_CHU_THU}|t[2-7])(?![a-z0-9])${KHONG_PHAI_THU})*`;
+const DANH_SACH_THU = new RegExp(`(?<![a-z0-9])${DAU_THU}${NOI_THU}`, "g");
+const MOT_THU = /(?<![a-z0-9])(?:thu\s*)?([2-7]|hai|ba|tu|nam|sau|bay)(?![a-z0-9])|(?<![a-z0-9])t([2-7])(?![a-z0-9])/g;
 
 /**
  * Thứ trong tuần ghi trong ô chọn — "Thứ 6", "thu sau", "T6", "Chủ nhật", "CN" — theo
  * đúng quy ước dayOfWeek của hệ thống (0 = Chủ nhật, 1 = Thứ 2, ..., 6 = Thứ 7).
  *
- * Không có thứ nào, hoặc ghi HAI thứ khác nhau ("Thứ 2, Thứ 6"), thì trả về null:
- * ô ghi hai buổi không nói em học buổi nào.
+ * Không có thứ nào, hoặc ghi HAI thứ khác nhau ("Thứ 2, Thứ 6", và cả dạng viết tắt
+ * "Thứ 3, 5"), thì trả về null: ô ghi hai buổi không nói em học buổi nào. Đọc sót
+ * thứ thứ hai là xếp em vào buổi đầu mà không ai hay.
  */
 export function docThuTrongChuoi(text) {
   const chuoi = KHONG_DAU(text);
   const tim = new Set();
-  for (const khop of chuoi.matchAll(/\bthu\s*([2-7]|hai|ba|tu|nam|sau|bay)\b/g)) {
-    tim.add(/\d/.test(khop[1]) ? Number(khop[1]) - 1 : THU_BANG_CHU[khop[1]]);
+  for (const khop of chuoi.matchAll(DANH_SACH_THU)) {
+    for (const mot of khop[0].matchAll(MOT_THU)) {
+      const giaTri = mot[1] ?? mot[2];
+      tim.add(/\d/.test(giaTri) ? Number(giaTri) - 1 : THU_BANG_CHU[giaTri]);
+    }
   }
-  for (const khop of chuoi.matchAll(/\bt([2-7])\b/g)) tim.add(Number(khop[1]) - 1);
-  if (/\bchu nhat\b|\bcn\b/.test(chuoi)) tim.add(0);
+  if (/(?<![a-z0-9-])(?:chu nhat|cn)(?![a-z0-9])/.test(chuoi)) tim.add(0);
   return tim.size === 1 ? [...tim][0] : null;
+}
+
+const thoatRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const timTronTen = (chuoiDaBoDau, khoaTen) =>
+  new RegExp(`(?<![a-z0-9])${thoatRegex(khoaTen)}(?![a-z0-9])`).exec(chuoiDaBoDau);
+
+// Chữ được phép đứng cạnh tên CLB trong ô chọn mà không làm ô đó nói tới thêm một
+// CLB khác: thứ, buổi, giờ, khối, lớp, và các từ nối.
+const TU_MO_TA_LICH = new Set([
+  "thu", "hai", "ba", "tu", "nam", "sau", "bay", "chu", "nhat", "cn", "va", "hoac", "den",
+  "ca", "buoi", "sang", "chieu", "toi", "luc", "vao", "khoi", "lop", "tiet", "gio", "phut", "clb", "cau", "lac", "bo", "nhom",
+]);
+
+/**
+ * Phần còn lại của ô chọn sau khi bỏ tên CLB có CHỈ là mô tả lịch hay không.
+ *
+ * Ô tích của Google Form ghi mọi lựa chọn vào một ô. Nếu CLB thứ hai trong ô không
+ * có trong danh mục (viết khác "Mĩ/Mỹ", đã đóng, chưa tạo), thì chỉ tìm thấy MỘT tên,
+ * và xếp theo tên đó là lặng lẽ bỏ mất CLB kia. Còn chữ lạ nào thì trả về false để ô
+ * đó chờ người vận hành quyết.
+ */
+export function chiConMoTaLich(clubText, khoaTen) {
+  const chuoi = KHONG_DAU(clubText);
+  const khop = timTronTen(chuoi, khoaTen);
+  if (!khop) return false;
+  const conLai = chuoi.slice(0, khop.index) + " " + chuoi.slice(khop.index + khoaTen.length);
+  return conLai.split(/[^a-z0-9]+/).filter(Boolean)
+    .every((tu) => TU_MO_TA_LICH.has(tu) || /^\d+([hg]\d*)?$/.test(tu) || /^t[2-7]$/.test(tu));
 }
 
 /**
@@ -245,10 +286,12 @@ export function timNhomClb(clubText, nhomTheoTen) {
   const tim = KHONG_DAU(clubText);
   if (!tim) return null;
   if (nhomTheoTen.has(tim)) return nhomTheoTen.get(tim);
-  const chua = [...nhomTheoTen.values()].filter((nhom) => tim.includes(nhom.khoaTen));
+  // So theo TỪ chứ không theo chuỗi con: "vovinam" không được nhận là CLB "Võ".
+  const chua = [...nhomTheoTen.values()].filter((nhom) => timTronTen(tim, nhom.khoaTen));
   const khongLong = chua.filter((nhom) => !chua.some((khac) => khac !== nhom
-    && khac.khoaTen.length > nhom.khoaTen.length && khac.khoaTen.includes(nhom.khoaTen)));
-  return khongLong.length === 1 ? khongLong[0] : null;
+    && khac.khoaTen.length > nhom.khoaTen.length && timTronTen(khac.khoaTen, nhom.khoaTen)));
+  if (khongLong.length !== 1) return null;
+  return chiConMoTaLich(tim, khongLong[0].khoaTen) ? khongLong[0] : null;
 }
 
 /**

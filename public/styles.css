@@ -253,7 +253,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .clb-trung-ten { margin: 4px 0 0; color: #9a6a00; font-size: 10px; font-weight: 600; }
 .clb-trung-ten-khoi { margin-bottom: 14px; line-height: 1.55; }
 .clb-trung-ten-khoi li { margin: 2px 0; }
-.orphan-club { white-space: nowrap; }
+/* Chỉ giữ cặp nút trên một dòng; tên CLB dài phải xuống dòng được, không thì cả trang cuộn ngang trên điện thoại. */
+.orphan-club .orphan-actions { white-space: nowrap; }
 .checkbox-row input { margin-top: 2px; }
 .roster-index td { vertical-align: top; }
 .roster-index .table-action.active { color: #fff; border-color: var(--blue); background: var(--blue); }

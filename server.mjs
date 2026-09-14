@@ -21,7 +21,8 @@ import { ACTIVE_REGISTRATION_STATUSES, ASSIGNABLE_STATUSES, PENDING_SEAT_SQL, SE
 import { conflictMessage, intervalsOverlap } from "./schedule-conflict.mjs";
 import { IMPORT_MODES, buildExcelDirectory } from "./directory-excel.mjs";
 import {
-  THEO_KHOI, caHopVoiEm, docThuNgoaiTenClb, doanCaHoc, docFileXepLop, gomCaTheoTenClb, gomOChonClb, timNhomClb,
+  THEO_KHOI, caHopVoiEm, chiConMoTaLich, docThuNgoaiTenClb, doanCaHoc, docFileXepLop, gomCaTheoTenClb, gomOChonClb,
+  khoaTenClb, timNhomClb,
 } from "./xep-lop-import.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
@@ -1364,7 +1365,10 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
     if (daQuyetDinh) dich = String(mapping[item.khoa] || "");
     else if (doan.classId && doan.khopHan) dich = doan.classId;
     else if (nhomDoan && (nhomDoan.ca.length > 1 || docThuNgoaiTenClb(item.mau, nhomDoan) !== null)) dich = `${THEO_KHOI}${nhomDoan.khoaTen}`;
-    else if (doan.classId) dich = doan.classId;
+    // Khớp "chứa tên CLB" chỉ được dùng khi phần còn lại của ô CHỈ là mô tả lịch. Ô
+    // "Piano nhập môn, Cờ vua" mà Cờ vua chưa có trong danh mục thì không được xếp em
+    // vào Piano rồi quên mất Cờ vua.
+    else if (doan.classId && chiConMoTaLich(item.mau, khoaTenClb(caById.get(doan.classId)?.clubName))) dich = doan.classId;
 
     const nhom = dich.startsWith(THEO_KHOI) ? nhomTheoTen.get(dich.slice(THEO_KHOI.length)) : null;
     const classId = !nhom && caById.has(dich) ? dich : null;
@@ -1378,8 +1382,16 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
   });
   const dichTheoOChon = new Map(oChon.map((item) => [item.khoa, item.dich]));
 
+  // Luật "một CLB" của đường nhập so theo TÊN CLB đã bỏ dấu, không theo mã CLB. Đường
+  // nhập gom các CLB trùng tên chưa gộp thành một nhóm để chọn ca theo khối; so theo
+  // mã thì cùng một em lọt vào hai bản ghi "BÓNG ĐÁ CƠ BẢN" — đã đo: hai đơn đang học,
+  // hai lần thu phí. Với CLB đã gộp, tên và mã cho cùng một kết quả.
+  const tenClbCuaCa = (classIdCanTim) => {
+    const caTim = caById.get(classIdCanTim) || catalog.classes.find((item) => item.id === classIdCanTim);
+    return caTim ? boDauChuoi(clubById.get(caTim.clubId)?.name || caTim.clubId) : null;
+  };
   const daXepTrongFile = new Map();   // "studentId|classId" -> số dòng
-  const clubTrongFile = new Map();    // "studentId|clubId"   -> số dòng
+  const clubTrongFile = new Map();    // "studentId|tên CLB đã bỏ dấu" -> số dòng
   const gioTrongFile = new Map();     // studentId -> [{ca, dong}]
   const ketQua = [];
   for (const row of dongFile) {
@@ -1392,6 +1404,7 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
 
     const dich = dichTheoOChon.get(boDauChuoi(row.clubText));
     if (!dich) { ghi("chuaGhepCa", `Chưa ghép "${row.clubText}" với ca học nào.`, { studentId: em.id }); continue; }
+    const donCu = donTheoHocSinh.get(em.id) || [];
     let classId = dich;
     if (dich.startsWith(THEO_KHOI)) {
       const nhom = nhomTheoTen.get(dich.slice(THEO_KHOI.length));
@@ -1399,17 +1412,31 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
       const hop = caHopVoiEm(nhom, { khoi: asInt(em.grade), thu });
       const vaoThu = thu === null ? "" : ` vào ${DAY_LABELS[thu]}`;
       const chiEm = { studentId: em.id, studentTen: em.name };
-      if (!hop.length) {
-        ghi("khongCoCaHopKhoi", `${nhom.tenClb} không có ca nào cho khối ${em.grade}${vaoThu}. Các ca đang mở: ${nhom.ca.map(moTaCa).map((ca) => `${ca.lich} (khối ${ca.khoi.join(", ") || "mọi khối"})`).join("; ")}.`, chiEm);
+      // Em đã có đơn ở một ca của nhóm này thì đó là câu trả lời, không phải "chưa rõ
+      // buổi" bắt người vận hành sửa file: ca đó hợp với dòng này thì dẫn về đúng ca ấy
+      // để bước "đã có đơn" bên dưới bỏ qua; không hợp thì em đang học ca khác của CLB.
+      const donTrongNhom = donCu.find((don) => nhom.ca.some((caNhom) => caNhom.id === don.classId));
+      if (donTrongNhom && !hop.some((caHop) => caHop.id === donTrongNhom.classId)) {
+        ghi("trungClb", `Em đã có đơn cho một ca khác của ${nhom.tenClb} (${caById.get(donTrongNhom.classId)?.scheduleLabel || donTrongNhom.classId}).`, chiEm);
         continue;
       }
-      if (hop.length > 1) {
-        // Không chọn hộ. Cách sửa phải nằm ngay trong câu báo: người vận hành đang
-        // nhìn đúng dòng này, không phải đọc tài liệu ở đâu khác.
-        ghi("nhieuCaHopKhoi", `Khối ${em.grade} có ${hop.length} ca ${nhom.tenClb}: ${hop.map((ca) => ca.scheduleLabel).join("; ")}. Ghi thêm thứ vào ô CLB của em này trong file (ví dụ "${row.clubText} - ${DAY_LABELS[hop[0].dayOfWeek]}") rồi tải lại, hoặc chọn hẳn một ca cho cả ô này ở bước 2.`, chiEm);
-        continue;
+      if (donTrongNhom) {
+        classId = donTrongNhom.classId;
+      } else {
+        if (!hop.length) {
+          ghi("khongCoCaHopKhoi", `${nhom.tenClb} không có ca nào cho khối ${em.grade}${vaoThu}. Các ca đang mở: ${nhom.ca.map(moTaCa).map((ca) => `${ca.lich} (khối ${ca.khoi.join(", ") || "mọi khối"})`).join("; ")}.`, chiEm);
+          continue;
+        }
+        if (hop.length > 1) {
+          // Không chọn hộ. Cách sửa phải nằm ngay trong câu báo, và phải là cách chắc
+          // chắn hội tụ: tên ĐÚNG một ca luôn thắng mọi cách ghép khác, còn "thêm thứ"
+          // thì hỏng khi ô đã ghi sẵn hai buổi. Không gợi ý chọn một ca cho cả ô ở bước
+          // 2 — việc đó áp cho mọi khối, đẩy các em đang xếp đúng thành sai khối.
+          ghi("nhieuCaHopKhoi", `Khối ${em.grade} có ${hop.length} ca ${nhom.tenClb} (${hop.map((ca) => ca.scheduleLabel).join("; ")}), máy không chọn hộ. Sửa ô CLB của em này trong file thành đúng tên một ca: ${hop.map((ca) => `"${nhanCaHoc(ca)}"`).join(" hoặc ")}, rồi tải lại.`, chiEm);
+          continue;
+        }
+        classId = hop[0].id;
       }
-      classId = hop[0].id;
     }
     const ca = caById.get(classId);
 
@@ -1417,18 +1444,19 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
     const khoaFile = `${em.id}|${classId}`;
     if (daXepTrongFile.has(khoaFile)) { ghi("trungTrongFile", `Dòng ${daXepTrongFile.get(khoaFile)} đã xếp em này vào đúng ca này.`, chung); continue; }
 
-    const donCu = donTheoHocSinh.get(em.id) || [];
     if (donCu.some((don) => don.classId === classId)) { ghi("daCoDon", "Em đã có đơn còn hiệu lực cho ca này — bỏ qua.", chung); continue; }
 
     // Trùng CLB: hai ca khác nhau của CÙNG một CLB. Cổng phụ huynh chặn việc này,
     // đường nhập cũng phải chặn — không thì em bị tính học hai ca và hai lần học phí.
-    const khoaClub = `${em.id}|${ca.clubId}`;
+    const tenClb = boDauChuoi(ca.clubName);
+    const khoaClub = `${em.id}|${tenClb}`;
     if (clubTrongFile.has(khoaClub)) {
       ghi("trungClbTrongFile", `Dòng ${clubTrongFile.get(khoaClub)} đã xếp em này vào một ca khác của ${ca.clubName}.`, chung);
       continue;
     }
-    const donCungClb = donCu.find((don) => caById.get(don.classId)?.clubId === ca.clubId
-      || catalog.classes.find((item) => item.id === don.classId)?.clubId === ca.clubId);
+    // Chỉ so với đơn CÙNG ĐỢT, đúng như cổng phụ huynh (current.inPeriod): em học CLB
+    // này học kỳ trước rồi học tiếp học kỳ này là bình thường.
+    const donCungClb = donCu.find((don) => (don.periodId || null) === periodId && tenClbCuaCa(don.classId) === tenClb);
     if (donCungClb) {
       ghi("trungClb", `Em đã có đơn cho một ca khác của ${ca.clubName}.`, chung);
       continue;
@@ -1460,7 +1488,7 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
     // đợt cũ thì em từng học đủ 3 CLB một học kỳ sẽ bị khoá khỏi mọi lần nhập sau.
     const clbTrongDot = new Set(donCu
       .filter((don) => (don.periodId || null) === periodId)
-      .map((don) => caById.get(don.classId)?.clubId || catalog.classes.find((item) => item.id === don.classId)?.clubId)
+      .map((don) => tenClbCuaCa(don.classId))
       .filter(Boolean));
     for (const khoa of clubTrongFile.keys()) {
       if (khoa.startsWith(`${em.id}|`)) clbTrongDot.add(khoa.slice(em.id.length + 1));
@@ -1545,8 +1573,10 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
     caTrongDot: caTrongDot.map(moTaCa),
     // Chỉ những tên CLB có từ hai ca trở lên mới cần lựa chọn "theo khối"; CLB một ca
     // thì chọn thẳng ca đó là đủ.
+    // Cả nhóm một ca mà một ô đang dùng (ô có ghi thứ): thiếu nó thì ô chọn không có
+    // lựa chọn nào khớp và trình duyệt hiện "— chưa ghép —" cho một ô đã ghép.
     nhomTheoKhoi: [...nhomTheoTen.values()]
-      .filter((nhom) => nhom.ca.length > 1)
+      .filter((nhom) => nhom.ca.length > 1 || oChon.some((item) => item.dich === `${THEO_KHOI}${nhom.khoaTen}`))
       .map((nhom) => ({ dich: `${THEO_KHOI}${nhom.khoaTen}`, tenClb: nhom.tenClb, cacCa: nhom.ca.map(moTaCa) })),
   };
 }
@@ -1765,7 +1795,12 @@ async function saveClassRecord({ actorUserId, classId, input }) {
 
 function buildCatalogImportPlan(analysis, { catalog, periodId }) {
   const clubsByCode = new Map(catalog.clubs.map((club) => [String(club.code).toUpperCase(), club]));
-  const clubsByName = new Map(catalog.clubs.map((club) => [String(club.name).trim().toLowerCase(), club]));
+  // Nhiều CLB cùng tên thì Map giữ bản ghi SAU CÙNG; xếp CLB đang mở ra sau để khớp theo
+  // tên luôn rơi vào CLB đang mở chứ không vào một bản trùng đã ẩn sau khi gộp.
+  const moSau = [...catalog.clubs].sort((a, b) => Number(a.active !== false) - Number(b.active !== false));
+  const clubsByName = new Map(moSau.map((club) => [String(club.name).trim().toLowerCase(), club]));
+  const clbDangMoCungTen = new Map(moSau.filter((club) => club.active !== false)
+    .map((club) => [boDauChuoi(club.name), club]));
   const classKey = (row) => `${row.clubId}|${row.periodId}|${row.dayOfWeek}|${row.startTime}|${row.room}`;
   const existingClasses = new Map(catalog.classes.map((row) => [classKey(row), row]));
   const clubIdByKey = new Map();
@@ -1775,6 +1810,16 @@ function buildCatalogImportPlan(analysis, { catalog, periodId }) {
 
   for (const club of analysis.clubs) {
     const match = clubsByCode.get(String(club.code).toUpperCase()) || clubsByName.get(club.name.trim().toLowerCase());
+    // Dòng của một CLB trùng tên ĐÃ GỘP (bản ghi đã ẩn, còn một CLB đang mở cùng tên):
+    // ca của nó giờ nằm ở CLB đang mở, nên ghi ca vào đó và KHÔNG đụng tới bản ghi đã
+    // ẩn. Trước đây nhập lại file danh mục cũ là bật lại mọi CLB đã ẩn và tạo lại ca
+    // của chúng — mở lại đúng lỗ hổng "một em, hai ca, hai lần học phí" vừa gộp xong.
+    const giuLai = match?.active === false ? clbDangMoCungTen.get(boDauChuoi(match.name)) : null;
+    if (giuLai) {
+      clubIdByKey.set(club.key, giuLai.id);
+      counters.clubsGopVao = (counters.clubsGopVao || 0) + 1;
+      continue;
+    }
     const data = normalizeClubInput({
       code: club.code, name: club.name, category: club.category, description: club.description,
       emoji: club.emoji, grades: club.grades, sortOrder: club.sortOrder, active: true,
@@ -2660,6 +2705,20 @@ const groupId = maTheoNgay("GR");
         throw httpError(409, "IMPORT_DA_DOI",
           `Dữ liệu đã đổi từ lúc bạn xem trước: khi đó ${soDaXem} dòng xếp được, bây giờ là ${xepDuoc.length}. `
           + "Hãy bấm Kiểm tra file lại để xem bản mới trước khi ghi.");
+      }
+      // Đếm khớp chưa đủ: với ô "theo khối", mỗi lần phân tích lại chọn ca theo khối
+      // HIỆN TẠI của các ca. Đổi khối hai ca giữa lúc xem và lúc ghi thì số dòng vẫn y
+      // nguyên mà em nào cũng vào ca khác — đã đo. So từng dòng: em nào vào ca nào.
+      if (Array.isArray(payload.xepDuocDaXem)) {
+        const khoaDong = (row) => `${row.dong}|${row.studentId}|${row.classId}`;
+        const daXem = payload.xepDuocDaXem.map(String).sort();
+        const bayGio = xepDuoc.map(khoaDong).sort();
+        const lech = bayGio.filter((khoa, i) => khoa !== daXem[i]).length;
+        if (daXem.length !== bayGio.length || lech) {
+          throw httpError(409, "IMPORT_DA_DOI",
+            `Dữ liệu đã đổi từ lúc bạn xem trước: có dòng bây giờ sẽ vào ca khác với bản bạn đã xem. `
+            + "Hãy bấm Kiểm tra file lại để xem bản mới trước khi ghi.");
+        }
       }
 
       const daThuPhi = payload.feePaid !== false;

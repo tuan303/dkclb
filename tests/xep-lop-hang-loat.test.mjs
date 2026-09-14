@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  MAX_DONG_XEP_LOP, caHopVoiEm, chuanHoaSdt, detectXepLopMapping, docThuNgoaiTenClb, docThuTrongChuoi, doanCaHoc, docFileXepLop,
+  MAX_DONG_XEP_LOP, caHopVoiEm, chiConMoTaLich, chuanHoaSdt, detectXepLopMapping, docThuNgoaiTenClb, docThuTrongChuoi, doanCaHoc, docFileXepLop,
   gomCaTheoTenClb, gomOChonClb, timNhomClb,
 } from "../xep-lop-import.mjs";
 
@@ -169,8 +169,14 @@ test("đọc thứ ghi trong ô chọn theo đúng quy ước dayOfWeek, và kh�
     "BÓNG ĐÁ CƠ BẢN - Thứ 6": 5, "thu sau": 5, "Bóng đá (thứ 7)": 6, "Thứ Hai": 1, "thứ5": 4,
     T2: 1, "Chủ nhật": 0, CN: 0,
     "BD2A1.1": null, "Lớp 2": null, "Robotics T25": null, "Mỹ thuật sáng tạo": null, "Ca 1": null,
-    // Ghi hai buổi thì không nói em học buổi nào.
-    "Thứ 2, Thứ 6": null,
+    // Ghi hai buổi thì không nói em học buổi nào — kể cả viết tắt không lặp chữ "Thứ".
+    // Đã đo trước khi sửa: "Bơi (Thứ 3, 5)" đọc thành Thứ 3 và em bị xếp vào buổi đầu.
+    "Thứ 2, Thứ 6": null, "Bơi (Thứ 3, 5)": null, "Bơi - T3-5": null, "Thứ 2 & 4": null,
+    "Thứ Hai, Tư": null, "Thứ 3 - T5": null, "Thứ 2 hoặc 4": null,
+    // Không phải thứ trong tuần.
+    "Bơi - học thử 2 buổi": null, "BD-T3": null, "Thái cực quyền": null,
+    // Có thứ, kèm giờ hay khối phía sau.
+    "Thứ 6 (khối 1-2)": 5, "Thứ 2 - 16:15": 1, "Thứ 3 16h15-17h30": 2, "Thứ tư": 3, "Thứ năm": 4,
   };
   for (const [chuoi, thu] of Object.entries(mong)) assert.equal(docThuTrongChuoi(chuoi), thu, chuoi);
 });
@@ -182,6 +188,20 @@ test("nhóm CLB theo tên gom được cả CLB trùng tên CHƯA gộp, và ch�
     "không được nhận nhầm là CLB Bóng đá");
   assert.equal(timNhomClb("bong da co ban", nhom).khoaTen, "bong da co ban");
   assert.equal(timNhomClb("Cờ vua", nhom), null);
+});
+
+test("so tên CLB theo TỪ, và ô còn chữ lạ ngoài tên CLB thì không tự ghép", () => {
+  const nhom = gomCaTheoTenClb([...BONG_DA, { id: "vo", clubName: "Võ", dayOfWeek: 2, khoiApDung: [] }]);
+  assert.equal(timNhomClb("Vovinam", nhom), null, "vovinam không phải CLB Võ");
+  // CLB thứ hai trong ô KHÔNG có trong danh mục (viết Mĩ thay vì Mỹ, hoặc chưa tạo):
+  // chỉ tìm thấy một tên, nhưng xếp theo tên đó là bỏ mất CLB kia của em.
+  assert.equal(timNhomClb("BÓNG ĐÁ CƠ BẢN, Mĩ thuật sáng tạo - Thứ 6", nhom), null);
+  assert.equal(timNhomClb("Bóng đá cơ bản, Cờ vua", nhom), null);
+  // Mô tả lịch cạnh tên CLB thì vẫn nhận.
+  assert.equal(timNhomClb("BÓNG ĐÁ CƠ BẢN (Khối 1-2) - Thứ 6", nhom)?.khoaTen, "bong da co ban");
+  assert.equal(timNhomClb("CLB Bóng đá cơ bản - ca chiều thứ 2 lúc 16h15", nhom)?.khoaTen, "bong da co ban");
+  assert.equal(chiConMoTaLich("Piano nhập môn, Cờ vua", "piano nhap mon"), false);
+  assert.equal(chiConMoTaLich("Piano nhập môn - Thứ 3, 16:15", "piano nhap mon"), true);
 });
 
 test("ô tích NHIỀU CLB trong một ô thì không chọn nhóm nào, không lặng lẽ bỏ mất một CLB", () => {
@@ -594,9 +614,24 @@ async function taoClbNhieuCa(code, name, cacCa) {
   return { clubId, ids };
 }
 
-const tatCa = (ids) => Promise.all(ids.map((classId) => server.request(`/api/admin/classes/${classId}`, quanTri, {
-  method: "PATCH", body: JSON.stringify({ active: false }),
-})));
+// Dọn dữ liệu của một bài: huỷ các đơn còn hiệu lực trong những ca đã tạo rồi mới tắt
+// ca. Tắt ca còn đơn bị máy chủ từ chối (CLASS_HAS_REGISTRATIONS); trước đây lời từ
+// chối đó bị bỏ qua im lặng và ca cùng đơn rò sang các bài sau.
+const TRANG_THAI_CON_HIEU_LUC = ["submitted", "waitlist", "payment", "confirmed", "dang_hoc", "hoc_xong", "lui_khai_giang"];
+async function tatCa(ids) {
+  const tatCaDon = (await (await server.request("/api/registrations", quanTri)).json()).registrations;
+  for (const don of tatCaDon.filter((row) => ids.includes(row.classId) && TRANG_THAI_CON_HIEU_LUC.includes(row.status))) {
+    assert.equal((await doiTrangThai(don.id, "cancelled")).status, 200, `không huỷ được đơn ${don.id}`);
+  }
+  for (const classId of ids) {
+    const tat = await server.request(`/api/admin/classes/${classId}`, quanTri, {
+      method: "PATCH", body: JSON.stringify({ active: false }),
+    });
+    assert.equal(tat.status, 200, `không tắt được ca ${classId}: ${await tat.text()}`);
+  }
+}
+
+const xemTruoc = async (body) => (await (await goiNhap("preview", body)).json()).preview;
 
 test("CLB nhiều ca: mỗi em vào đúng ca của khối mình, còn hai ca hợp khối thì không chọn hộ", async () => {
   // Đúng hình dạng "BÓNG ĐÁ CƠ BẢN" trên máy chủ thật sau khi gộp.
@@ -604,11 +639,11 @@ test("CLB nhiều ca: mỗi em vào đúng ca của khối mình, còn hai ca h�
     ["BDK Thứ 2", 1, [1, 2]], ["BDK Thứ 4", 3, [3, 4, 5]], ["BDK Thứ 6", 5, [1, 2]],
   ]);
   try {
-    const xem = (await (await goiNhap("preview", { files: [fileForm(
+    const xem = await xemTruoc({ files: [fileForm(
       ["NSHM260411", "Bóng đá theo khối"],
       ["NSHM260203", "Bóng đá theo khối"],
       ["NSHM260601", "Bóng đá theo khối"],
-    )] })).json()).preview;
+    )] });
 
     const o = xem.oChon.find((item) => item.khoa === "bong da theo khoi");
     assert.match(o.dich, /^@theo-khoi:/, "tên CLB có nhiều ca thì máy phải đề xuất chọn theo khối");
@@ -623,28 +658,64 @@ test("CLB nhiều ca: mỗi em vào đúng ca của khối mình, còn hai ca h�
 
     assert.equal(khoi2.ketCuc, "nhieuCaHopKhoi", "khối 2 có hai ca: không được lấy ca đầu tiên");
     assert.match(khoi2.lyDo, /Thứ 2 · 18:00–19:00; Thứ 6 · 18:00–19:00/);
-    assert.match(khoi2.lyDo, /Ghi thêm thứ vào ô CLB/, "câu báo phải kèm cách sửa");
+    assert.match(khoi2.lyDo, /thành đúng tên một ca: "Bóng đá theo khối · BDK Thứ 2" hoặc "Bóng đá theo khối · BDK Thứ 6"/,
+      "câu báo phải kèm cách sửa chắc chắn hội tụ");
+    assert.doesNotMatch(khoi2.lyDo, /cho cả ô này/, "không gợi ý chọn một ca cho cả ô — việc đó áp cho mọi khối");
 
     assert.equal(khoi6.ketCuc, "khongCoCaHopKhoi");
     assert.match(khoi6.lyDo, /không có ca nào cho khối 6/);
     assert.deepEqual(xem.caAnhHuong.map((ca) => ca.classId), [thu4]);
 
-    // Bổ sung thứ vào đúng ô của em khối 2 là đủ để xếp được.
-    const coThu = (await (await goiNhap("preview", { files: [fileForm(["NSHM260203", "Bóng đá theo khối - Thứ 6"])] })).json()).preview;
-    assert.equal(coThu.rows[0].ketCuc, "xepDuoc", coThu.rows[0].lyDo);
-    assert.equal(coThu.rows[0].classId, thu6);
-    assert.notEqual(coThu.rows[0].classId, thu2);
+    // Làm đúng theo câu báo thì xếp được — kể cả khi ô cũ đã ghi sẵn HAI buổi, trường
+    // hợp mà cách sửa cũ ("thêm thứ vào cuối ô") không bao giờ hội tụ.
+    for (const oDaSua of ["Bóng đá theo khối · BDK Thứ 6", "Bóng đá theo khối - Thứ 6"]) {
+      const sua = await xemTruoc({ files: [fileForm(["NSHM260203", oDaSua])] });
+      assert.equal(sua.rows[0].ketCuc, "xepDuoc", `${oDaSua}: ${sua.rows[0].lyDo}`);
+      assert.equal(sua.rows[0].classId, thu6);
+    }
+    const haiBuoi = await xemTruoc({ files: [fileForm(["NSHM260203", "Bóng đá theo khối (Thứ 2, 6)"])] });
+    assert.equal(haiBuoi.rows[0].ketCuc, "nhieuCaHopKhoi", "ô ghi tắt hai buổi không được đọc thành buổi đầu");
 
     // Ghi thứ mà khối đó không có ca vào thứ ấy thì báo, không lấy đại ca khác.
-    const saiThu = (await (await goiNhap("preview", { files: [fileForm(["NSHM260411", "Bóng đá theo khối Thứ 2"])] })).json()).preview;
+    const saiThu = await xemTruoc({ files: [fileForm(["NSHM260411", "Bóng đá theo khối Thứ 2"])] });
     assert.equal(saiThu.rows[0].ketCuc, "khongCoCaHopKhoi");
     assert.match(saiThu.rows[0].lyDo, /khối 4 vào Thứ 2/);
 
-    // Ô tích hai CLB trong một ô: không xếp em vào một CLB rồi quên CLB còn lại.
-    const haiClb = (await (await goiNhap("preview", { files: [fileForm(["NSHM260411", "Bóng đá theo khối, Piano nhập môn"])] })).json()).preview;
-    assert.equal(haiClb.rows[0].ketCuc, "chuaGhepCa", haiClb.rows[0].lyDo);
+    // Ô tích hai CLB trong một ô: không xếp em vào một CLB rồi quên CLB còn lại — kể cả
+    // khi CLB thứ hai KHÔNG có trong danh mục, và kể cả với CLB chỉ có một ca.
+    for (const oHaiClb of ["Bóng đá theo khối, Piano nhập môn", "Bóng đá theo khối, Cờ vua", "Piano nhập môn, Cờ vua"]) {
+      const haiClb = await xemTruoc({ files: [fileForm(["NSHM260411", oHaiClb])] });
+      assert.equal(haiClb.rows[0].ketCuc, "chuaGhepCa", `${oHaiClb}: ${haiClb.rows[0].lyDo}`);
+    }
+
+    // Em đã có đơn ở một trong hai ca hợp khối thì đó là "đã có đơn", không phải
+    // "chưa rõ buổi" bắt người vận hành sửa file.
+    const ghi = await goiNhap("commit", {
+      files: [fileForm(["NSHM260203", "Bóng đá theo khối - Thứ 6"])], confirmation: "NHAP_DANG_KY_HANG_LOAT",
+    });
+    assert.equal(ghi.status, 200, await ghi.text());
+    const lai = await xemTruoc({ files: [fileForm(["NSHM260203", "Bóng đá theo khối"])] });
+    assert.equal(lai.rows[0].ketCuc, "daCoDon", lai.rows[0].lyDo);
   } finally {
     await tatCa([thu2, thu4, thu6]);
+  }
+});
+
+test("CLB một ca mà ô chọn ghi thứ: đúng thứ thì xếp, sai thứ thì báo, và ô chọn hiện đúng lựa chọn", async () => {
+  // Piano nhập môn chỉ có một ca, Thứ 3. Trước khi có nhánh này, ô "Piano - Thứ 5" lặng
+  // lẽ vào ca Thứ 3 chỉ vì Piano có đúng một ca — và gỡ nhánh đó ra thì cả bộ kiểm vẫn xanh.
+  const xem = await xemTruoc({ files: [fileForm(
+    ["NSHM260522", "Piano nhập môn - Thứ 5"], ["NSHM260522", "Piano nhập môn - Thứ 3"],
+  )] });
+  const [saiThu, dungThu] = xem.rows;
+  assert.equal(saiThu.ketCuc, "khongCoCaHopKhoi", saiThu.lyDo);
+  assert.match(saiThu.lyDo, /vào Thứ 5/);
+  assert.equal(dungThu.ketCuc, "xepDuoc", dungThu.lyDo);
+  assert.equal(dungThu.classId, "piano");
+  // Giá trị đích của cả hai ô phải có trong ô chọn, không thì trình duyệt hiện
+  // "— chưa ghép —" cho một ô đã ghép.
+  for (const o of xem.oChon) {
+    assert.ok(xem.nhomTheoKhoi.some((nhom) => nhom.dich === o.dich), `ô ${o.mau} không có lựa chọn khớp`);
   }
 });
 
@@ -655,18 +726,18 @@ test("theo khối: ghi thật vào đúng ca của từng em, và chọn hẳn m
   try {
     // Người vận hành chọn hẳn ca "nhỏ" cho cả ô: em khối 6 phải ra Sai khối, không
     // bị máy lặng lẽ chuyển sang ca "lớn".
-    const coDinh = (await (await goiNhap("preview", {
+    const coDinh = await xemTruoc({
       files: [fileForm(["NSHM260601", "Cầu lông theo khối"])],
       mapping: { "cau long theo khoi": nho },
-    })).json()).preview;
+    });
     assert.equal(coDinh.oChon[0].dich, nho);
     assert.equal(coDinh.rows[0].ketCuc, "saiKhoi");
 
     // Giá trị theo khối không có thật thì coi như chưa ghép, không ngã về đoán.
-    const giaMao = (await (await goiNhap("preview", {
+    const giaMao = await xemTruoc({
       files: [fileForm(["NSHM260601", "Cầu lông theo khối"])],
       mapping: { "cau long theo khoi": "@theo-khoi:khong co clb nay" },
-    })).json()).preview;
+    });
     assert.equal(giaMao.rows[0].ketCuc, "chuaGhepCa");
 
     const ghi = await goiNhap("commit", {
@@ -677,10 +748,37 @@ test("theo khối: ghi thật vào đúng ca của từng em, và chọn hẳn m
     assert.equal(ghi.status, 200, than);
     assert.equal(JSON.parse(than).result.daTao, 2);
     const don = (await (await server.request("/api/registrations", quanTri)).json()).registrations;
-    assert.ok(don.some((row) => row.studentId === "hs02" && row.classId === lon), "em khối 6 phải vào ca lớn");
-    assert.ok(don.some((row) => row.studentId === "hs08" && row.classId === nho), "em khối 5 phải vào ca nhỏ");
+    assert.ok(don.some((row) => row.studentId === "hs02" && row.classId === lon && row.status === "dang_hoc"), "em khối 6 phải vào ca lớn");
+    assert.ok(don.some((row) => row.studentId === "hs08" && row.classId === nho && row.status === "dang_hoc"), "em khối 5 phải vào ca nhỏ");
   } finally {
     await tatCa([nho, lon]);
+  }
+});
+
+test("ghi mà ca đã đổi khối từ lúc xem trước thì DỪNG, dù số dòng xếp được vẫn y nguyên", async () => {
+  // Đã đo trước khi sửa: xem trước em khối 4 vào ca X, em khối 6 vào ca Y; ai đó đổi
+  // khối hai ca cho nhau; bấm Ghi vẫn 200 và mỗi em vào ca kia — số dòng vẫn là 2.
+  const { ids: [x, y] } = await taoClbNhieuCa("DOI-KHOI", "Cờ tướng đổi khối", [["DK X", 2, [4]], ["DK Y", 4, [6]]]);
+  try {
+    const body = { files: [fileForm(["NSHM260411", "Cờ tướng đổi khối"], ["NSHM260601", "Cờ tướng đổi khối"])] };
+    const xem = await xemTruoc(body);
+    assert.deepEqual(xem.rows.map((row) => row.classId), [x, y]);
+    const daXem = xem.rows.filter((row) => row.ketCuc === "xepDuoc").map((row) => `${row.dong}|${row.studentId}|${row.classId}`);
+
+    for (const [classId, grades] of [[x, [6]], [y, [4]]]) {
+      assert.equal((await server.request(`/api/admin/classes/${classId}`, quanTri, {
+        method: "PATCH", body: JSON.stringify({ grades }),
+      })).status, 200);
+    }
+    const ghi = await goiNhap("commit", {
+      ...body, soDongXepDuoc: daXem.length, xepDuocDaXem: daXem, confirmation: "NHAP_DANG_KY_HANG_LOAT",
+    });
+    assert.equal(ghi.status, 409, await ghi.clone().text());
+    const loi = (await ghi.json()).error;
+    assert.equal(loi.code, "IMPORT_DA_DOI");
+    assert.match(loi.message, /vào ca khác/);
+  } finally {
+    await tatCa([x, y]);
   }
 });
 
@@ -688,11 +786,37 @@ test("CLB trùng tên CHƯA gộp vẫn chọn được ca theo khối, không b
   const a = await taoClbNhieuCa("BR-TRUNG-A", "Bơi trùng tên", [["BTT khối nhỏ", 5, [1, 2, 3, 4]]]);
   const b = await taoClbNhieuCa("BR-TRUNG-B", "BƠI TRÙNG TÊN", [["BTT khối lớn", 5, [5, 6]]]);
   try {
-    const xem = (await (await goiNhap("preview", { files: [fileForm(
+    const xem = await xemTruoc({ files: [fileForm(
       ["NSHM260411", "Bơi trùng tên"], ["NSHM260601", "Bơi trùng tên"],
-    )] })).json()).preview;
-    assert.equal(xem.rows[0].classId, a.ids[0], xem.rows[0].lyDo);
-    assert.equal(xem.rows[1].classId, b.ids[0], xem.rows[1].lyDo);
+    )] });
+    assert.equal(xem.rows[0].ketCuc, "xepDuoc", xem.rows[0].lyDo);
+    assert.equal(xem.rows[0].classId, a.ids[0]);
+    assert.equal(xem.rows[1].ketCuc, "xepDuoc", xem.rows[1].lyDo);
+    assert.equal(xem.rows[1].classId, b.ids[0]);
+  } finally {
+    await tatCa([...a.ids, ...b.ids]);
+  }
+});
+
+test("CLB trùng tên CHƯA gộp: một em không lọt vào hai bản ghi, trong file cũng như với đơn đã có", async () => {
+  // Đã đo trước khi sửa: hai dòng "Võ - Thứ 3" và "VÕ - Thứ 5" của cùng một em đều xếp
+  // được vào hai bản ghi trùng tên — hai đơn đang học, hai lần thu phí. Luật một-CLB
+  // của đường nhập khi đó so theo mã CLB.
+  const a = await taoClbNhieuCa("VO-TRUNG-A", "Võ trùng tên", [["VTT Thứ 3", 2, [4]]]);
+  const b = await taoClbNhieuCa("VO-TRUNG-B", "VÕ TRÙNG TÊN", [["VTT Thứ 5", 4, [4]]]);
+  try {
+    const trongFile = await xemTruoc({ files: [fileForm(
+      ["NSHM260411", "Võ trùng tên - Thứ 3"], ["NSHM260411", "VÕ TRÙNG TÊN - Thứ 5"],
+    )] });
+    assert.equal(trongFile.rows[0].ketCuc, "xepDuoc", trongFile.rows[0].lyDo);
+    assert.equal(trongFile.rows[1].ketCuc, "trungClbTrongFile", trongFile.rows[1].lyDo);
+
+    const ghi = await goiNhap("commit", {
+      files: [fileForm(["NSHM260411", "Võ trùng tên - Thứ 3"])], confirmation: "NHAP_DANG_KY_HANG_LOAT",
+    });
+    assert.equal(ghi.status, 200, await ghi.text());
+    const voiDonCu = await xemTruoc({ files: [fileForm(["NSHM260411", "Võ trùng tên - Thứ 5"])] });
+    assert.equal(voiDonCu.rows[0].ketCuc, "trungClb", voiDonCu.rows[0].lyDo);
   } finally {
     await tatCa([...a.ids, ...b.ids]);
   }
@@ -703,11 +827,27 @@ test("ô Form ghi rõ tên ca thì ghép đúng ca đó trên máy chủ thật,
   // không bao giờ khớp, dù bài kiểm module ở đầu tệp vẫn xanh.
   const { ids: [ca1, ca2] } = await taoClbNhieuCa("GT-CA", "Guitar ca", [["Ca 1", 2, [4]], ["Ca 2", 4, [4]]]);
   try {
-    const xem = (await (await goiNhap("preview", { files: [fileForm(["NSHM260411", "Guitar ca · Ca 2"])] })).json()).preview;
+    const xem = await xemTruoc({ files: [fileForm(["NSHM260411", "Guitar ca · Ca 2"])] });
     assert.equal(xem.oChon[0].dich, ca2);
-    assert.equal(xem.rows[0].classId, ca2, xem.rows[0].lyDo);
+    assert.equal(xem.rows[0].ketCuc, "xepDuoc", xem.rows[0].lyDo);
+    assert.equal(xem.rows[0].classId, ca2);
     assert.notEqual(xem.rows[0].classId, ca1);
   } finally {
     await tatCa([ca1, ca2]);
   }
+});
+
+test("giao diện không đóng băng đề xuất của máy thành lựa chọn của người vận hành", async () => {
+  // Đã đo trước khi sửa: sau lần xem đầu, mọi đề xuất bị chép vào bảng ghép; CLB có
+  // thêm ca thứ hai giữa chừng thì mọi em vẫn bị dồn vào ca cũ, không còn báo "chưa rõ
+  // buổi". Bảng ghép chỉ được ghi từ ô chọn người vận hành tự đổi.
+  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const dau = app.indexOf("const xemTruoc = async () => {");
+  assert.ok(dau >= 0, "app.js không còn hàm xemTruoc");
+  const than = app.slice(dau, app.indexOf("\n  };", dau));
+  assert.doesNotMatch(than, /oChon/, "xemTruoc không được chép đề xuất của máy vào bảng ghép");
+  assert.match(app, /data-ghep-ca[\s\S]{0,400}mapping: \{ \.\.\.\(d\.mapping \|\| \{\}\), \[select\.dataset\.ghepCa\]: select\.value \}/,
+    "ô chọn ở bước 2 phải là nơi ghi bảng ghép");
+  assert.match(app, /periodId: event\.target\.value, preview: null, mapping: \{\}/, "đổi đợt phải xoá bảng ghép của đợt cũ");
+  assert.match(app, /xepDuocDaXem:/, "nút Ghi phải gửi kèm em nào vào ca nào");
 });
