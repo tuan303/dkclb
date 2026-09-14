@@ -1656,6 +1656,15 @@ async function saveClassRecord({ actorUserId, classId, input }) {
   const data = normalizeClassInput(input, { existing, knownPeriodIds: periods.map((period) => period.id) });
   const club = catalog.clubs.find((item) => item.id === data.clubId);
   if (!club) throw httpError(404, "CLUB_NOT_FOUND", "CLB của lớp này không tồn tại.");
+  // Ca không khai khối riêng thì đang KẾ THỪA khối của CLB. Chuyển nó sang CLB khác mà
+  // để nguyên là đổi lặng lẽ ai học được ca này: gộp ca "khối 3, 4, 5" vào CLB khai
+  // khối 1, 2 thì em khối 3 bị chặn còn em khối 1 lọt vào, rồi mở CLB giữ lại thành
+  // khối 1–5 thì mọi ca kế thừa đều thành khối 1–5. Đã đo được cả hai bước trên máy
+  // thử. Ghim khối cũ vào chính ca, để gộp CLB trùng tên theo thứ tự nào cũng an toàn.
+  if (existing && existing.clubId !== data.clubId && !data.grades.length) {
+    const clubCu = catalog.clubs.find((item) => item.id === existing.clubId);
+    if (clubCu?.grades?.length) data.grades = [...clubCu.grades];
+  }
   const targetId = classId || id("class");
   const held = existing ? existing.activeRegistrations : 0;
   const pending = existing ? (existing.pendingRegistrations || 0) : 0;

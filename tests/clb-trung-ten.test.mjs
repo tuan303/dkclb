@@ -1,0 +1,219 @@
+// CLB trùng tên và việc gộp chúng bằng tay.
+//
+// Trên máy chủ thật, "BÓNG ĐÁ CƠ BẢN" là BA bản ghi CLB, mỗi bản ghi một ca. Luật
+// "mỗi em chỉ một lớp của một CLB" so theo mã CLB nên không chặn giữa ba bản ghi đó:
+// một em khối 1 đăng ký được cả ca Thứ 2 lẫn ca Thứ 6 và đóng hai lần học phí. Cách
+// chữa đã chốt là gộp về một CLB nhiều ca, bằng tay, theo các bước trang "CLB & lịch
+// học" hướng dẫn. Tệp này khoá ba điều mà các bước đó dựa vào:
+//
+// 1. Trang nhận ra đúng các CLB trùng tên, và ô "Thuộc CLB" phân biệt được chúng —
+//    không thì người gộp đang chọn giữa ba dòng chữ giống hệt nhau.
+// 2. Chuyển ca sang CLB giữ lại thì luật một-CLB chặn ngay, kể cả với đơn đã có.
+// 3. Chuyển ca KHÔNG làm đổi khối của ca. Ca không khai khối riêng thì kế thừa khối
+//    của CLB, và trước khi sửa thì gộp là đổi lặng lẽ ai học được ca đó.
+import test, { after, before } from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { startTestServer } from "./helpers/test-server.mjs";
+
+const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+
+/** Cắt đúng thân một hàm cấp cao nhất — xem lý do ở tests/danh-sach-lop.test.mjs. */
+function catHam(ten) {
+  const dau = app.indexOf(`function ${ten}(`);
+  assert.ok(dau >= 0, `app.js không còn hàm ${ten}`);
+  const cuoi = app.indexOf("\n}", dau);
+  assert.ok(cuoi > dau, `không tìm thấy dấu đóng của hàm ${ten}`);
+  return app.slice(dau, cuoi + 2);
+}
+
+function catDong(mo) {
+  const dau = app.indexOf(mo);
+  assert.ok(dau >= 0, `app.js không còn "${mo}"`);
+  const cuoi = app.indexOf(";\n", dau) >= 0 ? app.indexOf(";\n", dau) : app.indexOf(";\r\n", dau);
+  return app.slice(dau, cuoi + 1);
+}
+
+/** Nạp chính mã trình duyệt, không mô phỏng lại. */
+function napTrungTen(catalog) {
+  const nguon = [
+    catDong("const escapeHtml = "),
+    catDong("const boDau = "),
+    ...["khoaTenClb", "clbTrungTen", "nhanClbDayDu", "renderNhanTrungTen", "renderCanhBaoClbTrungTen"].map(catHam),
+  ].join("\n");
+  return new Function("state",
+    `${nguon}\nreturn { clbTrungTen, nhanClbDayDu, renderNhanTrungTen, renderCanhBaoClbTrungTen };`,
+  )({ catalog });
+}
+
+const clb = (id, code, name, grades = [1, 2], active = true) => ({ id, code, name, grades, active });
+const ca = (id, clubId, active = true) => ({ id, clubId, active });
+
+/* ---------- 1. Nhận ra và phân biệt ---------- */
+
+test("gom CLB trùng tên bất kể hoa thường, dấu cách thừa; CLB tên riêng thì không gom", () => {
+  const { clbTrungTen } = napTrungTen({
+    clubs: [
+      clb("a", "BD2A1", "BÓNG ĐÁ CƠ BẢN"),
+      clb("b", "BD4B1", "Bóng đá  cơ bản ", [3, 4, 5]),
+      clb("c", "BD6A1", "BÓNG ĐÁ CƠ BẢN"),
+      clb("d", "CL2B1", "CẦU LÔNG CHUYÊN SÂU"),
+    ],
+    classes: [],
+  });
+  const nhom = [...clbTrungTen().values()];
+  assert.equal(nhom.length, 1);
+  assert.deepEqual(nhom[0].map((item) => item.code), ["BD2A1", "BD4B1", "BD6A1"]);
+});
+
+test("CLB đã ẩn không tính là trùng, không bị gắn nhãn, và ẩn đến khi còn một thì hết cảnh báo", () => {
+  // Bước cuối của việc gộp là ẩn CLB đã hết ca. Làm xong mà cảnh báo vẫn còn thì
+  // người ta không biết mình đã xong hay chưa.
+  const catalog = {
+    clubs: [clb("a", "BD2A1", "BÓNG ĐÁ CƠ BẢN"), clb("c", "BD6A1", "BÓNG ĐÁ CƠ BẢN", [1, 2], false)],
+    classes: [],
+  };
+  const { clbTrungTen, renderNhanTrungTen, renderCanhBaoClbTrungTen } = napTrungTen(catalog);
+  assert.equal(clbTrungTen().size, 0);
+  assert.equal(renderCanhBaoClbTrungTen(), "");
+  assert.equal(renderNhanTrungTen(catalog.clubs[0]), "");
+  assert.equal(renderNhanTrungTen(catalog.clubs[1]), "", "CLB đã ẩn không được bảo gộp tiếp");
+});
+
+test("nhãn trong ô Thuộc CLB mang mã, khối và số ca đang mở", () => {
+  const { nhanClbDayDu } = napTrungTen({
+    clubs: [],
+    classes: [ca("x1", "a"), ca("x2", "a"), ca("x3", "a", false), ca("y1", "b")],
+  });
+  assert.equal(nhanClbDayDu(clb("a", "BD2A1", "BÓNG ĐÁ CƠ BẢN")), "BÓNG ĐÁ CƠ BẢN · BD2A1 · khối 1, 2 · 2 ca");
+  assert.equal(nhanClbDayDu(clb("z", "MOI", "CLB mới", [])), "CLB mới · MOI · chưa khai khối · 0 ca");
+});
+
+test("cảnh báo nêu hậu quả, liệt kê mã từng nhóm, và thoát ký tự HTML trong tên", () => {
+  const catalog = {
+    clubs: [clb("a", "A1", "<b>Cờ vua</b>"), clb("b", "B1", "<b>Cờ vua</b>")],
+    classes: [],
+  };
+  const { renderNhanTrungTen, renderCanhBaoClbTrungTen } = napTrungTen(catalog);
+  const canh = renderCanhBaoClbTrungTen();
+  assert.match(canh, /1 tên CLB đang bị trùng/);
+  assert.match(canh, /hai lần học phí/);
+  assert.match(canh, /&lt;b&gt;Cờ vua&lt;\/b&gt;/);
+  assert.doesNotMatch(canh, /<b><b>/);
+  assert.match(renderNhanTrungTen(catalog.clubs[0]), /Trùng tên với 1 CLB khác: B1/);
+});
+
+test("ô Thuộc CLB dùng nhãn đầy đủ và xếp các CLB cùng tên đứng liền nhau", () => {
+  const dau = app.indexOf("const clubOptions = state.catalog.clubs");
+  assert.ok(dau >= 0, "app.js không còn ô chọn Thuộc CLB");
+  const doan = app.slice(dau, app.indexOf(".join(\"\")", dau));
+  assert.match(doan, /\.sort\(/, "phải sắp theo tên để các CLB trùng tên đứng cạnh nhau");
+  assert.match(doan, /nhanClbDayDu\(item\)/, "phải hiện mã/khối/số ca, không chỉ tên");
+});
+
+/* ---------- 2 & 3. Gộp trên máy chủ thật ---------- */
+
+let server;
+let quanTri;
+let phuHuynh;
+let dotId;
+
+before(async () => {
+  server = await startTestServer({ prefix: "nshm-trungten-" });
+  quanTri = await server.loginCookie("admin@nshm.edu.vn", "Admin@123");
+  phuHuynh = await server.loginCookie("0901234567", "123456");
+  const periods = await (await server.request("/api/admin/periods", quanTri)).json();
+  dotId = periods.periods.find((period) => period.status === "open").id;
+});
+
+after(async () => server?.stop());
+
+const goi = async (path, cookie, method, body) => {
+  const response = await server.request(path, cookie, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+  const text = await response.text();
+  return { status: response.status, body: text ? JSON.parse(text) : null, text };
+};
+
+async function taoClb(code, grades) {
+  const r = await goi("/api/admin/clubs", quanTri, "POST", {
+    code, name: "Bóng đá trùng tên", category: "Thể thao", grades, description: "", emoji: "⚽", active: true,
+  });
+  assert.equal(r.status, 201, r.text);
+  return r.body.club.id;
+}
+
+async function taoCa(clubId, name, dayOfWeek, grades) {
+  const r = await goi("/api/admin/classes", quanTri, "POST", {
+    clubId, periodId: dotId, name, dayOfWeek, startTime: "16:15", endTime: "17:30", room: `Sân ${name}`,
+    teacher: "Thầy Nam", capacity: 25, minCapacity: 0, enrolledBase: 0, fee: 0, grades, active: true,
+  });
+  assert.equal(r.status, 201, r.text);
+  const catalog = (await goi("/api/admin/catalog", quanTri, "GET")).body;
+  return catalog.classes.find((row) => row.name === name).id;
+}
+
+const kiemTra = async (classId) => (await goi("/api/registrations/validate", phuHuynh, "POST", {
+  studentId: "hs01", clubIds: [classId],
+})).body;
+
+test("chuyển ca sang CLB giữ lại thì luật một-CLB chặn ngay, kể cả với đơn đã có", async () => {
+  // hs01 học khối 3.
+  const giuLai = await taoClb("TRUNG-A", [3]);
+  const seGop = await taoClb("TRUNG-B", [3]);
+  const caThu2 = await taoCa(giuLai, "Trùng tên Thứ 2", 1, []);
+  const caThu6 = await taoCa(seGop, "Trùng tên Thứ 6", 5, []);
+
+  const dangKy = await goi("/api/registrations", phuHuynh, "POST", {
+    studentId: "hs01", clubIds: [caThu2], acceptedTerms: true,
+  });
+  assert.equal(dangKy.status, 201, dangKy.text);
+
+  const truocGop = await kiemTra(caThu6);
+  assert.equal(truocGop.valid, true,
+    "chưa gộp thì lọt — đây chính là lỗ hổng trên máy chủ thật; nếu nay đã chặn thì xem lại cảnh báo trên trang");
+
+  const chuyen = await goi(`/api/admin/classes/${caThu6}`, quanTri, "PATCH", { clubId: giuLai });
+  assert.equal(chuyen.status, 200, chuyen.text);
+
+  const sauGop = await kiemTra(caThu6);
+  assert.equal(sauGop.valid, false);
+  assert.ok(sauGop.issues.some((issue) => issue.type === "duplicate" && /một lớp khác của/.test(issue.message)),
+    JSON.stringify(sauGop.issues));
+  const dangKyLai = await goi("/api/registrations", phuHuynh, "POST", {
+    studentId: "hs01", clubIds: [caThu6], acceptedTerms: true,
+  });
+  assert.equal(dangKyLai.status, 422, "đường ghi đơn cũng phải chặn, không chỉ đường kiểm tra");
+
+  const seGopDaAn = await goi(`/api/admin/clubs/${seGop}`, quanTri, "PATCH", { active: false });
+  assert.equal(seGopDaAn.status, 200, "CLB đã hết ca phải ẩn được — đó là bước cuối của việc gộp");
+});
+
+test("chuyển ca sang CLB khác KHÔNG đổi khối của ca, dù ca đang kế thừa khối của CLB", async () => {
+  const khoiNho = await taoClb("KE-THUA-X", [1, 2]);
+  const khoiLon = await taoClb("KE-THUA-Y", [3, 4, 5]);
+  const caKeThua = await taoCa(khoiLon, "Kế thừa Thứ 4", 3, []);
+  const khoiHieuLuc = async () => (await kiemTra(caKeThua)).clubs[0].grade;
+  assert.deepEqual(await khoiHieuLuc(), [3, 4, 5]);
+
+  // Bước 2 của hướng dẫn: đổi ô Thuộc CLB. Trước khi sửa, ca thành khối 1, 2.
+  const chuyen = await goi(`/api/admin/classes/${caKeThua}`, quanTri, "PATCH", { clubId: khoiNho, grades: [] });
+  assert.equal(chuyen.status, 200, chuyen.text);
+  assert.deepEqual(await khoiHieuLuc(), [3, 4, 5], "em khối 3 phải vẫn học được ca này sau khi gộp");
+
+  // Bước 4: mở CLB giữ lại cho đủ khối. Trước khi sửa, ca thành khối 1–5.
+  assert.equal((await goi(`/api/admin/clubs/${khoiNho}`, quanTri, "PATCH", { grades: [1, 2, 3, 4, 5] })).status, 200);
+  assert.deepEqual(await khoiHieuLuc(), [3, 4, 5], "em khối 1 không được lọt vào ca của khối 3–5");
+
+  // Lưu lại ca mà không đổi CLB thì không ghim gì thêm: bỏ trống vẫn là theo CLB.
+  assert.equal((await goi(`/api/admin/classes/${caKeThua}`, quanTri, "PATCH", { grades: [] })).status, 200);
+  assert.deepEqual(await khoiHieuLuc(), [1, 2, 3, 4, 5]);
+});
+
+test("ca đã khai khối riêng thì chuyển CLB giữ nguyên khối riêng đó", async () => {
+  const dich = await taoClb("RIENG-X", [1, 2]);
+  const nguon = await taoClb("RIENG-Y", [3, 4, 5]);
+  const caRieng = await taoCa(nguon, "Riêng Thứ 7", 6, [4]);
+  assert.equal((await goi(`/api/admin/classes/${caRieng}`, quanTri, "PATCH", { clubId: dich })).status, 200);
+  const catalog = (await goi("/api/admin/catalog", quanTri, "GET")).body;
+  assert.deepEqual(catalog.classes.find((row) => row.id === caRieng).grades, [4]);
+});

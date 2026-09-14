@@ -839,6 +839,40 @@ async function refreshCatalog() {
   if (!known) state.catalogPeriodId = state.catalog.activePeriodId || state.catalog.periods[0]?.id || null;
 }
 
+/**
+ * Các CLB đang mở mà TÊN trùng nhau, gom theo tên đã bỏ dấu.
+ *
+ * Trên máy chủ thật, cùng một tên "BÓNG ĐÁ CƠ BẢN" đang là BA bản ghi CLB riêng, mỗi
+ * bản ghi một ca. Luật "mỗi em chỉ một lớp của một CLB" ở cổng phụ huynh so theo MÃ
+ * CLB, nên ba mã khác nhau là luật đó không chặn: một em khối 1 đăng ký được cả ca
+ * Thứ 2 lẫn ca Thứ 6 (hai lịch không trùng giờ nên luật trùng giờ cũng không chặn),
+ * học hai lớp cùng một CLB và đóng hai lần học phí.
+ *
+ * So theo tên đã bỏ dấu, gộp khoảng trắng, không phân biệt hoa thường — để bắt cả
+ * "Bóng đá cơ bản" gõ lại tay với một dấu cách thừa.
+ */
+function khoaTenClb(name) {
+  return boDau(name).replace(/\s+/g, " ").trim();
+}
+
+function clbTrungTen() {
+  const theoTen = new Map();
+  for (const club of state.catalog?.clubs || []) {
+    if (club.active === false) continue;
+    const khoa = khoaTenClb(club.name);
+    if (!theoTen.has(khoa)) theoTen.set(khoa, []);
+    theoTen.get(khoa).push(club);
+  }
+  return new Map([...theoTen].filter(([, ds]) => ds.length > 1));
+}
+
+/** Nhãn phân biệt được một CLB giữa những CLB trùng tên: mã, khối, số ca. */
+function nhanClbDayDu(club) {
+  const soCa = (state.catalog?.classes || []).filter((row) => row.clubId === club.id && row.active !== false).length;
+  const khoi = (club.grades || []).length ? `khối ${club.grades.join(", ")}` : "chưa khai khối";
+  return `${club.name} · ${club.code || club.id} · ${khoi} · ${soCa} ca`;
+}
+
 function currentCatalogPeriod() {
   return state.catalog?.periods.find((period) => period.id === state.catalogPeriodId) || null;
 }
@@ -1045,10 +1079,46 @@ function renderClasses() {
         <button class="button button-primary" data-new-club>+ Tạo CLB</button>
       </div></div>
       ${state.importDraft ? renderCatalogImport() : ""}
+      ${renderCanhBaoClbTrungTen()}
       ${period ? "" : '<div class="inline-alert">Hãy tạo một đợt đăng ký trước khi khai báo CLB và lớp.</div>'}
       ${clubBlocks || (period ? '<div class="empty-state"><h3>Đợt này chưa có lớp nào</h3><p>Tạo CLB rồi thêm ca học, hoặc nhập hàng loạt từ file Excel.</p></div>' : "")}
-      ${orphanClubs.length ? `<div class="info-note"><strong>${orphanClubs.length} CLB chưa có lớp trong đợt này:</strong> ${orphanClubs.map((club) => `<button class="text-button" data-add-class-for="${escapeHtml(club.id)}">${escapeHtml(club.name)}</button>`).join(" · ")}</div>` : ""}
+      ${orphanClubs.length ? `<div class="info-note"><strong>${orphanClubs.length} CLB chưa có lớp trong đợt này:</strong> ${orphanClubs.map((club) => `<span class="orphan-club">${escapeHtml(club.name)} <span style="color:var(--muted)">(${escapeHtml(club.code || club.id)}${club.active === false ? " · đang ẩn" : ""})</span> <button class="text-button" data-add-class-for="${escapeHtml(club.id)}">+ ca</button> <button class="text-button" data-edit-club="${escapeHtml(club.id)}">Sửa / ẩn</button></span>`).join(" · ")}</div>` : ""}
     </section>`;
+}
+
+/**
+ * Cảnh báo đầu trang khi có CLB trùng tên, kèm đúng các bước gộp bằng tay.
+ *
+ * Nói rõ HẬU QUẢ chứ không chỉ nói "trùng tên": không ai bỏ công gộp dữ liệu vì một
+ * cảnh báo mơ hồ, nhưng người ta sẽ làm khi biết một em đang có thể đóng hai lần
+ * học phí cho cùng một CLB.
+ */
+function renderCanhBaoClbTrungTen() {
+  const nhom = [...clbTrungTen().values()];
+  if (!nhom.length) return "";
+  return `<div class="inline-alert clb-trung-ten-khoi">
+    <strong>${nhom.length} tên CLB đang bị trùng</strong> (${nhom.reduce((tong, ds) => tong + ds.length, 0)} bản ghi):
+    ${nhom.map((ds) => `<b>${escapeHtml(ds[0].name)}</b> × ${ds.length}`).join(" · ")}.
+    <p style="margin:6px 0 0">Luật <b>"mỗi em chỉ một lớp của một CLB"</b> so theo mã CLB, nên KHÔNG chặn được giữa các CLB trùng tên — một em có thể đăng ký hai lớp và đóng hai lần học phí. Để gộp:</p>
+    <ol style="margin:6px 0 0;padding-left:18px">
+      <li>Chọn MỘT CLB giữ lại trong mỗi nhóm (xem mã ở dòng xám dưới tên CLB).</li>
+      <li>Ở từng ca của các CLB còn lại, bấm <b>Sửa</b> → đổi ô <b>Thuộc CLB</b> sang CLB giữ lại → Lưu. Đơn đăng ký đi theo ca, không mất; khối của ca được giữ nguyên như trước khi chuyển.</li>
+      <li>CLB đã hết ca sẽ nằm ở dòng "CLB chưa có lớp" cuối trang → bấm <b>Sửa / ẩn</b> → bỏ tích "Hiển thị CLB này cho phụ huynh".</li>
+      <li>Sửa khối của CLB giữ lại cho gồm đủ khối của mọi ca vừa gộp.</li>
+    </ol>
+  </div>`;
+}
+
+/**
+ * Nhãn "Trùng tên với ..." trên khối của một CLB. CLB đã ẩn thì không gắn: nó không
+ * còn hiện cho phụ huynh nên không gây đăng ký trùng, và gắn nhãn cho nó là bảo
+ * người ta gộp tiếp một thứ đã gộp xong.
+ */
+function renderNhanTrungTen(club) {
+  const cungTen = clbTrungTen().get(khoaTenClb(club.name));
+  if (!cungTen?.some((item) => item.id === club.id)) return "";
+  const khac = cungTen.filter((item) => item.id !== club.id);
+  return `<p class="clb-trung-ten">⚠ Trùng tên với ${khac.length} CLB khác: ${khac.map((item) => escapeHtml(item.code || item.id)).join(", ")}</p>`;
 }
 
 function renderCatalogClubBlock(club, classes) {
@@ -1082,7 +1152,8 @@ function renderCatalogClubBlock(club, classes) {
 
   return `<div class="panel" style="margin-bottom:16px"><div class="panel-head">
       <div><h3>${club.emoji} ${escapeHtml(club.name)} ${club.active ? "" : '<span class="badge badge-red">CLB đang ẩn</span>'}</h3>
-      <p>${escapeHtml(club.code)} · ${escapeHtml(club.category)} · Khối ${club.grades.join(", ")} · lấp đầy ${ratio}%</p></div>
+      <p>${escapeHtml(club.code)} · ${escapeHtml(club.category)} · Khối ${club.grades.join(", ")} · lấp đầy ${ratio}%</p>
+      ${renderNhanTrungTen(club)}</div>
       <div class="club-actions">
         <button class="button button-secondary" data-edit-club="${escapeHtml(club.id)}">Sửa CLB</button>
         <button class="button button-secondary" data-add-class-for="${escapeHtml(club.id)}">+ Thêm ca</button>
@@ -1147,7 +1218,9 @@ function classFormMarkup(clubClass, clubId) {
     ...(clubClass || {}),
   };
   const clubOptions = state.catalog.clubs
-    .map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === (clubClass?.clubId || clubId) ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, "vi") || String(a.code).localeCompare(String(b.code)))
+    .map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === (clubClass?.clubId || clubId) ? "selected" : ""}>${escapeHtml(nhanClbDayDu(item))}${item.active === false ? " · đang ẩn" : ""}</option>`).join("");
   const periodOptions = state.catalog.periods
     .map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === (clubClass?.periodId || state.catalogPeriodId) ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
   return `<div class="modal-head"><div><span class="eyebrow">${isNew ? "Thêm ca học" : "Chỉnh sửa ca học"}</span><h2>${escapeHtml(club?.name || "Lớp CLB")}</h2></div>

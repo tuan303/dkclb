@@ -250,6 +250,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    bộ đếm — nên lọc xong vẫn được 1, 2, 3 liền mạch thay vì 1, 4, 9. */
 .roster-note { color: var(--muted); font-size: 9px; }
 .checkbox-row { display: flex; align-items: flex-start; gap: 8px; color: #353b5a; font-size: 10px; line-height: 1.5; }
+.clb-trung-ten { margin: 4px 0 0; color: #9a6a00; font-size: 10px; font-weight: 600; }
+.clb-trung-ten-khoi { margin-bottom: 14px; line-height: 1.55; }
+.clb-trung-ten-khoi li { margin: 2px 0; }
+.orphan-club { white-space: nowrap; }
 .checkbox-row input { margin-top: 2px; }
 .roster-index td { vertical-align: top; }
 .roster-index .table-action.active { color: #fff; border-color: var(--blue); background: var(--blue); }
