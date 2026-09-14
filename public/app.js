@@ -2258,6 +2258,8 @@ const KET_CUC_XEP_LOP = {
   trungClb: ["Đã học ca khác của CLB này", "gold"],
   trungClbTrongFile: ["Hai ca của cùng một CLB trong file", "gold"],
   saiKhoi: ["Sai khối", "gold"],
+  khongCoCaHopKhoi: ["Không có ca cho khối của em", "gold"],
+  nhieuCaHopKhoi: ["Nhiều ca hợp khối — chưa rõ buổi", "gold"],
   vuotHanMuc: ["Vượt hạn mức CLB", "gold"],
   trungTrongFile: ["Trùng trong chính file", "blue"],
   hong: ["Dòng hỏng", "red"],
@@ -2313,21 +2315,27 @@ function renderNhapDangKy() {
 
 function renderNhapDangKyPreview(preview, draft) {
   const dem = preview.dem || {};
-  const chuaGhep = preview.oChon.filter((item) => !item.classId).length;
+  const chuaGhep = preview.oChon.filter((item) => !item.dich).length;
+  const nhanCa = (ca) => `${ca.nhan}${ca.lich ? ` · ${ca.lich}` : ""}${ca.khoi?.length ? ` · khối ${ca.khoi.join(", ")}` : ""}`;
   const xepDuoc = dem.xepDuoc || 0;
 
   return `<section class="section panel"><div class="panel-head"><div><h3>2. Ghép ô chọn của Form với ca học</h3>
-    <p>Google Form chỉ có ${preview.oChon.length} giá trị khác nhau cho ${preview.tongDong} dòng. Ghép một lần ở đây, máy không tự đoán khi một CLB có nhiều ca.</p></div>
+    <p>Google Form chỉ có ${preview.oChon.length} giá trị khác nhau cho ${preview.tongDong} dòng. Ghép một lần ở đây. CLB có nhiều ca thì chọn <b>theo khối của từng em</b>: em nào chỉ có một ca hợp khối thì vào ca đó, còn lại hai ca trở lên thì máy không chọn hộ mà báo ở bước 3.</p></div>
     ${chuaGhep ? `<span class="badge badge-gold">${chuaGhep} ô chưa ghép</span>` : `<span class="badge badge-green">Đã ghép đủ</span>`}</div>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th>Ô chọn trong file</th><th style="width:90px">Số dòng</th><th>Ca học trong hệ thống</th></tr></thead>
       <tbody>${preview.oChon.map((item) => `<tr>
-        <td><strong>${escapeHtml(item.mau)}</strong>${item.tuChon ? "" : item.classId ? `<br><span style="color:var(--muted)">máy ghép tự động</span>` : ""}</td>
+        <td><strong>${escapeHtml(item.mau)}</strong>${item.tuChon || !item.dich ? "" : `<br><span style="color:var(--muted)">${item.theoKhoi ? "máy chọn ca theo khối của từng em" : "máy ghép tự động"}</span>`}</td>
         <td>${item.soDong}</td>
         <td><select class="select-field" data-ghep-ca="${escapeHtml(item.khoa)}">
           <option value="">— chưa ghép —</option>
-          ${preview.caTrongDot.map((ca) => `<option value="${escapeHtml(ca.id)}" ${ca.id === item.classId ? "selected" : ""}>${escapeHtml(ca.nhan)}</option>`).join("")}
-        </select></td>
+          ${(preview.nhomTheoKhoi || []).length ? `<optgroup label="Theo khối của từng em">${preview.nhomTheoKhoi.map((nhom) =>
+            `<option value="${escapeHtml(nhom.dich)}" ${nhom.dich === item.dich ? "selected" : ""}>${escapeHtml(nhom.tenClb)} — ${nhom.cacCa.length} ca, chọn theo khối</option>`).join("")}</optgroup>` : ""}
+          <optgroup label="Một ca cố định cho mọi dòng">${preview.caTrongDot.map((ca) =>
+            `<option value="${escapeHtml(ca.id)}" ${ca.id === item.dich ? "selected" : ""}>${escapeHtml(nhanCa(ca))}</option>`).join("")}</optgroup>
+        </select>
+        ${item.theoKhoi ? `<div class="field-hint" style="margin-top:5px">${item.theoKhoi.cacCa.map((ca) =>
+          `${escapeHtml(ca.lich)} → khối ${escapeHtml(ca.khoi.join(", ") || "mọi khối")}`).join("<br>")}</div>` : ""}</td>
       </tr>`).join("")}</tbody>
     </table></div>
   </section>
@@ -2349,7 +2357,7 @@ function renderNhapDangKyPreview(preview, draft) {
           <td>${escapeHtml(row.studentCode || "—")}</td>
           <td>${escapeHtml(row.studentTen || row.studentName || "—")}</td>
           <td>${escapeHtml(row.clubText || "—")}</td>
-          <td><span class="badge badge-${mau}">${escapeHtml(nhan)}</span>${row.lyDo ? `<br><span style="color:var(--muted)">${escapeHtml(row.lyDo)}</span>` : row.caNhan ? `<br><span style="color:var(--muted)">→ ${escapeHtml(row.caNhan)}</span>` : ""}</td>
+          <td><span class="badge badge-${mau}">${escapeHtml(nhan)}</span>${row.lyDo ? `<br><span style="color:var(--muted)">${escapeHtml(row.lyDo)}</span>` : row.caNhan ? `<br><span style="color:var(--muted)">→ ${escapeHtml(row.caNhan)}${row.caLich ? ` · ${escapeHtml(row.caLich)}` : ""}</span>` : ""}</td>
         </tr>`;
       }).join("")}</tbody>
     </table></div>
@@ -2429,7 +2437,7 @@ function bindNhapDangKy() {
     // Nhớ lại bảng ghép mà máy vừa đề xuất, để lần xem trước sau không mất lựa chọn
     // người dùng đã sửa tay.
     const mapping = { ...(d.mapping || {}) };
-    for (const item of preview.oChon) if (item.classId) mapping[item.khoa] = item.classId;
+    for (const item of preview.oChon) if (item.dich) mapping[item.khoa] = item.dich;
     state.nhapDangKy = { ...d, preview, mapping, periodId: preview.periodId };
     renderPage();
   };

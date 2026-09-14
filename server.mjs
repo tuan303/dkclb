@@ -20,7 +20,9 @@ import { isUnchanged } from "./record-diff.mjs";
 import { ACTIVE_REGISTRATION_STATUSES, ASSIGNABLE_STATUSES, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, holdsSeat, statusLabel } from "./registration-status.mjs";
 import { conflictMessage, intervalsOverlap } from "./schedule-conflict.mjs";
 import { IMPORT_MODES, buildExcelDirectory } from "./directory-excel.mjs";
-import { doanCaHoc, docFileXepLop, gomOChonClb } from "./xep-lop-import.mjs";
+import {
+  THEO_KHOI, caHopVoiEm, docThuNgoaiTenClb, doanCaHoc, docFileXepLop, gomCaTheoTenClb, gomOChonClb, timNhomClb,
+} from "./xep-lop-import.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
 import {
@@ -29,6 +31,7 @@ import {
   normalizeAccount, normalizeSchoolRole, parseSuperadminAccounts,
 } from "./roles.mjs";
 import {
+  DAY_LABELS,
   MAX_IMPORT_ROWS,
   analyzeCatalogImport,
   detectCatalogMapping,
@@ -1300,8 +1303,17 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
   // nhập được vào một CLB nhà trường vừa đóng.
   const caTrongDot = catalog.classes
     .filter((row) => row.periodId === periodId && row.active && clubById.get(row.clubId)?.active !== false)
-    .map((row) => ({ ...row, clubName: clubById.get(row.clubId)?.name || row.clubId }));
+    .map((row) => ({
+      ...row,
+      clubName: clubById.get(row.clubId)?.name || row.clubId,
+      // doanCaHoc so "tên CLB · tên ca" qua className. Thiếu trường này thì ô Form ghi
+      // rõ ca ("Guitar · Ca 2") không bao giờ khớp trên máy chủ, dù bài kiểm của
+      // module vẫn xanh vì dữ liệu mẫu ở đó có className.
+      className: row.name || "",
+      khoiApDung: (row.grades?.length ? row.grades : clubById.get(row.clubId)?.grades) || [],
+    }));
   const caById = new Map(caTrongDot.map((ca) => [ca.id, ca]));
+  const nhomTheoTen = gomCaTheoTenClb(caTrongDot);
 
   const hocSinh = businessStore
     ? await businessStore.listAllStudents()
@@ -1337,19 +1349,34 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
   // Ghép ô chọn của Form với ca học. Chuỗi rỗng nghĩa là NGƯỜI VẬN HÀNH ĐÃ CHỌN bỏ
   // qua ô này — khác hẳn "chưa có trong bảng ghép"; nhầm hai cái đó thì máy cứ đoán
   // lại và lựa chọn bỏ qua không bao giờ dính.
+  //
+  // Đích của một ô chọn là MỘT trong hai thứ: một ca cố định cho mọi dòng, hoặc
+  // THEO_KHOI + tên nhóm CLB — từng dòng tự chọn ca theo khối của em. Máy tự đề xuất
+  // theo khối khi tên CLB có nhiều ca, hoặc khi ô chọn có ghi thứ (để ô "Piano - Thứ
+  // 5" không lặng lẽ vào ca Piano Thứ 3 chỉ vì Piano chỉ có một ca).
   const oChon = gomOChonClb(dongFile).map((item) => {
     const daQuyetDinh = Object.hasOwn(mapping, item.khoa);
-    const daChon = daQuyetDinh ? String(mapping[item.khoa] || "") : "";
-    const doan = daQuyetDinh ? { classId: daChon, ungVien: [] } : doanCaHoc(item.mau, caTrongDot);
-    const classId = caById.has(doan.classId) ? doan.classId : null;
+    const doan = doanCaHoc(item.mau, caTrongDot);
+    const nhomDoan = timNhomClb(item.mau, nhomTheoTen);
+    // Thứ tự ưu tiên: ô ghi ĐÚNG tên một ca ("Guitar · Ca 2") là người điền Form đã
+    // chọn ca, thắng tất cả; rồi mới tới theo khối; khớp kiểu "chứa tên CLB" xếp cuối.
+    let dich = "";
+    if (daQuyetDinh) dich = String(mapping[item.khoa] || "");
+    else if (doan.classId && doan.khopHan) dich = doan.classId;
+    else if (nhomDoan && (nhomDoan.ca.length > 1 || docThuNgoaiTenClb(item.mau, nhomDoan) !== null)) dich = `${THEO_KHOI}${nhomDoan.khoaTen}`;
+    else if (doan.classId) dich = doan.classId;
+
+    const nhom = dich.startsWith(THEO_KHOI) ? nhomTheoTen.get(dich.slice(THEO_KHOI.length)) : null;
+    const classId = !nhom && caById.has(dich) ? dich : null;
+    if (!nhom && !classId) dich = "";
     return {
-      ...item, classId,
+      ...item, dich, classId,
+      theoKhoi: nhom ? { tenClb: nhom.tenClb, cacCa: nhom.ca.map(moTaCa) } : null,
       tuChon: daQuyetDinh,
-      ungVien: (daQuyetDinh ? doanCaHoc(item.mau, caTrongDot).ungVien : doan.ungVien)
-        .map((ca) => ({ id: ca.id, nhan: nhanCaHoc(ca) })),
+      ungVien: doan.ungVien.map((ca) => ({ id: ca.id, nhan: nhanCaHoc(ca) })),
     };
   });
-  const caTheoOChon = new Map(oChon.map((item) => [item.khoa, item.classId]));
+  const dichTheoOChon = new Map(oChon.map((item) => [item.khoa, item.dich]));
 
   const daXepTrongFile = new Map();   // "studentId|classId" -> số dòng
   const clubTrongFile = new Map();    // "studentId|clubId"   -> số dòng
@@ -1363,11 +1390,30 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
     if (!em) { ghi("khongTimThayHocSinh", `Không có mã học sinh ${row.studentCode} trong danh bạ.`); continue; }
     if (em.status !== "active") { ghi("hocSinhNghiHoc", `${em.name} đang ở trạng thái nghỉ học.`, { studentId: em.id }); continue; }
 
-    const classId = caTheoOChon.get(boDauChuoi(row.clubText));
-    if (!classId) { ghi("chuaGhepCa", `Chưa ghép "${row.clubText}" với ca học nào.`, { studentId: em.id }); continue; }
+    const dich = dichTheoOChon.get(boDauChuoi(row.clubText));
+    if (!dich) { ghi("chuaGhepCa", `Chưa ghép "${row.clubText}" với ca học nào.`, { studentId: em.id }); continue; }
+    let classId = dich;
+    if (dich.startsWith(THEO_KHOI)) {
+      const nhom = nhomTheoTen.get(dich.slice(THEO_KHOI.length));
+      const thu = docThuNgoaiTenClb(row.clubText, nhom);
+      const hop = caHopVoiEm(nhom, { khoi: asInt(em.grade), thu });
+      const vaoThu = thu === null ? "" : ` vào ${DAY_LABELS[thu]}`;
+      const chiEm = { studentId: em.id, studentTen: em.name };
+      if (!hop.length) {
+        ghi("khongCoCaHopKhoi", `${nhom.tenClb} không có ca nào cho khối ${em.grade}${vaoThu}. Các ca đang mở: ${nhom.ca.map(moTaCa).map((ca) => `${ca.lich} (khối ${ca.khoi.join(", ") || "mọi khối"})`).join("; ")}.`, chiEm);
+        continue;
+      }
+      if (hop.length > 1) {
+        // Không chọn hộ. Cách sửa phải nằm ngay trong câu báo: người vận hành đang
+        // nhìn đúng dòng này, không phải đọc tài liệu ở đâu khác.
+        ghi("nhieuCaHopKhoi", `Khối ${em.grade} có ${hop.length} ca ${nhom.tenClb}: ${hop.map((ca) => ca.scheduleLabel).join("; ")}. Ghi thêm thứ vào ô CLB của em này trong file (ví dụ "${row.clubText} - ${DAY_LABELS[hop[0].dayOfWeek]}") rồi tải lại, hoặc chọn hẳn một ca cho cả ô này ở bước 2.`, chiEm);
+        continue;
+      }
+      classId = hop[0].id;
+    }
     const ca = caById.get(classId);
 
-    const chung = { studentId: em.id, studentTen: em.name, classId, caNhan: nhanCaHoc(ca) };
+    const chung = { studentId: em.id, studentTen: em.name, classId, caNhan: nhanCaHoc(ca), caLich: ca.scheduleLabel || "" };
     const khoaFile = `${em.id}|${classId}`;
     if (daXepTrongFile.has(khoaFile)) { ghi("trungTrongFile", `Dòng ${daXepTrongFile.get(khoaFile)} đã xếp em này vào đúng ca này.`, chung); continue; }
 
@@ -1496,9 +1542,16 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
     caAnhHuong,
     rows: ketQua,
     sanSang: hong.length === 0 && xepDuoc.length > 0,
-    caTrongDot: caTrongDot.map((ca) => ({ id: ca.id, nhan: nhanCaHoc(ca) })),
+    caTrongDot: caTrongDot.map(moTaCa),
+    // Chỉ những tên CLB có từ hai ca trở lên mới cần lựa chọn "theo khối"; CLB một ca
+    // thì chọn thẳng ca đó là đủ.
+    nhomTheoKhoi: [...nhomTheoTen.values()]
+      .filter((nhom) => nhom.ca.length > 1)
+      .map((nhom) => ({ dich: `${THEO_KHOI}${nhom.khoaTen}`, tenClb: nhom.tenClb, cacCa: nhom.ca.map(moTaCa) })),
   };
 }
+
+const moTaCa = (ca) => ({ id: ca.id, nhan: nhanCaHoc(ca), lich: ca.scheduleLabel || "", khoi: ca.khoiApDung || [] });
 
 const chuoiRong = (value) => !String(value ?? "").trim();
 const boDauChuoi = (value) => String(value ?? "")

@@ -169,11 +169,107 @@ export function doanCaHoc(clubText, danhSachCa = []) {
   const khopHan = danhSachCa.filter((ca) => nhan(ca) === tim
     || KHONG_DAU(ca.clubName) === tim
     || KHONG_DAU(`${ca.clubName} · ${ca.className}`) === tim);
-  if (khopHan.length === 1) return { classId: khopHan[0].id, ungVien: khopHan };
+  if (khopHan.length === 1) return { classId: khopHan[0].id, ungVien: khopHan, khopHan: true };
 
   // Không khớp hẳn thì thử chứa: ô Form hay kèm thêm mô tả ("Guitar (Thứ 2)").
   const khopChua = danhSachCa.filter((ca) => KHONG_DAU(ca.clubName) && tim.includes(KHONG_DAU(ca.clubName)));
-  if (khopChua.length === 1) return { classId: khopChua[0].id, ungVien: khopChua };
+  if (khopChua.length === 1) return { classId: khopChua[0].id, ungVien: khopChua, khopHan: false };
 
-  return { classId: null, ungVien: khopHan.length ? khopHan : khopChua };
+  return { classId: null, ungVien: khopHan.length ? khopHan : khopChua, khopHan: false };
+}
+
+/* ---------------------------------------------------------------------------
+ * Chọn ca theo khối của từng em
+ *
+ * Sau khi gộp CLB trùng tên, một CLB có nhiều ca dành cho các khối khác nhau —
+ * trên máy chủ thật "BÓNG ĐÁ CƠ BẢN" có ca khối 1–2 Thứ 2, ca khối 3–5 Thứ 4 và ca
+ * khối 1–2 Thứ 6. Ô chọn của Form chỉ ghi tên CLB, nên không ghép một ô với một ca
+ * được. Nhưng với từng em thì khối đã loại gần hết: em khối 4 chỉ học được ca Thứ 4.
+ *
+ * Đây KHÔNG phải đoán: em không học được ca không dành cho khối mình, cổng phụ
+ * huynh cũng chặn y như vậy. Còn lại từ hai ca trở lên (khối 1–2 ở ví dụ trên) thì
+ * vẫn không chọn hộ, mà báo từng em để người vận hành bổ sung thứ vào file.
+ * ------------------------------------------------------------------------- */
+
+/** Giá trị bảng ghép nghĩa là "chọn ca theo khối của từng em trong nhóm CLB này". */
+export const THEO_KHOI = "@theo-khoi:";
+
+export const khoaTenClb = (name) => KHONG_DAU(name);
+
+const THU_BANG_CHU = { hai: 1, ba: 2, tu: 3, nam: 4, sau: 5, bay: 6 };
+
+/**
+ * Thứ trong tuần ghi trong ô chọn — "Thứ 6", "thu sau", "T6", "Chủ nhật", "CN" — theo
+ * đúng quy ước dayOfWeek của hệ thống (0 = Chủ nhật, 1 = Thứ 2, ..., 6 = Thứ 7).
+ *
+ * Không có thứ nào, hoặc ghi HAI thứ khác nhau ("Thứ 2, Thứ 6"), thì trả về null:
+ * ô ghi hai buổi không nói em học buổi nào.
+ */
+export function docThuTrongChuoi(text) {
+  const chuoi = KHONG_DAU(text);
+  const tim = new Set();
+  for (const khop of chuoi.matchAll(/\bthu\s*([2-7]|hai|ba|tu|nam|sau|bay)\b/g)) {
+    tim.add(/\d/.test(khop[1]) ? Number(khop[1]) - 1 : THU_BANG_CHU[khop[1]]);
+  }
+  for (const khop of chuoi.matchAll(/\bt([2-7])\b/g)) tim.add(Number(khop[1]) - 1);
+  if (/\bchu nhat\b|\bcn\b/.test(chuoi)) tim.add(0);
+  return tim.size === 1 ? [...tim][0] : null;
+}
+
+/**
+ * Gom các ca đang mở theo TÊN CLB đã bỏ dấu. Theo tên chứ không theo mã: CLB đã gộp
+ * thì một tên là một CLB nhiều ca; CLB trùng tên chưa gộp thì một tên là vài bản
+ * ghi — cả hai đều phải ra cùng một nhóm, không thì nhập trước khi gộp sẽ hỏng.
+ */
+export function gomCaTheoTenClb(danhSachCa = []) {
+  const nhom = new Map();
+  for (const ca of danhSachCa) {
+    const khoa = khoaTenClb(ca.clubName);
+    if (!khoa) continue;
+    if (!nhom.has(khoa)) nhom.set(khoa, { khoaTen: khoa, tenClb: ca.clubName, ca: [] });
+    nhom.get(khoa).ca.push(ca);
+  }
+  return nhom;
+}
+
+/**
+ * Nhóm CLB mà một ô chọn nói tới: khớp hẳn tên trước; không có thì tên CLB nằm trong
+ * ô chọn — bỏ các tên lồng trong tên dài hơn, để "Bóng đá chuyên sâu - Thứ 6" ra
+ * "Bóng đá chuyên sâu" chứ không ra "Bóng đá".
+ *
+ * Còn lại từ HAI tên không lồng nhau thì không chọn nhóm nào. Câu hỏi dạng ô tích của
+ * Google Form xuất mọi lựa chọn vào MỘT ô ("Piano nhập môn, Mỹ thuật sáng tạo");
+ * lấy một tên trong đó là lặng lẽ bỏ mất CLB kia của em.
+ */
+export function timNhomClb(clubText, nhomTheoTen) {
+  const tim = KHONG_DAU(clubText);
+  if (!tim) return null;
+  if (nhomTheoTen.has(tim)) return nhomTheoTen.get(tim);
+  const chua = [...nhomTheoTen.values()].filter((nhom) => tim.includes(nhom.khoaTen));
+  const khongLong = chua.filter((nhom) => !chua.some((khac) => khac !== nhom
+    && khac.khoaTen.length > nhom.khoaTen.length && khac.khoaTen.includes(nhom.khoaTen)));
+  return khongLong.length === 1 ? khongLong[0] : null;
+}
+
+/**
+ * Thứ ghi trong ô chọn, chỉ đọc ở phần chữ NGOÀI tên CLB — tên CLB tự nó có thể
+ * chứa chữ trông như thứ ("Tiếng Anh T2"), và đọc nhầm là loại oan mọi ca không
+ * rơi vào Thứ 2.
+ */
+export function docThuNgoaiTenClb(clubText, nhom) {
+  const tim = KHONG_DAU(clubText);
+  return docThuTrongChuoi(nhom ? tim.replace(nhom.khoaTen, " ") : tim);
+}
+
+/**
+ * Các ca trong nhóm mà MỘT em học được: đúng khối của em, và đúng thứ nếu ô chọn có
+ * ghi thứ. Ca không khai khối nào thì coi là mở cho mọi khối, giống cổng phụ huynh.
+ * Trả về cả danh sách — gọi hàm này tự quyết khi còn đúng một ca.
+ */
+export function caHopVoiEm(nhom, { khoi, thu = null }) {
+  return nhom.ca.filter((ca) => {
+    const khoiCa = ca.khoiApDung || [];
+    if (khoiCa.length && !khoiCa.includes(Number(khoi))) return false;
+    return thu === null || Number(ca.dayOfWeek) === thu;
+  });
 }
