@@ -251,7 +251,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .roster-note { color: var(--muted); font-size: 9px; }
 .checkbox-row { display: flex; align-items: flex-start; gap: 8px; color: #353b5a; font-size: 10px; line-height: 1.5; }
 .clb-trung-ten { margin: 4px 0 0; color: #9a6a00; font-size: 10px; font-weight: 600; }
-.clb-trung-ten-khoi { margin-bottom: 14px; line-height: 1.55; }
+/* .inline-alert là flex hàng ngang; khung này có tiêu đề, đoạn văn và danh sách nên phải xếp dọc, không thì vỡ thành các cột hẹp. */
+.clb-trung-ten-khoi { display: block; margin-bottom: 14px; line-height: 1.55; }
 .clb-trung-ten-khoi li { margin: 2px 0; }
 /* Chỉ giữ cặp nút trên một dòng; tên CLB dài phải xuống dòng được, không thì cả trang cuộn ngang trên điện thoại. */
 .orphan-club .orphan-actions { white-space: nowrap; }

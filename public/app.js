@@ -1368,7 +1368,8 @@ function renderCatalogImport() {
   if (!preview) {
     return `<div class="panel" style="margin-bottom:16px">${head}<div class="panel-body">
       <div class="info-note"><strong>Cách khai file:</strong> mỗi dòng là một ca học. Các dòng cùng tên/mã CLB sẽ được gộp thành một CLB nhiều ca.
-      Cột tối thiểu: <b>Tên CLB, Khối, Thứ, Khung giờ, Phòng, Giáo viên, Sĩ số, Học phí</b>. Có thể thêm Mã CLB, Nhóm môn, Tên lớp, Mô tả, Sĩ số tối thiểu.</div>
+      Cột bắt buộc: <b>Tên CLB, Khối, Thứ, Khung giờ, Phòng, Giáo viên, Sĩ số tối đa</b>. Nên có thêm Mã CLB và Học phí (thiếu cột Học phí thì học phí ghi thành 0).
+      ${linkBieuMau("danh-muc-clb")}</div>
       <label class="form-field"><span>Chọn file danh mục</span><input type="file" id="catalog-file" accept=".xlsx,.csv,.txt" /></label>
       <p class="field-hint">File được đọc ngay trên máy bạn; hệ thống chỉ ghi dữ liệu sau khi bạn bấm xác nhận ở bước rà soát.</p>
     </div></div>`;
@@ -1392,6 +1393,9 @@ function renderCatalogImport() {
 
   return `<div class="panel" style="margin-bottom:16px">${head}<div class="panel-body">
     ${preview.missing.length ? `<div class="inline-alert">Thiếu cột bắt buộc: ${preview.missing.map(escapeHtml).join(", ")}. Hãy sửa tiêu đề file rồi chọn lại.</div>` : mappingHtml}
+    ${(preview.gopVao || []).length ? `<div class="info-note"><strong>${preview.gopVao.length} CLB trong file là CLB trùng tên đã gộp và đang ẩn.</strong>
+      Ca của chúng sẽ ghi vào CLB đang mở cùng tên; CLB đã ẩn giữ nguyên: ${preview.gopVao.map((item) => `${escapeHtml(item.code)} → ${item.vao.map(escapeHtml).join(", ")}`).join(" · ")}.
+      Nếu đó là một CLB khác chỉ tình cờ trùng tên, hãy đổi tên trong file rồi chọn lại.</div>` : ""}
     ${preview.counters ? `<div class="kpi-strip">
       <div class="kpi-item"><span>Dòng đã đọc</span><strong>${preview.counters.scannedRows}</strong></div>
       <div class="kpi-item"><span>Dòng hợp lệ</span><strong>${preview.counters.validRows}</strong></div>
@@ -1416,7 +1420,7 @@ async function handleCatalogFile(file) {
   try {
     if (!currentCatalogPeriod()) throw new Error("Hãy chọn đợt đăng ký trước khi nhập danh mục.");
     const workbook = await window.NSHMSheet.readFile(file);
-    const sheet = workbook.sheets.find((item) => !item.hidden && item.rows.length) || workbook.sheets[0];
+    const sheet = sheetDuLieuDauTien(workbook);
     if (!sheet || !sheet.rows.length) throw new Error("File không có dòng dữ liệu nào.");
     const { headers, rows } = window.NSHMSheet.splitHeaderAndRows(sheet.rows);
     if (!headers.length) throw new Error("Không tìm thấy dòng tiêu đề trong file.");
@@ -2357,8 +2361,9 @@ function renderNhapDangKy() {
         <select id="nhap-dot" class="select-field">
           ${dsDot.map((dot) => `<option value="${escapeHtml(dot.id)}" ${dot.id === dotId ? "selected" : ""}>${escapeHtml(dot.name)}</option>`).join("")}
         </select></label>
-      <label class="form-field" style="margin-top:11px"><span>File .xlsx hoặc .csv kết quả Google Form</span>
+      <label class="form-field" style="margin-top:11px"><span>File .xlsx hoặc .csv danh sách xếp lớp</span>
         <input id="nhap-file" type="file" accept=".xlsx,.csv" /></label>
+      <p class="field-hint">${linkBieuMau("xep-lop-clb", { periodId: dotId })} — có sẵn ô chọn tên từng ca đang mở của đợt đang chọn.</p>
       ${(draft.sources || []).length
         ? `<div class="mapping-list" style="margin-top:11px">${draft.sources.map((source) =>
           `<span><b>${escapeHtml(source.label)}</b>${source.rows.length} hàng${preview ? ` · ${preview.tongDong} dòng dữ liệu` : ""}</span>`).join("")}</div>` : ""}
@@ -2797,6 +2802,7 @@ function renderSchoolAccounts() {
       <div class="panel-head"><div><h3>Nhập hàng loạt từ tệp</h3><p>Tệp Excel hoặc CSV gồm ba cột: Email, Họ và tên, Vai trò. Xem trước rồi mới ghi.</p></div></div>
       <div class="panel-body">
         <input id="account-import-file" type="file" accept=".xlsx,.csv" />
+        <p class="field-hint">${linkBieuMau("tai-khoan-nha-truong")}</p>
         ${previewHtml}
       </div>
     </section>`;
@@ -2872,7 +2878,7 @@ function bindSchoolAccountEvents() {
     if (!file) return;
     try {
       const workbook = await window.NSHMSheet.readFile(file);
-      const sheet = workbook.sheets.find((item) => !item.hidden && item.rows.length) || workbook.sheets[0];
+      const sheet = sheetDuLieuDauTien(workbook);
       if (!sheet?.rows.length) throw new Error("Tệp không có dòng dữ liệu nào.");
       const { headers, rows } = window.NSHMSheet.splitHeaderAndRows(sheet.rows);
       if (!headers.length) throw new Error("Không tìm thấy dòng tiêu đề trong tệp.");
@@ -2943,6 +2949,7 @@ function renderExcelImport() {
     <div class="panel-body">
       <label class="form-field"><span>Chọn file .xlsx hoặc .csv (chọn được nhiều file)</span>
         <input id="excel-files" type="file" accept=".xlsx,.csv" multiple /></label>
+      <p class="field-hint">${linkBieuMau("danh-ba-hoc-sinh")} — mỗi dòng một học sinh, bố và mẹ cùng dòng.</p>
 
       ${files.length ? `<div class="mapping-list" style="margin-top:11px">${files.map((source) =>
         `<span><b>${escapeHtml(source.label)}</b>${source.rows.length} dòng</span>`).join("")}</div>` : ""}
@@ -3002,13 +3009,34 @@ function renderExcelSourceCard(source) {
     ${analysis.issues?.length ? `<div class="inline-alert" style="margin-top:7px">${icon("clock")}<span>${analysis.issues.slice(0, 6).map((issue) => `Dòng ${issue.row}: ${issue.codes.map(escapeHtml).join(", ")}`).join(" · ")}</span></div>` : ""}`;
 }
 
+/** Nút tải biểu mẫu Excel trống của một màn nhập — xem bieu-mau.mjs. */
+function linkBieuMau(khoa, { periodId } = {}) {
+  const query = periodId ? `?periodId=${encodeURIComponent(periodId)}` : "";
+  return `<a class="text-button" href="/api/admin/bieu-mau/${khoa}.xlsx${query}" download>${icon("file")} Tải file mẫu</a>`;
+}
+
+/**
+ * Sheet "Hướng dẫn…" trong các file mẫu tải từ hệ thống là chữ hướng dẫn, không phải dữ
+ * liệu. Không bỏ qua thì màn nhập nhiều sheet coi nó là một nguồn thiếu cột và chặn cả
+ * lượt nhập, còn màn nhập một sheet có thể lấy nhầm nó khi sheet dữ liệu còn trống.
+ */
+function laSheetHuongDan(name) {
+  return boDau(name).trim().startsWith("huong dan");
+}
+
+/** Sheet dữ liệu của file một sheet: sheet hiện đầu tiên có dòng, bỏ qua sheet hướng dẫn. */
+function sheetDuLieuDauTien(workbook) {
+  return workbook.sheets.find((item) => !item.hidden && item.rows.length && !laSheetHuongDan(item.name))
+    || workbook.sheets.find((item) => !laSheetHuongDan(item.name));
+}
+
 // Mỗi sheet nhìn thấy được và có dữ liệu là một nguồn riêng.
 async function docFileExcel(fileList) {
   const sources = [];
   for (const file of fileList) {
     const { sheets } = await window.NSHMSheet.readFile(file);
     for (const sheet of sheets) {
-      if (sheet.hidden || !sheet.rows?.length) continue;
+      if (sheet.hidden || !sheet.rows?.length || laSheetHuongDan(sheet.name)) continue;
       sources.push({
         key: `${file.name}::${sheet.name}`,
         label: sheets.length > 1 ? `${file.name} · ${sheet.name}` : file.name,

@@ -355,3 +355,91 @@ test("nhập lại file danh mục cũ sau khi gộp KHÔNG mở lại CLB đã 
   const thuLai = await kiemTra(caTheoTen["TK Thứ 6"].id);
   assert.ok(thuLai.issues.some((issue) => issue.type === "duplicate"), "luật một-CLB phải vẫn chặn sau khi nhập lại");
 });
+
+/* ---------- Nhập lại danh mục: chỉ chuyển hướng khi chắc chắn là CLB đã gộp ---------- */
+
+const TIEU_DE_DANH_MUC = ["Mã CLB", "Tên CLB", "Nhóm môn", "Khối", "Tên lớp", "Thứ", "Khung giờ", "Phòng", "Giáo viên", "Sĩ số", "Học phí"];
+const dongDanhMuc = (ma, ten, lop, thu, phong) => [ma, ten, "Thể thao", "3", lop, thu, "19:00-20:00", phong, "Thầy Nam", "25", "0"];
+const nhapDanhMuc = (rows, duong = "commit") => goi(`/api/admin/catalog/import/${duong}`, quanTri, "POST",
+  { confirmation: "IMPORT_CLUB_CATALOG", periodId: dotId, headers: TIEU_DE_DANH_MUC, rows });
+const docDanhMuc = async () => (await goi("/api/admin/catalog", quanTri, "GET")).body;
+
+test("ẩn một CLB mà CHƯA chuyển ca rồi nhập lại: không sinh bản sao ca ở CLB cùng tên", async () => {
+  // Đã đo trước khi siết: ca của RX-B (vẫn đang giữ đơn) được nhân bản sang RX-A, cùng
+  // phòng cùng giờ; bước gộp sau đó vấp ROOM_CONFLICT và không làm tiếp được.
+  const rows = [
+    dongDanhMuc("RX-A", "Bơi nhập lại RX", "RX Thứ 2", "Thứ 2", "Hồ RX A"),
+    dongDanhMuc("RX-B", "Bơi nhập lại RX", "RX Thứ 4", "Thứ 4", "Hồ RX B"),
+  ];
+  assert.equal((await nhapDanhMuc(rows)).status, 200);
+  const truoc = await docDanhMuc();
+  const rxB = truoc.clubs.find((item) => item.code === "RX-B");
+  assert.equal((await goi(`/api/admin/clubs/${rxB.id}`, quanTri, "PATCH", { active: false })).status, 200);
+
+  const lai = await nhapDanhMuc(rows);
+  assert.equal(lai.status, 200, lai.text);
+  assert.equal(lai.body.result.counters.classesCreated, 0, "không được tạo bản sao ca");
+  const sau = await docDanhMuc();
+  assert.equal(sau.classes.filter((item) => item.room === "Hồ RX B" && item.active).length, 1);
+});
+
+test("gộp dở dang còn hai CLB đang mở cùng tên: dòng của CLB đã gộp về đúng CLB đang giữ ca đó", async () => {
+  // Đã đo trước khi siết: dòng PB-B đi sang PB-C (CLB đang mở cùng tên sau cùng) thay vì
+  // PB-A nơi ca của nó đã được chuyển tới, và sinh một bản sao ca ở PB-C.
+  const rows = [
+    dongDanhMuc("PB-A", "Bơi gộp dở", "PB Thứ 2", "Thứ 2", "Hồ PB A"),
+    dongDanhMuc("PB-B", "Bơi gộp dở", "PB Thứ 4", "Thứ 4", "Hồ PB B"),
+    dongDanhMuc("PB-C", "Bơi gộp dở", "PB Thứ 6", "Thứ 6", "Hồ PB C"),
+  ];
+  assert.equal((await nhapDanhMuc(rows)).status, 200);
+  const truoc = await docDanhMuc();
+  const ma = (code) => truoc.clubs.find((item) => item.code === code);
+  const caPbB = truoc.classes.find((item) => item.name === "PB Thứ 4");
+  assert.equal((await goi(`/api/admin/classes/${caPbB.id}`, quanTri, "PATCH", { clubId: ma("PB-A").id })).status, 200);
+  assert.equal((await goi(`/api/admin/clubs/${ma("PB-B").id}`, quanTri, "PATCH", { active: false })).status, 200);
+
+  const xem = await nhapDanhMuc(rows, "preview");
+  assert.deepEqual(xem.body.preview.gopVao, [{ code: "PB-B", name: "Bơi gộp dở", vao: ["PB-A"] }],
+    "bản xem trước phải nói trước việc ghi vào CLB khác");
+
+  const lai = await nhapDanhMuc(rows);
+  assert.equal(lai.status, 200, lai.text);
+  assert.equal(lai.body.result.counters.classesCreated, 0);
+  const sau = await docDanhMuc();
+  const caSau = sau.classes.filter((item) => item.name === "PB Thứ 4");
+  assert.equal(caSau.length, 1);
+  assert.equal(caSau[0].clubId, ma("PB-A").id);
+  assert.equal(sau.clubs.find((item) => item.code === "PB-B").active, false);
+});
+
+test("file dùng lại mã của CLB đã ẩn cho một TÊN KHÁC thì không bị ghi sang CLB đang mở cùng tên cũ", async () => {
+  // Mã khớp một CLB đã ẩn, nhưng tên trong file đã khác: đó là mở lại hoặc đổi tên CLB
+  // đó, không phải dòng của CLB trùng tên đã gộp.
+  const rows = [
+    dongDanhMuc("CV-GIU", "Cờ vua tái dùng", "CV giữ", "Thứ 3", "Phòng CV 1"),
+    dongDanhMuc("CV-CU", "Cờ vua tái dùng", "CV cũ", "Thứ 5", "Phòng CV 2"),
+  ];
+  assert.equal((await nhapDanhMuc(rows)).status, 200);
+  const truoc = await docDanhMuc();
+  const cu = truoc.clubs.find((item) => item.code === "CV-CU");
+  const caCu = truoc.classes.find((item) => item.name === "CV cũ");
+  assert.equal((await goi(`/api/admin/classes/${caCu.id}`, quanTri, "PATCH", { active: false })).status, 200);
+  assert.equal((await goi(`/api/admin/clubs/${cu.id}`, quanTri, "PATCH", { active: false })).status, 200);
+
+  const doiTen = [dongDanhMuc("CV-CU", "Cờ tướng mở mới", "CT mới", "Thứ 7", "Phòng CT")];
+  const xem = await nhapDanhMuc(doiTen, "preview");
+  assert.deepEqual(xem.body.preview.gopVao, []);
+  assert.equal((await nhapDanhMuc(doiTen)).status, 200);
+  const sau = await docDanhMuc();
+  const caMoi = sau.classes.find((item) => item.name === "CT mới");
+  assert.equal(caMoi.clubId, cu.id, "ca phải vào đúng CLB mang mã CV-CU");
+  assert.notEqual(caMoi.clubId, truoc.clubs.find((item) => item.code === "CV-GIU").id);
+});
+
+test("khung cảnh báo CLB trùng tên xếp dọc, không vỡ thành các cột hẹp", async () => {
+  // .inline-alert là flex hàng ngang. Khung có tiêu đề, đoạn văn và danh sách; không
+  // ghi đè display thì mỗi phần thành một cột — đã đo: danh sách học sinh rộng 113px.
+  const css = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.clb-trung-ten-khoi\s*\{[^}]*display:\s*block/);
+  assert.match(app, /<div class="inline-alert clb-trung-ten-khoi">/);
+});

@@ -25,6 +25,7 @@ import {
   khoaTenClb, timNhomClb,
 } from "./xep-lop-import.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
+import { taoBieuMau } from "./bieu-mau.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
 import {
   ASSIGNABLE_SCHOOL_ROLES, CAP, ROLE, ROLE_LABELS,
@@ -1583,6 +1584,41 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
 
 const moTaCa = (ca) => ({ id: ca.id, nhan: nhanCaHoc(ca), lich: ca.scheduleLabel || "", khoi: ca.khoiApDung || [] });
 
+/**
+ * Danh sách ca cho ô chọn của mẫu xếp lớp: đúng những ca mà đường nhập sẽ nhận (ca
+ * đang mở của CLB đang mở, trong đợt), với đúng nhãn mà đường nhập so khớp.
+ *
+ * Nhãn "Tên CLB · Tên ca" chỉ chọn được một ca khi nó KHÔNG trùng với ca nào khác
+ * trong đợt. Ca không đặt tên hoặc trùng tên thì ghi "Tên CLB - Thứ N" để đường nhập
+ * chọn theo khối và thứ; vẫn còn trùng thì nói thẳng là phải sửa tên ca trước.
+ */
+async function danhSachCaChoBieuMau(periodIdYeuCau) {
+  const [catalog, dot] = await Promise.all([adminCatalogData(), getActivePeriod()]);
+  const periodId = periodIdYeuCau || dot?.id || null;
+  const period = (await listPeriodRows()).find((item) => item.id === periodId);
+  if (!period) return { caHoc: [], tenDot: "" };
+  const clubById = new Map(catalog.clubs.map((club) => [club.id, club]));
+  const ca = catalog.classes
+    .filter((row) => row.periodId === periodId && row.active && clubById.get(row.clubId)?.active !== false)
+    .map((row) => ({
+      ...row,
+      clubName: clubById.get(row.clubId)?.name || row.clubId,
+      khoiApDung: (row.grades?.length ? row.grades : clubById.get(row.clubId)?.grades) || [],
+    }));
+  const dem = (khoaOf) => ca.reduce((map, item) => map.set(khoaOf(item), (map.get(khoaOf(item)) || 0) + 1), new Map());
+  const theoNhan = dem((item) => boDauChuoi(nhanCaHoc(item)));
+  const theoThu = dem((item) => `${boDauChuoi(item.clubName)}|${item.dayOfWeek}`);
+  const caHoc = ca
+    .map((item) => {
+      const nhan = theoNhan.get(boDauChuoi(nhanCaHoc(item))) === 1 ? nhanCaHoc(item)
+        : theoThu.get(`${boDauChuoi(item.clubName)}|${item.dayOfWeek}`) === 1 ? `${item.clubName} - ${DAY_LABELS[item.dayOfWeek]}`
+          : `${nhanCaHoc(item)} (TRÙNG TÊN CA — sửa tên ca trên hệ thống trước khi xếp lớp)`;
+      return { nhan, lich: item.scheduleLabel || "", khoi: item.khoiApDung, phong: item.room || "", giaoVien: item.teacher || "" };
+    })
+    .sort((a, b) => a.nhan.localeCompare(b.nhan, "vi"));
+  return { caHoc, tenDot: period.name };
+}
+
 const chuoiRong = (value) => !String(value ?? "").trim();
 const boDauChuoi = (value) => String(value ?? "")
   .normalize("NFD").replace(/[̀-ͯ]/g, "")
@@ -1799,8 +1835,45 @@ function buildCatalogImportPlan(analysis, { catalog, periodId }) {
   // tên luôn rơi vào CLB đang mở chứ không vào một bản trùng đã ẩn sau khi gộp.
   const moSau = [...catalog.clubs].sort((a, b) => Number(a.active !== false) - Number(b.active !== false));
   const clubsByName = new Map(moSau.map((club) => [String(club.name).trim().toLowerCase(), club]));
-  const clbDangMoCungTen = new Map(moSau.filter((club) => club.active !== false)
-    .map((club) => [boDauChuoi(club.name), club]));
+  const clubById = new Map(catalog.clubs.map((club) => [club.id, club]));
+  const clbDangMo = catalog.clubs.filter((club) => club.active !== false);
+  const khoaKhung = (tenClb, dot, thu, gio, phong) => `${boDauChuoi(tenClb)}|${dot}|${thu}|${gio}|${phong}`;
+  const caDangMoTheoKhung = new Map(catalog.classes
+    .filter((ca) => ca.active && clubById.get(ca.clubId)?.active !== false)
+    .map((ca) => [khoaKhung(clubById.get(ca.clubId)?.name, ca.periodId, ca.dayOfWeek, ca.startTime, ca.room), ca]));
+  const clubIdTheoDong = new Map(); // dòng ca trong file -> CLB đích khi dòng đó thuộc CLB đã gộp
+  const gopVao = [];
+
+  /**
+   * Dòng của một CLB trùng tên ĐÃ GỘP thì ghi ca vào CLB đang mở, không đụng bản ghi đã
+   * ẩn. Trước đây nhập lại file danh mục cũ là bật lại mọi CLB đã ẩn và tạo lại ca của
+   * chúng — mở lại đúng lỗ hổng "một em, hai ca, hai lần học phí" vừa gộp xong.
+   *
+   * Chỉ chuyển hướng khi chắc chắn, vì đoán nhầm là tạo ca trùng phòng trùng giờ ở
+   * một CLB khác (đã đo được cả ba trường hợp dưới đây trước khi siết):
+   *  - bản ghi khớp đã ẩn VÀ không còn ca đang mở nào — ẩn một CLB còn ca không phải
+   *    là đã gộp, và chuyển hướng lúc đó là sinh bản sao của ca đang giữ đơn;
+   *  - tên CLB trong file vẫn là tên của bản ghi đó — file dùng lại mã cho CLB khác
+   *    thì không phải dòng của CLB đã gộp;
+   *  - từng dòng tìm được đích: CLB đang mở cùng tên ĐANG GIỮ đúng khung ca đó (đợt,
+   *    thứ, giờ bắt đầu, phòng); không có thì CLB đang mở cùng tên DUY NHẤT. Gộp dở
+   *    dang còn hai CLB đang mở cùng tên thì không đoán.
+   */
+  const dichGopVao = (clubFile, match) => {
+    if (!match || match.active !== false) return null;
+    if (boDauChuoi(clubFile.name) !== boDauChuoi(match.name)) return null;
+    if (catalog.classes.some((ca) => ca.clubId === match.id && ca.active)) return null;
+    const cungTen = clbDangMo.filter((item) => boDauChuoi(item.name) === boDauChuoi(match.name));
+    if (!cungTen.length) return null;
+    const dich = new Map();
+    for (const row of analysis.classes.filter((item) => item.clubKey === clubFile.key)) {
+      const caCungKhung = caDangMoTheoKhung.get(khoaKhung(match.name, periodId, row.dayOfWeek, row.startTime, row.room));
+      const clubId = caCungKhung?.clubId || (cungTen.length === 1 ? cungTen[0].id : null);
+      if (!clubId) return null;
+      dich.set(row, clubId);
+    }
+    return dich;
+  };
   const classKey = (row) => `${row.clubId}|${row.periodId}|${row.dayOfWeek}|${row.startTime}|${row.room}`;
   const existingClasses = new Map(catalog.classes.map((row) => [classKey(row), row]));
   const clubIdByKey = new Map();
@@ -1810,14 +1883,14 @@ function buildCatalogImportPlan(analysis, { catalog, periodId }) {
 
   for (const club of analysis.clubs) {
     const match = clubsByCode.get(String(club.code).toUpperCase()) || clubsByName.get(club.name.trim().toLowerCase());
-    // Dòng của một CLB trùng tên ĐÃ GỘP (bản ghi đã ẩn, còn một CLB đang mở cùng tên):
-    // ca của nó giờ nằm ở CLB đang mở, nên ghi ca vào đó và KHÔNG đụng tới bản ghi đã
-    // ẩn. Trước đây nhập lại file danh mục cũ là bật lại mọi CLB đã ẩn và tạo lại ca
-    // của chúng — mở lại đúng lỗ hổng "một em, hai ca, hai lần học phí" vừa gộp xong.
-    const giuLai = match?.active === false ? clbDangMoCungTen.get(boDauChuoi(match.name)) : null;
-    if (giuLai) {
-      clubIdByKey.set(club.key, giuLai.id);
+    const dich = dichGopVao(club, match);
+    if (dich) {
+      for (const [row, clubId] of dich) clubIdTheoDong.set(row, clubId);
       counters.clubsGopVao = (counters.clubsGopVao || 0) + 1;
+      gopVao.push({
+        code: match.code, name: match.name,
+        vao: [...new Set(dich.values())].map((clubId) => clubById.get(clubId)?.code || clubId),
+      });
       continue;
     }
     const data = normalizeClubInput({
@@ -1832,7 +1905,7 @@ function buildCatalogImportPlan(analysis, { catalog, periodId }) {
   }
 
   for (const row of analysis.classes) {
-    const clubId = clubIdByKey.get(row.clubKey);
+    const clubId = clubIdTheoDong.get(row) || clubIdByKey.get(row.clubKey);
     // Tìm ca đang có TRƯỚC rồi mới chuẩn hoá, để normalizeClassInput biết giá trị cũ
     // mà giữ lại những trường file danh mục KHÔNG mang theo — quan trọng nhất là
     // enrolled_base ("ghi danh sẵn ngoài hệ thống").
@@ -1852,7 +1925,7 @@ function buildCatalogImportPlan(analysis, { catalog, periodId }) {
     if (match) counters.classesUpdated += 1;
     else counters.classesCreated += 1;
   }
-  return { clubWrites, classWrites, counters };
+  return { clubWrites, classWrites, counters, gopVao };
 }
 
 async function commitCatalogImport({ actorUserId, analysis, periodId }) {
@@ -2972,9 +3045,21 @@ const groupId = maTheoNgay("GR");
     const periodId = String(payload.periodId || "");
     const { mapping, missing } = detectCatalogMapping(headers);
     const analysis = missing.length ? null : analyzeCatalogImport(rows, mapping, { periodId });
+    // Việc ghi ca của CLB đã gộp vào CLB đang mở cùng tên phải hiện ra TRƯỚC khi bấm ghi:
+    // một CLB đã nghỉ chỉ trùng tên với CLB đang mở thì người vận hành cần kịp dừng lại.
+    // Lỗi độ dài trường chỉ bật ra khi dựng kế hoạch; lúc xem trước bỏ qua, lúc ghi vẫn chặn.
+    let gopVao = [];
+    if (analysis?.readyToImport && periodId) {
+      try {
+        gopVao = buildCatalogImportPlan(analysis, { catalog: await adminCatalogData(), periodId }).gopVao;
+      } catch {
+        gopVao = [];
+      }
+    }
     return sendJson(res, 200, {
       preview: {
         periodId,
+        gopVao,
         mapping: Object.fromEntries(Object.entries(mapping).map(([field, descriptor]) => [field, descriptor.header])),
         missing,
         counters: analysis?.counters || null,
@@ -3116,6 +3201,32 @@ const groupId = maTheoNgay("GR");
 
   // Danh sách vận hành, không phải bản trích xuất dữ liệu: giáo vụ cần nó để
   // xếp lớp và cập nhật thông tin học sinh.
+  // Biểu mẫu Excel trống cho từng màn nhập. Mỗi mẫu đòi đúng quyền của màn nhập đó:
+  // mẫu xếp lớp mang danh sách ca của đợt, mẫu tài khoản mang tên miền đăng nhập.
+  const bieuMauMatch = url.pathname.match(/^\/api\/admin\/bieu-mau\/([a-z-]+)\.xlsx$/);
+  if (method === "GET" && bieuMauMatch) {
+    const khoa = bieuMauMatch[1];
+    const quyen = {
+      "danh-muc-clb": CAP.danhMuc,
+      "danh-ba-hoc-sinh": CAP.dongBoDanhBa,
+      "xep-lop-clb": CAP.duyetDon,
+      "tai-khoan-nha-truong": CAP.quanLyTaiKhoan,
+    }[khoa];
+    if (!quyen) throw httpError(404, "BIEU_MAU_KHONG_CO", "Không có biểu mẫu này.");
+    await requireSchoolUser(req, quyen);
+    const tuyChon = khoa === "tai-khoan-nha-truong" ? { tenMien: MICROSOFT_ALLOWED_DOMAIN }
+      : khoa === "xep-lop-clb" ? await danhSachCaChoBieuMau(url.searchParams.get("periodId"))
+        : {};
+    const { fileName, buffer } = taoBieuMau(khoa, tuyChon);
+    res.writeHead(200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": `attachment; filename="${fileName}"`,
+      "Content-Length": buffer.length,
+      "Cache-Control": "no-store",
+    });
+    return res.end(buffer);
+  }
+
   if (method === "GET" && url.pathname === "/api/admin/reports/registrations.csv") {
     await requireSchoolUser(req, CAP.danhSachVanHanh);
     const classId = url.searchParams.get("classId") || "";
