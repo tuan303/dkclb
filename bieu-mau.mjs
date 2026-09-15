@@ -166,7 +166,7 @@ function mauXepLopClb({ caHoc = [], tenDot = "" } = {}) {
         "KHÔNG ghi hai CLB trong một ô, không thêm phòng, giáo viên hay lớp chủ nhiệm vào ô: ô đó sẽ không ghép được.",
       ] },
       { tieuDe: "Hệ thống sẽ kiểm tra", dong: [
-        "Mã học sinh có trong danh bạ và em đang học; ca đúng khối của em; em chưa có đơn ở ca đó; không trùng giờ; không học hai ca của cùng một CLB; không vượt số CLB tối đa của đợt.",
+        "Mã học sinh có trong danh bạ và em đang học; ca đúng khối của em; em chưa có đơn ở ca đó; không trùng giờ; không vượt số CLB tối đa của đợt. Một em được học nhiều lớp của cùng một CLB.",
         "Dòng không đạt được liệt kê kèm lý do, không bị bỏ im lặng. Em chưa liên kết tài khoản phụ huynh vẫn được xếp, nhưng gia đình sẽ không thấy đơn trong cổng.",
         "Không thêm cột tên \"Lớp\" bên trái cột CLB đăng ký: hệ thống sẽ hiểu nhầm cột đó là cột CLB. Muốn ghi lớp chủ nhiệm thì dùng cột Ghi chú.",
       ] },

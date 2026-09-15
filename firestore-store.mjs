@@ -467,7 +467,6 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           for (const club of selectedClubs) {
             for (const current of existing) {
               if (current.classId === club.id) throw createHttpError(422, "VALIDATION_FAILED", `${club.name} đã có trong đăng ký hiện tại.`, [{ type: "duplicate", clubId: club.id, message: `${club.name} đã có trong đăng ký hiện tại.` }]);
-              if (club.clubId && current.clubId === club.clubId) throw createHttpError(422, "VALIDATION_FAILED", `Học sinh đã đăng ký một lớp khác của ${club.name}.`, [{ type: "duplicate", clubId: club.id, message: `Học sinh đã đăng ký một lớp khác của ${club.name}.` }]);
               if (intervalsOverlap(club, current)) {
                 const message = CONFLICT_AT_COMMIT(club.name);
                 throw createHttpError(422, "VALIDATION_FAILED", message, [{ type: "conflict", clubId: club.id, message }]);
@@ -480,7 +479,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
             const registration = {
               id: registrationIds[index], groupId, studentId, parentUserId: actorUserId, classId: club.id,
               clubId: club.clubId || null, periodId: periodId || club.periodId || null, status,
-              feeSnapshot: Number(club.fee), scheduleSnapshot: club.schedule, termsAcceptedAt: timestamp,
+              feeSnapshot: Number(club.fee) + Number(club.hocLieu || 0), scheduleSnapshot: club.schedule, termsAcceptedAt: timestamp,
               createdAt: timestamp, updatedAt: timestamp, dayOfWeek: club.dayOfWeek, startTime: club.startTime, endTime: club.endTime,
             };
             transaction.create(registrations.doc(registration.id), registration);

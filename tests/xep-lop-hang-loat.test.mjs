@@ -848,3 +848,24 @@ test("giao diện không đóng băng đề xuất của máy thành lựa chọ
   assert.match(app, /periodId: event\.target\.value, preview: null, mapping: \{\}/, "đổi đợt phải xoá bảng ghép của đợt cũ");
   assert.match(app, /xepDuocDaXem:/, "nút Ghi phải gửi kèm em nào vào ca nào");
 });
+
+test("hạn mức CLB ở công cụ nhập: lớp thứ hai của một CLB đã tính không bị coi là vượt mức", async () => {
+  // Đã tái hiện trước khi vá: em có 3 CLB (giới hạn 3) mà thêm lớp thứ hai của một CLB
+  // trong số đó thì công cụ nhập báo vượt hạn mức, trong khi cổng phụ huynh nhận.
+  const { ids: [a1, a2] } = await taoClbNhieuCa("HM-KHOI", "Hạn mức hai lớp", [["HM Thứ 2", 1, [5]], ["HM Thứ 4", 3, [5]]]);
+  try {
+    const xem = await xemTruoc({ files: [fileForm(
+      ["NSHM260522", "Hạn mức hai lớp · HM Thứ 2"],
+      ["NSHM260522", "Piano nhập môn"],
+      ["NSHM260522", "English Debate"],
+      ["NSHM260522", "Hạn mức hai lớp · HM Thứ 4"],
+    )] });
+    const lyDo = JSON.stringify(xem.rows.map((row) => row.lyDo));
+    // Ba dòng đầu là đủ 3 CLB trong đợt (giới hạn 3); dòng cuối là lớp THỨ HAI của CLB
+    // đầu nên không làm vượt mức. Dùng CLB em chưa có đơn nào: đơn mẫu cũ không gắn đợt
+    // nên không được tính, và bài kiểm sẽ không chạm tới ranh giới hạn mức.
+    assert.deepEqual(xem.rows.map((row) => row.ketCuc), ["xepDuoc", "xepDuoc", "xepDuoc", "xepDuoc"], lyDo);
+  } finally {
+    await tatCa([a1, a2]);
+  }
+});

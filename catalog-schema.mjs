@@ -147,6 +147,26 @@ export function slugCode(name, prefix = "CLB") {
 }
 
 /**
+ * Số nguyên KHÔNG ÂM gõ tay (số buổi, ngưỡng, học liệu). Không lột dấu như parseMoney:
+ * "-2" phải bị từ chối chứ không thành 2, "1.5" buổi không được thành 15. Ô trống nhận
+ * giá trị mặc định.
+ */
+export function soNguyenKhongAm(value, field, label, { max = 500_000_000, macDinh = 0, laTien = false } = {}) {
+  if (value === undefined || value === null || String(value).trim() === "") return macDinh;
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value < 0 || value > max) throw invalid("FIELD_OUT_OF_RANGE", `${label} phải là số nguyên từ 0 đến ${max}.`, field);
+    return value;
+  }
+  const chuoi = String(value).trim();
+  // Tiền cho phép dấu phân cách hàng nghìn "250.000", "250,000 đ"; đếm thì chỉ chữ số.
+  const chiSo = laTien && /^[\d.,\s]+(đ|d|vnd|vnđ)?$/i.test(chuoi) ? chuoi.replace(/[^\d]/g, "") : chuoi;
+  if (!/^\d+$/.test(chiSo)) throw invalid("FIELD_NOT_NUMBER", `${label} phải là số nguyên không âm.`, field);
+  const so = Number(chiSo);
+  if (!Number.isSafeInteger(so) || so > max) throw invalid("FIELD_OUT_OF_RANGE", `${label} phải là số nguyên từ 0 đến ${max}.`, field);
+  return so;
+}
+
+/**
  * Trạng thái lớp phụ huynh được thấy — thay cho sĩ số và số chỗ còn lại (yêu cầu giáo
  * vụ 11/09/2026: không cho phụ huynh thấy sĩ số, chỉ thấy trạng thái lớp).
  *
@@ -229,12 +249,12 @@ export function normalizeClassInput(input = {}, { existing = null, knownPeriodId
     enrolledBase,
     fee: requireInteger(parseMoney(input.fee ?? existing?.fee) ?? 0, "fee", "học phí", { min: 0, max: 500_000_000 }),
     // Học liệu tách riêng khỏi học phí (yêu cầu giáo vụ 11/09/2026); phụ huynh chỉ thấy tổng.
-    hocLieu: requireInteger(parseMoney(input.hocLieu ?? existing?.hocLieu) ?? 0, "hocLieu", "học liệu", { min: 0, max: 500_000_000 }),
-    soBuoi: requireInteger(parseMoney(input.soBuoi ?? existing?.soBuoi) ?? 0, "soBuoi", "số buổi", { min: 0, max: 500 }),
+    hocLieu: soNguyenKhongAm(input.hocLieu ?? existing?.hocLieu, "hocLieu", "học liệu", { max: 500_000_000, laTien: true }),
+    soBuoi: soNguyenKhongAm(input.soBuoi ?? existing?.soBuoi, "soBuoi", "số buổi", { max: 500 }),
     // Dừng tuyển khác Ngừng mở: lớp vẫn hiện cho phụ huynh với nhãn "Dừng tuyển", chỉ
     // không nhận đơn mới; ngừng mở là ẩn hẳn lớp.
     dangTuyen: input.dangTuyen === undefined ? existing?.dangTuyen !== false : Boolean(input.dangTuyen),
-    nguongSapDu: requireInteger(parseMoney(input.nguongSapDu ?? existing?.nguongSapDu) ?? 3, "nguongSapDu", "ngưỡng báo sắp đủ", { min: 0, max: 500 }),
+    nguongSapDu: soNguyenKhongAm(input.nguongSapDu ?? existing?.nguongSapDu, "nguongSapDu", "ngưỡng báo sắp đủ", { max: 500, macDinh: 3 }),
     waitlistEnabled: input.waitlistEnabled === undefined ? existing?.waitlistEnabled !== false : Boolean(input.waitlistEnabled),
     sortOrder: requireInteger(input.sortOrder ?? existing?.sortOrder ?? 0, "sortOrder", "thứ tự hiển thị", { min: 0, max: 9999 }),
     active: input.active === undefined ? existing?.active !== false : Boolean(input.active),

@@ -890,6 +890,9 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         if (!don || don.student_id !== taoMoi.studentId) {
           throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký cần đổi.");
         }
+        if (don.class_id === taoMoi.clubs?.[0]?.id) {
+          throw createHttpError(422, "DOI_LOP_CUNG_LOP", "Lớp mới trùng với lớp đang đăng ký.");
+        }
         if (!DOI_LOP_DUOC.includes(don.status) || toInt(don.fee_paid) === 1) {
           throw createHttpError(409, "DOI_LOP_DA_DONG_PHI",
             "Lớp cũ đã đóng phí hoặc đã được xếp nên không tự đổi được. Vui lòng liên hệ nhà trường để chuyển lớp.");
@@ -1044,6 +1047,9 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         const registration = rows[0];
         if (!registration) throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
         if (registration.status === status) return { id: registrationId, status, changed: false };
+        if (registration.status === STATUS.daDoiLop) {
+          throw createHttpError(409, "DON_DA_DOI_LOP", "Đơn này phụ huynh đã đổi sang lớp khác, không đổi trạng thái được. Hãy xử lý đơn mới.");
+        }
 
         if (holdsSeat(status) && !holdsSeat(registration.status)) {
           const [lopRows] = await connection.query(

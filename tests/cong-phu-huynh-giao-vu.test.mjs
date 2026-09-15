@@ -180,3 +180,60 @@ test("không đổi được đơn của người khác, và phải đồng ý �
     { classId: "painting" });
   assert.equal(khongDongY.status, 422);
 });
+
+/* ---------- Lỗi lượt rà soát đợt 1 tìm ra ---------- */
+
+test("một yêu cầu gửi hàng nghìn mã lớp trùng nhau bị từ chối ngay, không làm treo máy chủ", async () => {
+  // Đã tái hiện trước khi vá: 3.000 mã "dance" làm máy chủ treo ~30 giây rồi sập.
+  const batDau = Date.now();
+  const nhieu = await goi("/api/registrations/validate", phuHuynh, "POST", { studentId: "hs01", clubIds: Array(3000).fill("dance") });
+  assert.equal(nhieu.status, 422);
+  assert.ok(Date.now() - batDau < 2000, "phải trả lời ngay");
+  const trung = await goi("/api/registrations", phuHuynh, "POST", { studentId: "hs01", clubIds: ["dance", "dance"], acceptedTerms: true });
+  assert.equal(trung.status, 422);
+  assert.equal(trung.body.error.code, "DUPLICATE_CLASS");
+});
+
+test("đổi lớp: không đổi sang chính lớp đang có, và chỉ đổi sang lớp trùng lịch", async () => {
+  const don = (await goi("/api/registrations", phuHuynh)).body.registrations
+    .find((row) => row.studentId === "hs01" && row.status === "payment" && row.schedule?.startsWith("Chủ nhật"));
+  assert.ok(don, "cần đơn chưa đóng phí của lớp Chủ nhật tạo ở bài học liệu");
+  const cungLop = await goi(`/api/registrations/${encodeURIComponent(don.id)}/doi-lop`, phuHuynh, "POST", { classId: don.classId, acceptedTerms: true });
+  assert.equal(cungLop.status, 422);
+  assert.equal(cungLop.body.error.code, "DOI_LOP_CUNG_LOP");
+  // Nhảy hiện đại (Thứ 7 sáng) không trùng lịch lớp Chủ nhật: đường đổi lớp không phải nút tự huỷ đơn.
+  const khongTrung = await goi(`/api/registrations/${encodeURIComponent(don.id)}/doi-lop`, phuHuynh, "POST", { classId: "dance", acceptedTerms: true });
+  assert.equal(khongTrung.status, 422, khongTrung.text);
+  assert.equal(khongTrung.body.error.code, "DOI_LOP_KHONG_TRUNG_LICH");
+  const vanCon = (await goi("/api/registrations", phuHuynh)).body.registrations.find((row) => row.id === don.id);
+  assert.equal(vanCon.status, "payment", "đơn không được đổi trạng thái khi bị từ chối");
+});
+
+test("đơn Đã đổi lớp không bị bật lại bằng tay, và nhật ký ghi vào đúng đơn cũ", async () => {
+  const piano = (await goi("/api/registrations", quanTri)).body.registrations
+    .find((row) => row.studentId === "hs01" && row.classId === "piano" && row.status === "doi_lop");
+  assert.ok(piano);
+  const batLai = await goi(`/api/admin/registrations/${encodeURIComponent(piano.id)}/status`, quanTri, "PATCH", { status: "submitted" });
+  assert.equal(batLai.status, 409, "bấm Lưu trên đơn đã đổi lớp từng bật nó lại thành Đăng ký");
+  assert.equal(batLai.body.error.code, "DON_DA_DOI_LOP");
+
+  const chiTiet = await goi(`/api/admin/registrations/${encodeURIComponent(piano.id)}`, quanTri);
+  assert.equal(chiTiet.status, 200, chiTiet.text);
+  assert.match(JSON.stringify(chiTiet.body), /PARENT_SWITCH_CLASS/, "đơn cũ phải có dòng nhật ký đổi lớp");
+
+  // Ô trạng thái trong popup có mục cho trạng thái hệ thống, đang chọn và bị khoá.
+  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const tab = app.slice(app.indexOf("function renderDetailStudentTab("), app.indexOf("\n}", app.indexOf("function renderDetailStudentTab(")));
+  assert.match(tab, /registration\.status === "doi_lop" \? "disabled"/);
+  assert.match(tab, /selected disabled/);
+});
+
+test("form lớp: ngưỡng để trống là 3, số âm bị từ chối, không lột dấu trừ", async () => {
+  const lop = await taoLop({ name: "Lớp kiểm số", dayOfWeek: 2, startTime: "19:00", endTime: "20:00", nguongSapDu: "" });
+  assert.equal(lop.nguongSapDu, 3);
+  const am = await goi(`/api/admin/classes/${lop.id}`, quanTri, "PATCH", { hocLieu: "-250000" });
+  assert.equal(am.status, 422, "học liệu âm không được thành 250.000");
+  const thapPhan = await goi(`/api/admin/classes/${lop.id}`, quanTri, "PATCH", { soBuoi: "1.5" });
+  assert.equal(thapPhan.status, 422, "1,5 buổi không được thành 15 buổi");
+  assert.equal((await goi(`/api/admin/classes/${lop.id}`, quanTri, "PATCH", { active: false })).status, 200);
+});

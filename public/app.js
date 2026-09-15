@@ -204,7 +204,23 @@ function findCardWarning(club) {
   // Nhiều lớp của cùng một CLB thì được (yêu cầu giáo vụ 11/09/2026). Trùng giờ thì
   // KHÔNG khoá nút nữa: bấm vào sẽ hỏi phụ huynh có muốn đổi sang lớp này không.
   const vuongGio = findScheduleConflict(club);
-  return vuongGio ? { nhan: conflictBadge(vuongGio.doiThu), nut: "Đổi sang lớp này", khoa: false } : null;
+  if (!vuongGio) return null;
+  return doiDuocKhiTrung(vuongGio)
+    ? { nhan: conflictBadge(vuongGio.doiThu), nut: "Đổi sang lớp này", khoa: false }
+    : { nhan: `${conflictBadge(vuongGio.doiThu)} — lớp đó đã đóng phí, liên hệ nhà trường nếu muốn chuyển`, nut: "Trùng giờ", khoa: true };
+}
+
+/** Đơn đã gửi đang vướng giờ (nếu có) và nó còn đổi được không. Trong giỏ thì luôn đổi được. */
+function donVuongGio({ doiThu, daDangKy }) {
+  return daDangKy
+    ? state.registrations.find((don) => don.classId === doiThu.id && don.studentId === state.studentId
+      && ACTIVE_REGISTRATION_STATUSES.includes(don.status)) || null
+    : null;
+}
+function doiDuocKhiTrung(vuongGio) {
+  if (!vuongGio.daDangKy) return true;
+  const don = donVuongGio(vuongGio);
+  return Boolean(don && DOI_LOP_DUOC.includes(don.status) && !don.feePaid);
 }
 
 /** Đơn phụ huynh còn tự đổi lớp được — khớp DOI_LOP_DUOC ở registration-status.mjs. */
@@ -226,17 +242,16 @@ function lyDoKhongChonDuoc(club) {
  */
 function hoiDoiLop(target, { doiThu, daDangKy }) {
   const tenMoi = `${target.name}${target.className ? ` · ${target.className}` : ""}`;
-  const donCu = daDangKy
-    ? state.registrations.find((don) => don.classId === doiThu.id && don.studentId === state.studentId
-      && ACTIVE_REGISTRATION_STATUSES.includes(don.status))
-    : null;
-  const doiDuoc = !daDangKy || Boolean(donCu && DOI_LOP_DUOC.includes(donCu.status) && !donCu.feePaid);
+  const donCu = donVuongGio({ doiThu, daDangKy });
+  const doiDuoc = doiDuocKhiTrung({ doiThu, daDangKy });
+  const vaoDsCho = target.trangThaiLop?.ma === "da-du";
   const noiDung = daDangKy ? "con đã đăng ký" : "đang có trong giỏ đăng ký";
   showModal(`<div class="modal-head"><div><span class="eyebrow">Trùng lịch học</span><h2>Đổi sang lớp này?</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div>
     <div class="modal-body">
       <p>Lớp <b>${escapeHtml(tenMoi)}</b> (${escapeHtml(target.schedule)}) trùng lịch với <b>${escapeHtml(doiThu.name)}</b>${doiThu.schedule ? ` (${escapeHtml(doiThu.schedule)})` : ""} mà ${noiDung}.</p>
       ${doiDuoc
         ? `<p>Phụ huynh có muốn đổi sang lớp <b>${escapeHtml(tenMoi)}</b> không? Lớp cũ sẽ được bỏ${daDangKy ? " và đơn mới được gửi ngay" : " khỏi giỏ"}.</p>
+          ${vaoDsCho ? `<div class="inline-alert"><span>Lớp <b>${escapeHtml(tenMoi)}</b> đã đủ: con sẽ vào <b>danh sách chờ</b> của lớp mới${daDangKy ? ", và đơn lớp cũ sẽ không còn" : ""}.</span></div>` : ""}
           ${daDangKy ? `<label class="confirm-row"><input id="doi-lop-dong-y" type="checkbox" /><span>Tôi đã kiểm tra lịch học, mức phí và đồng ý với quy định đổi/hủy của nhà trường.</span></label>` : ""}`
         : `<div class="inline-alert"><span>Lớp cũ đã đóng phí hoặc đã được xếp nên không tự đổi được. Vui lòng liên hệ nhà trường để chuyển lớp.</span></div>`}
     </div>
@@ -253,9 +268,10 @@ function hoiDoiLop(target, { doiThu, daDangKy }) {
     }
     nut.disabled = true;
     try {
-      await api(`/registrations/${encodeURIComponent(donCu.id)}/doi-lop`, {
+      const ketQua = await api(`/registrations/${encodeURIComponent(donCu.id)}/doi-lop`, {
         method: "POST", body: JSON.stringify({ classId: target.id, acceptedTerms: true }),
       });
+      const vaoCho = ketQua.registrations?.[0]?.status === "waitlist";
       const [registrationPayload, clubPayload] = await Promise.all([
         api("/registrations"), api(`/clubs?studentId=${encodeURIComponent(state.studentId)}`),
       ]);
@@ -263,7 +279,7 @@ function hoiDoiLop(target, { doiThu, daDangKy }) {
       clubs = clubPayload.clubs;
       closeModal();
       renderApp();
-      toast(`Đã đổi sang lớp ${tenMoi}.`, "success");
+      toast(vaoCho ? `Đã đổi sang lớp ${tenMoi} — con đang ở danh sách chờ.` : `Đã đổi sang lớp ${tenMoi}.`, "success");
     } catch (error) {
       toast(error.details?.map((item) => item.message).join(" ") || error.message, "error");
       nut.disabled = false;
@@ -471,7 +487,7 @@ function renderNav() {
     .filter((item) => !item.cap || hasCap(item.cap));
   $("#main-nav").innerHTML = nav.map((item) => {
     if (item.section) return `<div class="nav-section">${item.section}</div>`;
-    const badge = item.id === "registrations" ? state.registrations.length : item.id === "applications" ? state.dashboard?.needAction : item.badge;
+    const badge = item.id === "registrations" ? state.registrations.filter((don) => don.status !== "doi_lop").length : item.id === "applications" ? state.dashboard?.needAction : item.badge;
     return `<button class="nav-link ${state.page === item.id ? "active" : ""}" data-page="${item.id}">
       ${icon(item.icon)}<span>${item.label}</span>${badge ? `<b class="nav-badge">${badge}</b>` : ""}
     </button>`;
@@ -527,7 +543,7 @@ function renderParentHome() {
         <span class="eyebrow">${open ? escapeHtml(state.period.name) : "Ngoại khóa NSHM"}</span>
         <h2>Khám phá điều con yêu thích ngoài giờ học.</h2>
         <p>${open
-          ? "Chọn học sinh, xem CLB phù hợp và hoàn tất đăng ký trong một quy trình có kiểm tra lịch, sĩ số và điều kiện."
+          ? "Chọn học sinh, xem CLB phù hợp và hoàn tất đăng ký trong một quy trình có kiểm tra lịch học, trạng thái lớp và điều kiện."
           : "Đợt đăng ký tiếp theo chưa mở. Bạn vẫn có thể xem lại các đăng ký đã gửi và lịch học hiện tại."}</p>
         <div class="hero-actions">
           ${open ? `<button class="button button-light" data-go="clubs">Khám phá CLB ${icon("arrow")}</button>` : ""}
@@ -568,7 +584,7 @@ function renderChildCard(item) {
 }
 
 function renderSteps(current) {
-  const items = [["Chọn học sinh","Đúng hồ sơ"],["Chọn CLB","Theo điều kiện"],["Kiểm tra","Lịch & sĩ số"],["Xác nhận","Nhận mã đơn"]];
+  const items = [["Chọn học sinh","Đúng hồ sơ"],["Chọn CLB","Theo điều kiện"],["Kiểm tra","Lịch & trạng thái lớp"],["Xác nhận","Nhận mã đơn"]];
   return `<div class="step-strip">${items.map((item, index) => `<div class="step-item ${index + 1 < current ? "done" : index + 1 === current ? "current" : ""}">
     <span class="step-number">${index + 1 < current ? icon("check") : index + 1}</span><div class="step-copy"><strong>${item[0]}</strong><span>${item[1]}</span></div>
   </div>`).join("")}</div>`;
@@ -629,8 +645,11 @@ function renderClubCard(club) {
   const canhBao = inCart ? null : findCardWarning(club);
   const khongChon = lyDoKhongChonDuoc(club);
   const khoaNut = inCart || canhBao?.khoa || Boolean(khongChon);
-  const nhanNut = inCart ? "Đã chọn" : canhBao ? canhBao.nut : trangThai.ma === "dung-tuyen" ? "Dừng tuyển"
-    : trangThai.ma === "da-du" ? (club.waitlistEnabled ? "Vào DS chờ" : "Đã đủ") : "Chọn";
+  const nhanNut = inCart ? "Đã chọn"
+    : trangThai.ma === "dung-tuyen" ? "Dừng tuyển"
+    : trangThai.ma === "da-du" && !club.waitlistEnabled ? "Đã đủ"
+    : canhBao ? canhBao.nut
+    : trangThai.ma === "da-du" ? "Vào DS chờ" : "Chọn";
   return `<article class="club-card">
     <div class="club-visual visual-${club.visual}"><span class="club-status ${LOP_TRANG_THAI_LOP[trangThai.ma] ?? ""}">${escapeHtml(trangThai.nhan)}</span><span class="club-symbol">${club.emoji}</span></div>
     <div class="club-body">
@@ -658,7 +677,7 @@ function renderRegistrations() {
       <div class="application-meta"><span class="badge badge-${color}">${label}</span><strong>${formatMoney(registration.amount || club?.fee || 0)}</strong></div></div>`;
   }).join("");
   return `
-    <div class="kpi-strip"><div class="kpi-item"><span>Tổng đăng ký</span><strong>${currentRegistrations.length}</strong></div><div class="kpi-item"><span>Đã đóng phí</span><strong>${currentRegistrations.filter(r => r.status === "confirmed").length}</strong></div><div class="kpi-item"><span>Đang học</span><strong>${currentRegistrations.filter(r => r.status === "dang_hoc").length}</strong></div><div class="kpi-item"><span>Xếp chờ</span><strong>${currentRegistrations.filter(r => r.status === "waitlist").length}</strong></div></div>
+    <div class="kpi-strip"><div class="kpi-item"><span>Tổng đăng ký</span><strong>${currentRegistrations.filter((don) => don.status !== "doi_lop").length}</strong></div><div class="kpi-item"><span>Đã đóng phí</span><strong>${currentRegistrations.filter(r => r.status === "confirmed").length}</strong></div><div class="kpi-item"><span>Đang học</span><strong>${currentRegistrations.filter(r => r.status === "dang_hoc").length}</strong></div><div class="kpi-item"><span>Xếp chờ</span><strong>${currentRegistrations.filter(r => r.status === "waitlist").length}</strong></div></div>
     <section class="section"><div class="section-head"><div><span class="eyebrow">Theo dõi theo thời gian thực</span><h2>Đăng ký của ${student().name}</h2><p>Trạng thái được cập nhật sau khi nhà trường xử lý hoặc đối soát phí.</p></div><button class="button button-primary" data-go="clubs">+ Đăng ký thêm</button></div>
     <div class="grid">${rows || `<div class="panel empty-state"><div class="empty-icon">${icon("clipboard")}</div><h3>Chưa có đăng ký</h3><p>Khám phá danh mục CLB phù hợp để bắt đầu.</p></div>`}</div></section>
     <section class="section"><div class="info-note"><strong>Quy ước trạng thái:</strong> “Đăng ký” chưa đồng nghĩa với có tên trong danh sách chính thức. Đăng ký chỉ được chốt khi đạt điều kiện xác nhận/đối soát theo quy định của nhà trường.</div></section>`;
@@ -723,9 +742,10 @@ const STATUS_GUIDE = {
   lui_khai_giang: "Lớp lùi ngày khai giảng, suất học của con vẫn được giữ.",
   khong_khai_giang: "Lớp không đủ điều kiện khai giảng. Nhà trường sẽ liên hệ về phương án thay thế hoặc hoàn phí.",
   hoan_phi: "Nhà trường đã xử lý hoàn phí cho đăng ký này.",
-  waitlist: "Lớp đã đủ sĩ số. Nhà trường sẽ liên hệ nếu có chỗ trống. Nếu con đã đóng phí, khoản phí vẫn được giữ nguyên.",
+  waitlist: "Lớp đã đủ. Nhà trường sẽ liên hệ nếu có chỗ trống. Nếu con đã đóng phí, khoản phí vẫn được giữ nguyên.",
   conflict: "Lịch học bị trùng. Vui lòng gửi yêu cầu hỗ trợ để chọn ca khác.",
   cancelled: "Đơn đã hủy.",
+  doi_lop: "Phụ huynh đã đổi đơn này sang lớp khác. Không cần đóng phí cho lớp này.",
   draft: "Đơn chưa gửi.",
 };
 
@@ -793,7 +813,7 @@ function renderSchedule() {
 }
 
 function renderSupport() {
-  const options = state.registrations.filter((item) => item.studentId === state.studentId).map((item) => `<option value="${item.id}">${item.id} · ${item.club}</option>`).join("");
+  const options = state.registrations.filter((item) => item.studentId === state.studentId && item.status !== "doi_lop").map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.id)} · ${escapeHtml(item.club)}</option>`).join("");
   return `<div class="dashboard-layout"><section class="panel"><div class="panel-head"><div><h3>Gửi yêu cầu hỗ trợ</h3><p>Yêu cầu được chuyển tới CSKH/điều phối CLB.</p></div></div><div class="panel-body">
     <div class="grid grid-2"><label class="search-field"><input id="support-topic" placeholder="Nội dung: đổi lịch, hủy, phí..." /></label><select id="support-registration" class="select-field"><option value="">Chọn đăng ký liên quan</option>${options}</select></div>
     <textarea id="support-message" style="width:100%;min-height:140px;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px" placeholder="Mô tả yêu cầu và thời gian có thể liên hệ..."></textarea>
@@ -1359,8 +1379,8 @@ function openClassForm(classId, clubId = null) {
           capacity: Number(form.capacity),
           minCapacity: Number(form.minCapacity || 0),
           enrolledBase: Number(form.enrolledBase || 0),
-          soBuoi: Number(form.soBuoi || 0),
-          nguongSapDu: Number(form.nguongSapDu ?? 3),
+          soBuoi: form.soBuoi,
+          nguongSapDu: form.nguongSapDu,
           dangTuyen: Boolean(form.dangTuyen),
         }),
       });
@@ -1859,6 +1879,7 @@ function renderApplicationTable(rows, { rutGon = false } = {}) {
 // Sheets làm chủ, sửa ở đây sẽ bị ghi đè ở lượt đồng bộ sau nên để nguyên chỉ đọc.
 const AUDIT_ACTION_LABELS = {
   CREATE_REGISTRATION: "Tạo đơn đăng ký",
+  PARENT_SWITCH_CLASS: "Phụ huynh đổi lớp",
   CONFIRM_PAYMENT: "Xác nhận đã đóng phí",
   CHANGE_REGISTRATION_STATUS: "Đổi trạng thái",
 };
@@ -1875,7 +1896,9 @@ function renderDetailStudentTab({ registration, student }) {
   }).join("");
   return `<div class="detail-grid">
     <label class="form-field detail-status"><span>Trạng thái đăng ký</span>
-      <select id="detail-status" class="select-field">
+      <select id="detail-status" class="select-field" ${registration.status === "doi_lop" ? "disabled" : ""}>
+        ${[...LIFECYCLE_STATUSES, ...EXCEPTION_STATUSES].includes(registration.status) ? ""
+          : `<option value="${escapeHtml(registration.status)}" selected disabled>${escapeHtml(statusBadge(registration.status)[0])}</option>`}
         <optgroup label="Vòng đời">${chon(LIFECYCLE_STATUSES)}</optgroup>
         <optgroup label="Ngoại lệ">${chon(EXCEPTION_STATUSES)}</optgroup>
       </select></label>
@@ -2264,7 +2287,7 @@ function renderRosterDetail() {
         ${detailField("Phòng học", ca.room)}
         ${detailField("Giáo viên phụ trách", ca.teacher)}
         ${detailField("Khối áp dụng", (ca.grade || []).join(", "))}
-        ${detailField("Học phí", ca.moCoi ? "" : formatMoney(conSo(ca.fee)))}
+        ${detailField("Học phí", ca.moCoi ? "" : `${formatMoney(conSo(ca.fee) + conSo(ca.hocLieu))}${conSo(ca.hocLieu) ? ` (gồm học liệu ${formatMoney(conSo(ca.hocLieu))})` : ""}`)}
         ${detailField("Sĩ số đang giữ chỗ", ca.moCoi ? "" : `${conSo(ca.enrolled)}/${conSo(ca.capacity)}`)}
         ${detailField("Sĩ số tối thiểu", ca.moCoi ? "" : (conSo(ca.minCapacity) || "Không đặt"))}
         ${detailField("Đơn chưa giữ chỗ", ca.moCoi ? "" : `${conSo(ca.pending)} đơn`)}
@@ -3217,7 +3240,7 @@ function renderCart() {
     $("#cart-body").innerHTML = `<div class="empty-state"><div class="empty-icon">${icon("cart")}</div><h3>Giỏ đăng ký đang trống</h3><p>Chọn một hoặc nhiều CLB phù hợp với ${student().name}.</p><button class="button button-primary" data-drawer-go-clubs>Khám phá CLB</button></div>`;
     $("#cart-footer").innerHTML = "";
   } else {
-    $("#cart-body").innerHTML = `<div class="inline-alert">${icon("spark")}<span>Hệ thống đã kiểm tra khối/lứa tuổi. Trùng lịch và quota sẽ được kiểm tra lại khi gửi.</span></div>${items.map(club => `<div class="cart-item"><span class="cart-emoji">${club.emoji}</span><div class="cart-copy"><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.schedule}<br>${club.room}</p><strong>${club.trangThaiLop?.ma === "da-du" ? "Danh sách chờ" : formatMoney(club.fee)}</strong></div><button class="remove-item" data-remove="${club.id}" aria-label="Xóa">${icon("x")}</button></div>`).join("")}`;
+    $("#cart-body").innerHTML = `<div class="inline-alert">${icon("spark")}<span>Hệ thống đã kiểm tra khối/lứa tuổi. Trùng lịch và quota sẽ được kiểm tra lại khi gửi.</span></div>${items.map(club => `<div class="cart-item"><span class="cart-emoji">${club.emoji}</span><div class="cart-copy"><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${escapeHtml(club.schedule)}<br>${escapeHtml(club.room)}</p><strong>${club.trangThaiLop?.ma === "da-du" ? "Danh sách chờ" : formatMoney(club.fee)}</strong></div><button class="remove-item" data-remove="${club.id}" aria-label="Xóa">${icon("x")}</button></div>`).join("")}`;
     const total = items.filter(c => c.trangThaiLop?.ma !== "da-du").reduce((sum,c)=>sum+c.fee,0);
     $("#cart-footer").innerHTML = `<div class="summary-lines"><div class="summary-line"><span>Học sinh</span><strong>${student().name}</strong></div><div class="summary-line"><span>${items.length} lựa chọn</span><strong>${items.some(c=>c.trangThaiLop?.ma === "da-du")?"Có DS chờ":"Hợp lệ"}</strong></div><div class="summary-line total"><span>Phí dự kiến</span><strong>${formatMoney(total)}</strong></div></div><label class="confirm-row"><input id="terms-check" type="checkbox" /><span>Tôi đã kiểm tra lịch học, mức phí và đồng ý với quy định đổi/hủy của nhà trường.</span></label><button id="submit-cart" class="button button-primary" disabled>${icon("check")} Xác nhận và gửi đăng ký</button>`;
   }
@@ -3231,7 +3254,7 @@ function showDetail(clubId) {
   const club = clubs.find(c => c.id === clubId);
   const trangThai = club.trangThaiLop || { ma: "con-nhan", nhan: "Còn nhận" };
   const khongChon = lyDoKhongChonDuoc(club);
-  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${escapeHtml(club.description)}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${escapeHtml(club.schedule)}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${escapeHtml(club.room)}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${escapeHtml(club.teacher)}</strong></div><div class="detail-cell"><span>Trạng thái lớp</span><strong>${escapeHtml(trangThai.nhan)}</strong></div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)}${club.soBuoi ? ` · ${club.soBuoi} buổi` : ""}</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id) || khongChon ?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":trangThai.ma === "dung-tuyen"?"Dừng tuyển":trangThai.ma === "da-du"?(club.waitlistEnabled?"Vào DS chờ":"Đã đủ"):"Chọn CLB"}</button></div>`);
+  showModal(`<div class="modal-head"><div><span class="eyebrow">${escapeHtml(club.category)}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${escapeHtml(club.description)}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${escapeHtml(club.schedule)}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${escapeHtml(club.room)}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${escapeHtml(club.teacher)}</strong></div><div class="detail-cell"><span>Trạng thái lớp</span><strong>${escapeHtml(trangThai.nhan)}</strong></div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)}${club.soBuoi ? ` · ${club.soBuoi} buổi` : ""}</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id) || khongChon ?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":trangThai.ma === "dung-tuyen"?"Dừng tuyển":trangThai.ma === "da-du"?(club.waitlistEnabled?"Vào DS chờ":"Đã đủ"):"Chọn CLB"}</button></div>`);
 }
 
 function showModal(content, { wide = false } = {}) {

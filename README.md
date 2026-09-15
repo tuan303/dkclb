@@ -239,7 +239,7 @@ Bộ kiểm thử hiện bao phủ:
 - Health check.
 - Phạm vi dữ liệu phụ huynh-học sinh.
 - Lọc điều kiện CLB theo khối, kể cả khối khai riêng cho từng ca.
-- Chặn trùng lịch với đăng ký hiện có và chặn hai ca của cùng một CLB.
+- Chặn trùng lịch và trùng đúng một lớp với đăng ký hiện có. Một học sinh được học nhiều lớp của cùng một CLB (yêu cầu giáo vụ 11/09/2026). Chọn lớp trùng lịch với đơn chưa đóng phí thì phụ huynh đổi được ngay.
 - Tạo đơn danh sách chờ.
 - Dashboard và xác nhận phí của admin.
 - Đọc dữ liệu danh mục: thứ, giờ (kể cả số thực của Excel), khối, học phí.

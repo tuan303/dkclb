@@ -89,7 +89,7 @@ API không tin kết quả kiểm tra từ trình duyệt. Khi tạo đơn, serv
 2. Học sinh có liên kết với phụ huynh hiện tại.
 3. Tất cả lớp còn hoạt động, thuộc đợt đang mở và áp dụng cho khối của học sinh (khối lấy theo cấu hình riêng của ca, nếu ca không khai thì lấy theo CLB).
 4. Không vượt quá số CLB tối đa mà đợt cấu hình, tính trên tổng số CLB học sinh đã có trong đợt cộng với lựa chọn mới.
-5. Không đăng ký trùng lớp, và không đăng ký hai ca khác nhau của cùng một CLB.
+5. Không đăng ký trùng lớp. Nhiều lớp của cùng một CLB thì được (yêu cầu giáo vụ 11/09/2026).
 6. Không giao nhau với lịch trong giỏ hoặc đăng ký hiện có.
 7. Tính lại quota ngay trong transaction.
 8. Lớp còn chỗ tạo trạng thái `payment`; lớp đầy tạo `waitlist`. Lớp đã tắt danh sách chờ thì báo lỗi thay vì tạo đơn chờ.

@@ -804,6 +804,17 @@ async function validateRegistration(user, studentId, clubIds, { boQuaDonIds = []
     throw httpError(400, "INVALID_REGISTRATION", "Vui lòng chọn học sinh và ít nhất một CLB.");
   }
   const period = await requireActivePeriod();
+  // Bỏ luật một lớp mỗi CLB thì hạn mức không còn tính được bằng số mã gửi lên (hai
+  // lớp một CLB tính một CLB), nhưng vẫn phải chặn cứng độ dài và mã trùng NGAY ĐẦU:
+  // thiếu hai chặn này, một yêu cầu gửi 3.000 mã trùng làm máy chủ treo ~30 giây vì
+  // vòng so từng cặp rồi sập khi ghi mảng lỗi — đã tái hiện được.
+  const toiDaLopMotLan = Math.max(10, period.maxClubsPerStudent * 3);
+  if (clubIds.length > toiDaLopMotLan) {
+    throw httpError(422, "MAX_CLUBS", `Mỗi lần gửi được tối đa ${toiDaLopMotLan} lớp.`);
+  }
+  if (new Set(clubIds.map(String)).size !== clubIds.length) {
+    throw httpError(422, "DUPLICATE_CLASS", "Có lớp được chọn hai lần trong cùng một lần gửi.");
+  }
   const ownership = businessStore ? await businessStore.parentOwnsStudent(user.id, studentId) : db.prepare(`SELECT s.* FROM students s JOIN parent_students ps ON ps.student_id = s.id
     WHERE ps.parent_user_id = ? AND s.id = ? AND s.status = 'active'`).get(user.id, studentId);
   if (!ownership) throw httpError(403, "STUDENT_SCOPE", "Học sinh không thuộc tài khoản phụ huynh hiện tại.");
@@ -866,7 +877,10 @@ async function validateRegistration(user, studentId, clubIds, { boQuaDonIds = []
     valid: issues.length === 0,
     issues,
     period: { id: period.id, name: period.name, closeAt: period.closeAt, maxClubsPerStudent: period.maxClubsPerStudent },
-    clubs: selected.map((club) => ({ ...club, proposedStatus: club.enrolled >= club.capacity ? "waitlist" : "payment" })),
+    clubs: selected.map((club) => ({
+      ...club,
+      proposedStatus: club.dangTuyen === false ? null : club.enrolled >= club.capacity ? "waitlist" : "payment",
+    })),
   };
 }
 
@@ -1508,7 +1522,9 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
       if (khoa.startsWith(`${em.id}|`)) clbTrongDot.add(khoa.slice(em.id.length + 1));
     }
     const hanMuc = asInt(dot.maxClubsPerStudent) || 3;
-    if (clbTrongDot.size >= hanMuc) {
+    // Lớp thứ hai của một CLB đã tính rồi không làm tăng số CLB — giống cổng phụ huynh.
+    const soClbNeuXep = clbTrongDot.has(boDauChuoi(ca.clubName)) ? clbTrongDot.size : clbTrongDot.size + 1;
+    if (soClbNeuXep > hanMuc) {
       ghi("vuotHanMuc", `Em đã có ${clbTrongDot.size} CLB trong đợt ${dot.name}, vượt mức tối đa ${hanMuc}.`, chung);
       continue;
     }
@@ -2600,8 +2616,17 @@ async function handleApi(req, res, url) {
       throw httpError(409, "DOI_LOP_DA_DONG_PHI",
         "Lớp cũ đã đóng phí hoặc đã được xếp nên không tự đổi được. Vui lòng liên hệ nhà trường để chuyển lớp.");
     }
+    if (String(classId || "") === donCu.classId) {
+      // "Đổi" sang chính lớp đang có là tạo lại đơn với giờ tạo mới — xếp chờ thì nhảy hàng.
+      throw httpError(422, "DOI_LOP_CUNG_LOP", "Lớp mới trùng với lớp đang đăng ký.");
+    }
     const validation = await validateRegistration(user, donCu.studentId, [String(classId || "")], { boQuaDonIds: [donCuId] });
     if (!validation.valid) throw httpError(422, "VALIDATION_FAILED", "Không đổi được sang lớp này.", validation.issues);
+    if (!intervalsOverlap(validation.clubs[0], donCu)) {
+      // Đường này dành cho đúng tình huống giáo vụ yêu cầu: chọn lớp TRÙNG LỊCH. Không
+      // trùng lịch thì nó chỉ còn là một nút tự huỷ đơn — việc đó phụ huynh liên hệ trường.
+      throw httpError(422, "DOI_LOP_KHONG_TRUNG_LICH", "Chỉ đổi được sang lớp trùng lịch với lớp cũ. Muốn huỷ đơn, vui lòng liên hệ nhà trường.");
+    }
     const groupId = maTheoNgay("GR");
     const taoMaDon = () => maTheoNgay("DK");
     const timestamp = nowIso();
@@ -2633,8 +2658,11 @@ async function handleApi(req, res, url) {
         .run(registrationId, groupId, donCu.studentId, user.id, club.id, validation.period.id, status, club.phiTong, club.schedule, timestamp, timestamp, timestamp);
       db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, before_json, after_json, created_at)
         VALUES (?, ?, 'PARENT_SWITCH_CLASS', 'registration', ?, ?, ?, ?)`)
-        .run(id("audit"), user.id, registrationId, JSON.stringify({ registrationId: donCuId, status: donCu.status, classId: donCu.classId }),
-          JSON.stringify({ status, classId: club.id, studentId: donCu.studentId }), timestamp);
+        .run(id("audit"), user.id, donCuId, JSON.stringify({ status: donCu.status, classId: donCu.classId }),
+          JSON.stringify({ status: STATUS.daDoiLop, sangDon: registrationId, sangLop: club.id }), timestamp);
+      db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, created_at)
+        VALUES (?, ?, 'CREATE_REGISTRATION', 'registration', ?, ?, ?)`)
+        .run(id("audit"), user.id, registrationId, JSON.stringify({ status, clubId: club.id, studentId: donCu.studentId, doiTuDon: donCuId }), timestamp);
       db.exec("COMMIT");
       return sendJson(res, 201, { groupId, doiTu: donCuId, registrations: [{ id: registrationId, status, clubId: club.id }] });
     } catch (error) {
@@ -3265,6 +3293,9 @@ const groupId = maTheoNgay("GR");
     const registration = db.prepare("SELECT id, status FROM registrations WHERE id = ?").get(registrationId);
     if (!registration) throw httpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký.");
     if (registration.status === next) return sendJson(res, 200, { id: registrationId, status: next, changed: false, statusLabel: statusLabel(next) });
+    if (registration.status === STATUS.daDoiLop) {
+      throw httpError(409, "DON_DA_DOI_LOP", "Đơn này phụ huynh đã đổi sang lớp khác, không đổi trạng thái được. Hãy xử lý đơn mới.");
+    }
     db.prepare("UPDATE registrations SET status = ?, updated_at = ? WHERE id = ?").run(next, timestamp, registrationId);
     await writeAudit({
       actorUserId: user.id, action: "CHANGE_REGISTRATION_STATUS", entityType: "registration", entityId: registrationId,
