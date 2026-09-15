@@ -71,7 +71,8 @@ const SESSION_MAX_AGE = 8 * 60 * 60;
 // Toàn bộ tệp giao diện nằm trong thư mục `public`. Vercel chỉ phục vụ tĩnh thư mục này,
 // nhờ đó mã nguồn backend và tài liệu nội bộ ở thư mục gốc không bị lộ ra ngoài.
 const PUBLIC_DIR = join(ROOT, "public");
-const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-client.js", "sheet-reader.js", "backup-crypto.mjs", "logo-nshm.png"]);
+const PUBLIC_FILES = new Set(["index.html", "styles.css", "app.js", "firebase-client.js", "sheet-reader.js", "backup-crypto.mjs", "logo-nshm.png",
+  "favicon.svg", "favicon.ico", "apple-touch-icon.png"]);
 
 const MYSQL_URL = process.env.MYSQL_URL || "";
 // Dữ liệu mẫu chỉ được tạo khi bật rõ ràng, để môi trường thật không dính CLB minh họa.
@@ -3672,7 +3673,7 @@ const groupId = maTheoNgay("GR");
   throw httpError(404, "NOT_FOUND", "Không tìm thấy API được yêu cầu.");
 }
 
-const mimeTypes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png" };
+const mimeTypes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon" };
 
 // Số phiên bản ?v= trong index.html trước đây phải sửa tay mỗi lần đổi giao diện.
 // Quên một lần là người dùng chạy mã cũ tới 4 giờ sau khi deploy — đã xảy ra thật:
