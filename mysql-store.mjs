@@ -9,7 +9,7 @@ import { createPool } from "mysql2/promise";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { planDirectoryWrites } from "./directory-plan.mjs";
-import { ACTIVE_REGISTRATION_STATUSES, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, holdsSeat } from "./registration-status.mjs";
+import { ACTIVE_REGISTRATION_STATUSES, DOI_LOP_DUOC, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, holdsSeat } from "./registration-status.mjs";
 import { CONFLICT_AT_COMMIT, intervalsOverlap } from "./schedule-conflict.mjs";
 import { createFieldCrypto } from "./field-crypto.mjs";
 
@@ -76,6 +76,10 @@ function normalizeCatalogRow(row) {
     minCapacity: toInt(row.min_capacity),
     enrolledBase: toInt(row.enrolled_base),
     fee: toInt(row.fee),
+    hocLieu: toInt(row.hoc_lieu),
+    soBuoi: toInt(row.so_buoi),
+    dangTuyen: toBool(row.dang_tuyen),
+    nguongSapDu: toInt(row.nguong_sap_du),
     waitlistEnabled: toBool(row.waitlist_enabled),
     active: toBool(row.active),
   };
@@ -84,7 +88,8 @@ function normalizeCatalogRow(row) {
 const CATALOG_SELECT = `SELECT cc.id, cc.club_id, c.code, c.name, cc.name AS class_name, c.category, c.description,
     c.emoji, c.visual, c.grades AS club_grades, cc.grades AS class_grades, c.sort_order AS club_sort_order,
     cc.sort_order, cc.period_id, cc.day_of_week, cc.start_time, cc.end_time, cc.schedule_label, cc.room,
-    cc.teacher, cc.capacity, cc.min_capacity, cc.enrolled_base, cc.fee, cc.waitlist_enabled, cc.active
+    cc.teacher, cc.capacity, cc.min_capacity, cc.enrolled_base, cc.fee, cc.hoc_lieu, cc.so_buoi, cc.dang_tuyen,
+    cc.nguong_sap_du, cc.waitlist_enabled, cc.active
   FROM club_classes cc JOIN clubs c ON c.id = cc.club_id`;
 
 // Mỗi nhóm dữ liệu xuất ra đúng hình dạng chung của bản sao lưu, không phụ thuộc nền lưu trữ.
@@ -137,13 +142,15 @@ const EXPORT_QUERIES = {
   },
   clubClasses: {
     sql: `SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label, grades, room,
-      teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active FROM club_classes`,
+      teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
+      waitlist_enabled, sort_order, active FROM club_classes`,
     map: (row) => ({
       id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "",
       dayOfWeek: toInt(row.day_of_week), startTime: row.start_time, endTime: row.end_time,
       scheduleLabel: row.schedule_label, grades: jsonArray(row.grades), room: row.room, teacher: row.teacher,
       capacity: toInt(row.capacity), minCapacity: toInt(row.min_capacity), enrolledBase: toInt(row.enrolled_base),
-      fee: toInt(row.fee), waitlistEnabled: toBool(row.waitlist_enabled), sortOrder: toInt(row.sort_order),
+      fee: toInt(row.fee), hocLieu: toInt(row.hoc_lieu), soBuoi: toInt(row.so_buoi), dangTuyen: toBool(row.dang_tuyen),
+      nguongSapDu: toInt(row.nguong_sap_du), waitlistEnabled: toBool(row.waitlist_enabled), sortOrder: toInt(row.sort_order),
       active: toBool(row.active),
     }),
   },
@@ -263,6 +270,12 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       // chồng khai chung một email là chuyện thường.
       ["users", "email", "VARCHAR(512) NULL"],
       ["registrations", "fee_paid", "TINYINT(1) NOT NULL DEFAULT 0"],
+      // Yêu cầu giáo vụ 11/09/2026: học liệu tách khỏi học phí, số buổi, dừng tuyển,
+      // và ngưỡng báo "Sắp đủ" thay cho số chỗ còn lại ở phía phụ huynh.
+      ["club_classes", "hoc_lieu", "INT NOT NULL DEFAULT 0"],
+      ["club_classes", "so_buoi", "INT NOT NULL DEFAULT 0"],
+      ["club_classes", "dang_tuyen", "TINYINT(1) NOT NULL DEFAULT 1"],
+      ["club_classes", "nguong_sap_du", "INT NOT NULL DEFAULT 3"],
     ];
     for (const [table, column, definition] of wanted) {
       const [rows] = await pool.query(
@@ -366,6 +379,90 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       }
     });
   }
+  /**
+   * Tạo đơn bên trong một giao dịch đã mở. Dùng chung cho đăng ký thường và đổi lớp,
+   * để hai đường không bao giờ kiểm khác nhau.
+   */
+  async function taoDonTrongGiaoDich(connection, { actorUserId, studentId, groupId, periodId = null, clubs: selectedClubs, registrationIds, taoMaDon, timestamp }) {
+    // Khóa dòng lớp trước khi đếm chỗ: hai phụ huynh cùng giành chỗ cuối thì
+    // người sau phải nhìn thấy chỗ người trước vừa giữ.
+    const classIds = selectedClubs.map((club) => club.id);
+    const [lockedClasses] = await connection.query(
+      "SELECT id, capacity, enrolled_base, waitlist_enabled, dang_tuyen FROM club_classes WHERE id IN (?) FOR UPDATE",
+      [classIds],
+    );
+    const lockedById = new Map(lockedClasses.map((row) => [row.id, row]));
+
+    const [existingRows] = await connection.query(
+      `SELECT r.class_id, cc.club_id, cc.day_of_week, cc.start_time, cc.end_time
+       FROM registrations r JOIN club_classes cc ON cc.id = r.class_id
+       WHERE r.student_id = ? AND r.status IN (?)`,
+      [studentId, ACTIVE_REGISTRATION_STATUSES],
+    );
+    for (const club of selectedClubs) {
+      for (const current of existingRows) {
+        if (current.class_id === club.id) {
+          throw createHttpError(422, "VALIDATION_FAILED", `${club.name} đã có trong đăng ký hiện tại.`,
+            [{ type: "duplicate", clubId: club.id, message: `${club.name} đã có trong đăng ký hiện tại.` }]);
+        }
+        const overlaps = intervalsOverlap(club, {
+          dayOfWeek: current.day_of_week, startTime: current.start_time, endTime: current.end_time,
+        });
+        if (overlaps) {
+          const message = CONFLICT_AT_COMMIT(club.name);
+          throw createHttpError(422, "VALIDATION_FAILED", message, [{ type: "conflict", clubId: club.id, message }]);
+        }
+      }
+    }
+
+    const [countRows] = await connection.query(
+      `SELECT class_id, COUNT(*) AS active_count FROM registrations
+       WHERE class_id IN (?) AND status IN (?) GROUP BY class_id`,
+      [classIds, ACTIVE_STATUSES],
+    );
+    const activeByClass = new Map(countRows.map((row) => [row.class_id, toInt(row.active_count)]));
+
+    // Mã đơn phải chắc chắn chưa có, kiểm ngay trong giao dịch này. Xem chú
+    // thích ở maDonConTrong trong server.mjs: đụng trùng mã là phụ huynh nhận
+    // lỗi hệ thống, mà mã cũ chỉ có 65.536 giá trị mỗi ngày.
+    const maConTrong = async (maDeXuat) => {
+      let ma = maDeXuat;
+      for (let lan = 0; lan < 8; lan += 1) {
+        const [co] = await connection.query("SELECT 1 FROM registrations WHERE id = ? LIMIT 1", [ma]);
+        if (!co.length) return ma;
+        ma = typeof taoMaDon === "function" ? taoMaDon() : `${ma}X`;
+      }
+      throw createHttpError(500, "REGISTRATION_ID_EXHAUSTED", "Không sinh được mã đơn mới. Vui lòng thử lại.");
+    };
+
+    const created = [];
+    for (const [index, club] of selectedClubs.entries()) {
+      const locked = lockedById.get(club.id);
+      if (!locked) throw createHttpError(404, "CLUB_NOT_FOUND", "Có lớp không còn tồn tại hoặc đã bị ẩn.");
+      if (!toBool(locked.dang_tuyen)) {
+        const message = `${club.name}${club.className ? ` · ${club.className}` : ""} đã dừng tuyển.`;
+        throw createHttpError(422, "VALIDATION_FAILED", message, [{ type: "dung-tuyen", clubId: club.id, message }]);
+      }
+      const taken = toInt(locked.enrolled_base) + (activeByClass.get(club.id) || 0);
+      const status = taken >= toInt(locked.capacity) ? "waitlist" : "payment";
+      const registrationId = await maConTrong(registrationIds[index]);
+      await connection.query(
+        `INSERT INTO registrations (id, group_id, student_id, parent_user_id, class_id, period_id, status,
+          fee_snapshot, schedule_snapshot, terms_accepted_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [registrationId, groupId, studentId, actorUserId, club.id, periodId || club.periodId || null, status,
+          toInt(club.fee) + toInt(club.hocLieu), club.schedule, timestamp, timestamp, timestamp],
+      );
+      if (status !== "waitlist") activeByClass.set(club.id, (activeByClass.get(club.id) || 0) + 1);
+      await insertAudit(connection, {
+        actorUserId, action: "CREATE_REGISTRATION", entityType: "registration", entityId: registrationId,
+        after: { status, clubId: club.id, studentId }, createdAt: timestamp,
+      });
+      created.push({ id: registrationId, status, clubId: club.id });
+    }
+    return created;
+  }
+
   await seedIfEmpty();
 
   return {
@@ -645,7 +742,8 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       const [clubRows, classRows, countRows] = await Promise.all([
         query("SELECT id, code, name, category, description, emoji, visual, grades, sort_order, active FROM clubs ORDER BY sort_order, category, name"),
         query(`SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label, grades, room,
-          teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active
+          teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
+          waitlist_enabled, sort_order, active
           FROM club_classes ORDER BY sort_order, day_of_week, start_time`),
         query(`SELECT class_id,
             SUM(CASE WHEN status IN (${SEAT_HOLDING_SQL}) THEN 1 ELSE 0 END) AS active_count,
@@ -666,7 +764,8 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
           dayOfWeek: toInt(row.day_of_week), startTime: row.start_time, endTime: row.end_time,
           scheduleLabel: row.schedule_label, grades: jsonArray(row.grades), room: row.room, teacher: row.teacher,
           capacity: toInt(row.capacity), minCapacity: toInt(row.min_capacity), enrolledBase: toInt(row.enrolled_base),
-          fee: toInt(row.fee), waitlistEnabled: toBool(row.waitlist_enabled), sortOrder: toInt(row.sort_order),
+          fee: toInt(row.fee), hocLieu: toInt(row.hoc_lieu), soBuoi: toInt(row.so_buoi), dangTuyen: toBool(row.dang_tuyen),
+          nguongSapDu: toInt(row.nguong_sap_du), waitlistEnabled: toBool(row.waitlist_enabled), sortOrder: toInt(row.sort_order),
           active: toBool(row.active),
         })),
         enrolled,
@@ -691,17 +790,20 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
     async saveClass(classId, data, connection = null) {
       await (connection || pool).query(
         `INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
-          grades, room, teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          grades, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
+          waitlist_enabled, sort_order, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE club_id = VALUES(club_id), period_id = VALUES(period_id), name = VALUES(name),
           day_of_week = VALUES(day_of_week), start_time = VALUES(start_time), end_time = VALUES(end_time),
           schedule_label = VALUES(schedule_label), grades = VALUES(grades), room = VALUES(room),
           teacher = VALUES(teacher), capacity = VALUES(capacity), min_capacity = VALUES(min_capacity),
-          enrolled_base = VALUES(enrolled_base), fee = VALUES(fee), waitlist_enabled = VALUES(waitlist_enabled),
+          enrolled_base = VALUES(enrolled_base), fee = VALUES(fee), hoc_lieu = VALUES(hoc_lieu), so_buoi = VALUES(so_buoi),
+          dang_tuyen = VALUES(dang_tuyen), nguong_sap_du = VALUES(nguong_sap_du), waitlist_enabled = VALUES(waitlist_enabled),
           sort_order = VALUES(sort_order), active = VALUES(active)`,
         [classId, data.clubId, data.periodId, data.name || "", data.dayOfWeek, data.startTime, data.endTime,
           data.scheduleLabel, JSON.stringify(data.grades || []), data.room, data.teacher, toInt(data.capacity),
-          toInt(data.minCapacity), toInt(data.enrolledBase), toInt(data.fee),
+          toInt(data.minCapacity), toInt(data.enrolledBase), toInt(data.fee), toInt(data.hocLieu), toInt(data.soBuoi),
+          data.dangTuyen === false ? 0 : 1, data.nguongSapDu === undefined ? 3 : toInt(data.nguongSapDu),
           data.waitlistEnabled === false ? 0 : 1, toInt(data.sortOrder), data.active === false ? 0 : 1],
       );
       return { id: classId, ...data };
@@ -769,85 +871,36 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       });
     },
 
-    async createRegistrations({ actorUserId, studentId, groupId, periodId = null, clubs: selectedClubs, registrationIds, taoMaDon, timestamp }) {
+    async createRegistrations(args) {
+      return withTransaction((connection) => taoDonTrongGiaoDich(connection, args));
+    },
+
+    /**
+     * Phụ huynh đổi một đơn CHƯA đóng phí sang lớp khác, trong MỘT giao dịch: khoá đơn
+     * cũ, kiểm lại nó vẫn chưa đóng phí (có thể vừa được giáo vụ xác nhận phí), chuyển
+     * nó sang "Đã đổi lớp", rồi tạo đơn mới bằng đúng đường tạo đơn thường — khoá lớp,
+     * kiểm trùng lớp, trùng giờ, dừng tuyển, sĩ số. Đơn cũ đã đổi trạng thái trong cùng
+     * giao dịch nên không còn tính là vướng giờ với lớp thay nó.
+     */
+    async doiLopPhuHuynh({ donCuId, ...taoMoi }) {
       return withTransaction(async (connection) => {
-        // Khóa dòng lớp trước khi đếm chỗ: hai phụ huynh cùng giành chỗ cuối thì
-        // người sau phải nhìn thấy chỗ người trước vừa giữ.
-        const classIds = selectedClubs.map((club) => club.id);
-        const [lockedClasses] = await connection.query(
-          "SELECT id, capacity, enrolled_base, waitlist_enabled FROM club_classes WHERE id IN (?) FOR UPDATE",
-          [classIds],
-        );
-        const lockedById = new Map(lockedClasses.map((row) => [row.id, row]));
-
-        const [existingRows] = await connection.query(
-          `SELECT r.class_id, cc.club_id, cc.day_of_week, cc.start_time, cc.end_time
-           FROM registrations r JOIN club_classes cc ON cc.id = r.class_id
-           WHERE r.student_id = ? AND r.status IN (?)`,
-          [studentId, ACTIVE_REGISTRATION_STATUSES],
-        );
-        for (const club of selectedClubs) {
-          for (const current of existingRows) {
-            if (current.class_id === club.id) {
-              throw createHttpError(422, "VALIDATION_FAILED", `${club.name} đã có trong đăng ký hiện tại.`,
-                [{ type: "duplicate", clubId: club.id, message: `${club.name} đã có trong đăng ký hiện tại.` }]);
-            }
-            if (club.clubId && current.club_id === club.clubId) {
-              throw createHttpError(422, "VALIDATION_FAILED", `Học sinh đã đăng ký một lớp khác của ${club.name}.`,
-                [{ type: "duplicate", clubId: club.id, message: `Học sinh đã đăng ký một lớp khác của ${club.name}.` }]);
-            }
-            const overlaps = intervalsOverlap(club, {
-              dayOfWeek: current.day_of_week, startTime: current.start_time, endTime: current.end_time,
-            });
-            if (overlaps) {
-              const message = CONFLICT_AT_COMMIT(club.name);
-              throw createHttpError(422, "VALIDATION_FAILED", message, [{ type: "conflict", clubId: club.id, message }]);
-            }
-          }
+        const [cu] = await connection.query(
+          "SELECT id, student_id, status, fee_paid, class_id FROM registrations WHERE id = ? FOR UPDATE", [donCuId]);
+        const don = cu[0];
+        if (!don || don.student_id !== taoMoi.studentId) {
+          throw createHttpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký cần đổi.");
         }
-
-        const [countRows] = await connection.query(
-          `SELECT class_id, COUNT(*) AS active_count FROM registrations
-           WHERE class_id IN (?) AND status IN (?) GROUP BY class_id`,
-          [classIds, ACTIVE_STATUSES],
-        );
-        const activeByClass = new Map(countRows.map((row) => [row.class_id, toInt(row.active_count)]));
-
-        // Mã đơn phải chắc chắn chưa có, kiểm ngay trong giao dịch này. Xem chú
-        // thích ở maDonConTrong trong server.mjs: đụng trùng mã là phụ huynh nhận
-        // lỗi hệ thống, mà mã cũ chỉ có 65.536 giá trị mỗi ngày.
-        const maConTrong = async (maDeXuat) => {
-          let ma = maDeXuat;
-          for (let lan = 0; lan < 8; lan += 1) {
-            const [co] = await connection.query("SELECT 1 FROM registrations WHERE id = ? LIMIT 1", [ma]);
-            if (!co.length) return ma;
-            ma = typeof taoMaDon === "function" ? taoMaDon() : `${ma}X`;
-          }
-          throw createHttpError(500, "REGISTRATION_ID_EXHAUSTED", "Không sinh được mã đơn mới. Vui lòng thử lại.");
-        };
-
-        const created = [];
-        for (const [index, club] of selectedClubs.entries()) {
-          const locked = lockedById.get(club.id);
-          if (!locked) throw createHttpError(404, "CLUB_NOT_FOUND", "Có lớp không còn tồn tại hoặc đã bị ẩn.");
-          const taken = toInt(locked.enrolled_base) + (activeByClass.get(club.id) || 0);
-          const status = taken >= toInt(locked.capacity) ? "waitlist" : "payment";
-          const registrationId = await maConTrong(registrationIds[index]);
-          await connection.query(
-            `INSERT INTO registrations (id, group_id, student_id, parent_user_id, class_id, period_id, status,
-              fee_snapshot, schedule_snapshot, terms_accepted_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [registrationId, groupId, studentId, actorUserId, club.id, periodId || club.periodId || null, status,
-              toInt(club.fee), club.schedule, timestamp, timestamp, timestamp],
-          );
-          if (status !== "waitlist") activeByClass.set(club.id, (activeByClass.get(club.id) || 0) + 1);
-          await insertAudit(connection, {
-            actorUserId, action: "CREATE_REGISTRATION", entityType: "registration", entityId: registrationId,
-            after: { status, clubId: club.id, studentId }, createdAt: timestamp,
-          });
-          created.push({ id: registrationId, status, clubId: club.id });
+        if (!DOI_LOP_DUOC.includes(don.status) || toInt(don.fee_paid) === 1) {
+          throw createHttpError(409, "DOI_LOP_DA_DONG_PHI",
+            "Lớp cũ đã đóng phí hoặc đã được xếp nên không tự đổi được. Vui lòng liên hệ nhà trường để chuyển lớp.");
         }
-        return created;
+        await connection.query("UPDATE registrations SET status = ?, updated_at = ? WHERE id = ?",
+          [STATUS.daDoiLop, taoMoi.timestamp, donCuId]);
+        await insertAudit(connection, {
+          actorUserId: taoMoi.actorUserId, action: "PARENT_SWITCH_CLASS", entityType: "registration", entityId: donCuId,
+          before: { status: don.status, classId: don.class_id }, after: { status: STATUS.daDoiLop }, createdAt: taoMoi.timestamp,
+        });
+        return taoDonTrongGiaoDich(connection, taoMoi);
       });
     },
 
@@ -870,7 +923,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         // Khoá dòng lớp: một lượt nhập vài trăm đơn chạy song song với phụ huynh
         // đang giành chỗ cuối là chuyện phải tránh.
         const [lop] = await connection.query(
-          "SELECT id, fee, schedule_label, enrolled_base FROM club_classes WHERE id IN (?) FOR UPDATE", [classIds]);
+          "SELECT id, fee, hoc_lieu, schedule_label, enrolled_base FROM club_classes WHERE id IN (?) FOR UPDATE", [classIds]);
         const lopById = new Map(lop.map((row) => [row.id, row]));
 
         const maConTrong = async (ma) => {
@@ -893,7 +946,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
               fee_snapshot, fee_paid, schedule_snapshot, terms_accepted_at, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [registrationId, groupId, row.studentId, row.parentUserId || null, row.classId, periodId, trangThai,
-              toInt(ca.fee), daThuPhi ? 1 : 0, ca.schedule_label || "", timestamp, timestamp, timestamp],
+              toInt(ca.fee) + toInt(ca.hoc_lieu), daThuPhi ? 1 : 0, ca.schedule_label || "", timestamp, timestamp, timestamp],
           );
           await insertAudit(connection, {
             actorUserId, action: "IMPORT_REGISTRATION", entityType: "registration", entityId: registrationId,

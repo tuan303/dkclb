@@ -40,14 +40,14 @@ function napTrungTen(catalog, { adminApplications = [], catalogPeriodId = null }
   const nguon = [
     catDong("const escapeHtml = "),
     catDong("const boDau = "),
-    ...["khoaTenClb", "soCaDangMo", "clbTrungTen", "nhanClbDayDu", "sapXepClbTheoTen", "donTrungClb",
-      "renderNhanTrungTen", "renderCanhBaoClbTrungTen", "renderCanhBaoDonTrungClb",
+    ...["khoaTenClb", "soCaDangMo", "clbTrungTen", "nhanClbDayDu", "sapXepClbTheoTen",
+      "renderNhanTrungTen", "renderCanhBaoClbTrungTen",
       "currentCatalogPeriod", "classesOfPeriod", "renderClasses"].map(catHam),
   ].join("\n");
   return new Function("state", "adminApplications", "ACTIVE_REGISTRATION_STATUSES", "statusBadge",
     "icon", "loadingPanel", "renderCatalogClubBlock", "renderCatalogImport",
-    `${nguon}\nreturn { clbTrungTen, nhanClbDayDu, sapXepClbTheoTen, donTrungClb, renderNhanTrungTen,
-      renderCanhBaoClbTrungTen, renderCanhBaoDonTrungClb, renderClasses };`,
+    `${nguon}\nreturn { clbTrungTen, nhanClbDayDu, sapXepClbTheoTen, renderNhanTrungTen,
+      renderCanhBaoClbTrungTen, renderClasses };`,
   )({ catalog, catalogPeriodId }, adminApplications, TRANG_THAI_HIEU_LUC, (status) => [`nhãn ${status}`, "blue"],
     () => "", () => "đang tải", () => "", () => "");
 }
@@ -117,7 +117,7 @@ test("cảnh báo nêu hậu quả, liệt kê mã từng nhóm, và thoát ký 
   const { renderNhanTrungTen, renderCanhBaoClbTrungTen } = napTrungTen(catalog);
   const canh = renderCanhBaoClbTrungTen();
   assert.match(canh, /1 tên CLB đang bị trùng/);
-  assert.match(canh, /hai lần học phí/);
+  assert.match(canh, /một<\/b> bản ghi có nhiều lớp/);
   assert.match(canh, /&lt;b&gt;Cờ vua&lt;\/b&gt;/);
   assert.doesNotMatch(canh, /<b><b>/);
   assert.match(renderNhanTrungTen(catalog.clubs[0]), /Trùng tên với 1 CLB khác: B1/);
@@ -168,31 +168,6 @@ test("dòng 'CLB chưa có lớp' không mời ẩn một CLB còn ca ở đợt
   assert.match(hetCa, /data-edit-club="b"/);
 });
 
-test("liệt kê các em đang có HAI đơn ở cùng một CLB trong cùng đợt, kể cả sau khi đã gộp", () => {
-  // Gộp CLB chỉ chặn đơn mới. Đã đo: đơn trùng có từ trước vẫn xác nhận thu phí được
-  // cả hai, và gộp xong thì cảnh báo trùng tên biến mất — không màn nào còn nói ra.
-  const catalog = {
-    clubs: [clb("a", "BD2A1", "BÓNG ĐÁ CƠ BẢN"), clb("c", "BD6A1", "Bóng đá cơ bản"), clb("p", "PN", "Piano")],
-    classes: [ca("a1", "a"), ca("c1", "c"), ca("a-cu", "a", true, "hk0"), ca("p1", "p")],
-  };
-  const don = (id, studentId, classId, status = "confirmed") => ({ id, studentId, student: `Em ${studentId}`, classId, status });
-  const { donTrungClb, renderCanhBaoDonTrungClb } = napTrungTen(catalog, {
-    adminApplications: [
-      don("DK-1", "hs1", "a1"), don("DK-2", "hs1", "c1", "dang_hoc"),       // trùng: hai bản ghi cùng tên
-      don("DK-3", "hs2", "a1"), don("DK-4", "hs2", "a-cu", "hoc_xong"),     // khác đợt: không trùng
-      don("DK-5", "hs3", "a1"), don("DK-6", "hs3", "c1", "cancelled"),      // đơn đã huỷ: không trùng
-      don("DK-7", "hs4", "a1"), don("DK-8", "hs4", "p1"),                   // khác CLB: không trùng
-    ],
-  });
-  const ds = donTrungClb();
-  assert.equal(ds.length, 1);
-  assert.deepEqual(ds[0].don.map((item) => item.id), ["DK-1", "DK-2"]);
-  const html = renderCanhBaoDonTrungClb();
-  assert.match(html, /1 em đang có đơn ở hai ca của cùng một CLB/);
-  assert.match(html, /DK-1 \(nhãn confirmed\), DK-2 \(nhãn dang_hoc\)/);
-  assert.equal(napTrungTen(catalog).renderCanhBaoDonTrungClb(), "");
-});
-
 /* ---------- 2 & 3. Gộp trên máy chủ thật ---------- */
 
 let server;
@@ -238,7 +213,7 @@ const kiemTra = async (classId) => (await goi("/api/registrations/validate", phu
   studentId: "hs01", clubIds: [classId],
 })).body;
 
-test("chuyển ca sang CLB giữ lại thì luật một-CLB chặn ngay, kể cả với đơn đã có", async () => {
+test("sau khi gộp, một em học được nhiều lớp của cùng CLB, vẫn không đăng ký lại được đúng lớp đã có", async () => {
   // hs01 học khối 3.
   const giuLai = await taoClb("TRUNG-A", [3]);
   const seGop = await taoClb("TRUNG-B", [3]);
@@ -250,21 +225,20 @@ test("chuyển ca sang CLB giữ lại thì luật một-CLB chặn ngay, kể c
   });
   assert.equal(dangKy.status, 201, dangKy.text);
 
-  const truocGop = await kiemTra(caThu6);
-  assert.equal(truocGop.valid, true,
-    "chưa gộp thì lọt — đây chính là lỗ hổng trên máy chủ thật; nếu nay đã chặn thì xem lại cảnh báo trên trang");
-
   const chuyen = await goi(`/api/admin/classes/${caThu6}`, quanTri, "PATCH", { clubId: giuLai });
   assert.equal(chuyen.status, 200, chuyen.text);
 
+  // Yêu cầu giáo vụ 11/09/2026: nhiều lớp của cùng CLB (khác ngày) là hợp lệ.
   const sauGop = await kiemTra(caThu6);
-  assert.equal(sauGop.valid, false);
-  assert.ok(sauGop.issues.some((issue) => issue.type === "duplicate" && /một lớp khác của/.test(issue.message)),
-    JSON.stringify(sauGop.issues));
+  assert.equal(sauGop.valid, true, JSON.stringify(sauGop.issues));
+  const lopThuHai = await goi("/api/registrations", phuHuynh, "POST", {
+    studentId: "hs01", clubIds: [caThu6], acceptedTerms: true,
+  });
+  assert.equal(lopThuHai.status, 201, lopThuHai.text);
   const dangKyLai = await goi("/api/registrations", phuHuynh, "POST", {
     studentId: "hs01", clubIds: [caThu6], acceptedTerms: true,
   });
-  assert.equal(dangKyLai.status, 422, "đường ghi đơn cũng phải chặn, không chỉ đường kiểm tra");
+  assert.equal(dangKyLai.status, 422, "đăng ký lại ĐÚNG lớp đã có vẫn phải bị chặn");
 
   const seGopDaAn = await goi(`/api/admin/clubs/${seGop}`, quanTri, "PATCH", { active: false });
   assert.equal(seGopDaAn.status, 200, "CLB đã hết ca phải ẩn được — đó là bước cuối của việc gộp");
@@ -353,7 +327,7 @@ test("nhập lại file danh mục cũ sau khi gộp KHÔNG mở lại CLB đã 
   assert.ok(sau.classes.filter((item) => item.name.startsWith("TK ")).every((item) => item.clubId === clbTheoMa["TK-A"].id));
 
   const thuLai = await kiemTra(caTheoTen["TK Thứ 6"].id);
-  assert.ok(thuLai.issues.some((issue) => issue.type === "duplicate"), "luật một-CLB phải vẫn chặn sau khi nhập lại");
+  assert.ok(thuLai.clubs.every((item) => item.id === caTheoTen["TK Thứ 6"].id), "ca vẫn là đúng ca đã chuyển, không phải bản sao");
 });
 
 /* ---------- Nhập lại danh mục: chỉ chuyển hướng khi chắc chắn là CLB đã gộp ---------- */

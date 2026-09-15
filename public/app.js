@@ -125,6 +125,7 @@ const statusMap = {
   khong_khai_giang: ["Không khai giảng", "red"],
   cancelled: ["Lớp hủy", "red"],
   hoan_phi: ["Hoàn phí", "red"],
+  doi_lop: ["Đã đổi lớp", "blue"],
   draft: ["Bản nháp", "blue"],
   conflict: ["Trùng lịch", "red"],
 };
@@ -198,15 +199,76 @@ function findScheduleConflict(club) {
 function findCardWarning(club) {
   const daGui = donDaGuiCuaCon();
   if (daGui.some((don) => don.id === club.id)) {
-    return { nhan: "Con đã đăng ký chính ca này", nut: "Đã đăng ký" };
+    return { nhan: "Con đã đăng ký chính lớp này", nut: "Đã đăng ký", khoa: true };
   }
-  const khacCa = daGui.find((don) => don.clubId && don.clubId === club.clubId);
-  if (khacCa) {
-    const lich = String(khacCa.schedule || "").trim();
-    return { nhan: `Con đã đăng ký một ca khác của CLB này${lich ? ` (${lich})` : ""}`, nut: "Đã đăng ký" };
-  }
+  // Nhiều lớp của cùng một CLB thì được (yêu cầu giáo vụ 11/09/2026). Trùng giờ thì
+  // KHÔNG khoá nút nữa: bấm vào sẽ hỏi phụ huynh có muốn đổi sang lớp này không.
   const vuongGio = findScheduleConflict(club);
-  return vuongGio ? { nhan: conflictBadge(vuongGio.doiThu), nut: "Trùng giờ" } : null;
+  return vuongGio ? { nhan: conflictBadge(vuongGio.doiThu), nut: "Đổi sang lớp này", khoa: false } : null;
+}
+
+/** Đơn phụ huynh còn tự đổi lớp được — khớp DOI_LOP_DUOC ở registration-status.mjs. */
+const DOI_LOP_DUOC = ["submitted", "waitlist", "payment"];
+
+/** Lớp này phụ huynh còn bấm chọn được không, và nếu không thì vì sao. */
+function lyDoKhongChonDuoc(club) {
+  const ma = club.trangThaiLop?.ma;
+  if (ma === "dung-tuyen") return "Lớp này đã dừng tuyển.";
+  if (ma === "da-du" && !club.waitlistEnabled) return "Lớp này đã đủ và không nhận danh sách chờ.";
+  return null;
+}
+
+/**
+ * Chọn một lớp trùng lịch → hỏi ngay tại chỗ có đổi sang lớp này không (yêu cầu giáo
+ * vụ 11/09/2026). Lớp trùng đang ở trong giỏ thì đổi trong giỏ. Lớp trùng là đơn đã
+ * gửi thì chỉ đổi được khi đơn đó CHƯA đóng phí; đã đóng phí thì chuyển lớp là việc
+ * của nhà trường (hoàn/chuyển phí), nên chỉ báo phụ huynh liên hệ.
+ */
+function hoiDoiLop(target, { doiThu, daDangKy }) {
+  const tenMoi = `${target.name}${target.className ? ` · ${target.className}` : ""}`;
+  const donCu = daDangKy
+    ? state.registrations.find((don) => don.classId === doiThu.id && don.studentId === state.studentId
+      && ACTIVE_REGISTRATION_STATUSES.includes(don.status))
+    : null;
+  const doiDuoc = !daDangKy || Boolean(donCu && DOI_LOP_DUOC.includes(donCu.status) && !donCu.feePaid);
+  const noiDung = daDangKy ? "con đã đăng ký" : "đang có trong giỏ đăng ký";
+  showModal(`<div class="modal-head"><div><span class="eyebrow">Trùng lịch học</span><h2>Đổi sang lớp này?</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div>
+    <div class="modal-body">
+      <p>Lớp <b>${escapeHtml(tenMoi)}</b> (${escapeHtml(target.schedule)}) trùng lịch với <b>${escapeHtml(doiThu.name)}</b>${doiThu.schedule ? ` (${escapeHtml(doiThu.schedule)})` : ""} mà ${noiDung}.</p>
+      ${doiDuoc
+        ? `<p>Phụ huynh có muốn đổi sang lớp <b>${escapeHtml(tenMoi)}</b> không? Lớp cũ sẽ được bỏ${daDangKy ? " và đơn mới được gửi ngay" : " khỏi giỏ"}.</p>
+          ${daDangKy ? `<label class="confirm-row"><input id="doi-lop-dong-y" type="checkbox" /><span>Tôi đã kiểm tra lịch học, mức phí và đồng ý với quy định đổi/hủy của nhà trường.</span></label>` : ""}`
+        : `<div class="inline-alert"><span>Lớp cũ đã đóng phí hoặc đã được xếp nên không tự đổi được. Vui lòng liên hệ nhà trường để chuyển lớp.</span></div>`}
+    </div>
+    <div class="modal-foot"><button class="button button-secondary" data-close-modal>Giữ lớp cũ</button>
+      ${doiDuoc ? `<button class="button button-primary" data-doi-lop ${daDangKy ? "disabled" : ""}>Đổi sang lớp này</button>` : ""}</div>`);
+  const nut = $("[data-doi-lop]");
+  $("#doi-lop-dong-y")?.addEventListener("change", (event) => { if (nut) nut.disabled = !event.target.checked; });
+  nut?.addEventListener("click", async () => {
+    if (!daDangKy) {
+      state.cart = state.cart.filter((id) => id !== doiThu.id);
+      closeModal();
+      addToCart(target.id);
+      return;
+    }
+    nut.disabled = true;
+    try {
+      await api(`/registrations/${encodeURIComponent(donCu.id)}/doi-lop`, {
+        method: "POST", body: JSON.stringify({ classId: target.id, acceptedTerms: true }),
+      });
+      const [registrationPayload, clubPayload] = await Promise.all([
+        api("/registrations"), api(`/clubs?studentId=${encodeURIComponent(state.studentId)}`),
+      ]);
+      state.registrations = registrationPayload.registrations;
+      clubs = clubPayload.clubs;
+      closeModal();
+      renderApp();
+      toast(`Đã đổi sang lớp ${tenMoi}.`, "success");
+    } catch (error) {
+      toast(error.details?.map((item) => item.message).join(" ") || error.message, "error");
+      nut.disabled = false;
+    }
+  });
 }
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -521,7 +583,7 @@ function filteredClubs() {
   return eligibleClubs().filter((club) => {
     const matchesSearch = club.name.toLowerCase().includes(state.filters.search.toLowerCase()) || club.category.toLowerCase().includes(state.filters.search.toLowerCase());
     const matchesCategory = state.filters.category === "all" || club.category === state.filters.category;
-    const open = club.enrolled < club.capacity;
+    const open = ["con-nhan", "sap-du"].includes(club.trangThaiLop?.ma);
     const matchesAvailability = state.filters.availability === "all" || (state.filters.availability === "open" && open) || (state.filters.availability === "full" && !open);
     return matchesSearch && matchesCategory && matchesAvailability;
   });
@@ -540,7 +602,7 @@ function renderClubsPage() {
           <option value="all">Tất cả nhóm môn</option>${[...new Set(eligibleClubs().map(c => c.category))].map(value => `<option ${state.filters.category === value ? "selected" : ""}>${value}</option>`).join("")}
         </select>
         <select id="availability-filter" class="select-field" aria-label="Tình trạng chỗ">
-          <option value="all">Tất cả sĩ số</option><option value="open" ${state.filters.availability === "open" ? "selected" : ""}>Còn chỗ</option><option value="full" ${state.filters.availability === "full" ? "selected" : ""}>Đã đầy</option>
+          <option value="all">Tất cả trạng thái</option><option value="open" ${state.filters.availability === "open" ? "selected" : ""}>Còn nhận</option><option value="full" ${state.filters.availability === "full" ? "selected" : ""}>Đã đủ / Dừng tuyển</option>
         </select>
       </div>
     </section>
@@ -554,27 +616,29 @@ function renderClubsPage() {
     </section>`;
 }
 
+// Nhãn trạng thái lớp → lớp màu có sẵn của .club-status.
+const LOP_TRANG_THAI_LOP = { "con-nhan": "", "sap-du": "warning", "da-du": "full", "dung-tuyen": "full" };
+
 function renderClubCard(club) {
-  const left = club.capacity - club.enrolled;
-  const ratio = Math.round((club.enrolled / club.capacity) * 100);
-  // Số đơn đã đăng ký nhưng chưa đóng phí. Chỗ chỉ được giữ khi đóng phí, nên con
-  // số này KHÔNG trừ vào sĩ số — nhưng giấu nó đi thì "Còn 5 chỗ" là nói dối phụ
-  // huynh đang xếp sau 30 gia đình khác.
-  const dangCho = Number(club.pending || 0);
-  const statusClass = left <= 0 ? "full" : left <= 3 ? "warning" : "";
-  const statusText = left <= 0 ? "Đã đầy · Có DS chờ" : left <= 3 ? `Chỉ còn ${left} chỗ` : `Còn ${left} chỗ`;
+  // Phụ huynh chỉ thấy TRẠNG THÁI lớp, không thấy sĩ số hay số chỗ còn (yêu cầu giáo
+  // vụ 11/09/2026) — máy chủ cũng không gửi các con số đó cho phụ huynh.
+  const trangThai = club.trangThaiLop || { ma: "con-nhan", nhan: "Còn nhận" };
   const inCart = state.cart.includes(club.id);
   // Báo trùng giờ NGAY TRÊN THẺ, không đợi phụ huynh bấm rồi mới biết. Nhà trường
   // yêu cầu nói rõ vướng CLB nào và vào khoảng giờ nào.
   const canhBao = inCart ? null : findCardWarning(club);
+  const khongChon = lyDoKhongChonDuoc(club);
+  const khoaNut = inCart || canhBao?.khoa || Boolean(khongChon);
+  const nhanNut = inCart ? "Đã chọn" : canhBao ? canhBao.nut : trangThai.ma === "dung-tuyen" ? "Dừng tuyển"
+    : trangThai.ma === "da-du" ? (club.waitlistEnabled ? "Vào DS chờ" : "Đã đủ") : "Chọn";
   return `<article class="club-card">
-    <div class="club-visual visual-${club.visual}"><span class="club-status ${statusClass}">${statusText}</span><span class="club-symbol">${club.emoji}</span></div>
+    <div class="club-visual visual-${club.visual}"><span class="club-status ${LOP_TRANG_THAI_LOP[trangThai.ma] ?? ""}">${escapeHtml(trangThai.nhan)}</span><span class="club-symbol">${club.emoji}</span></div>
     <div class="club-body">
-      <span class="category">${club.category}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</span><h3>${escapeHtml(club.name)}</h3>
-      <div class="club-meta"><span>${icon("clock")}${club.schedule}</span><span>${icon("pin")}${club.room} · ${club.teacher}</span></div>
+      <span class="category">${escapeHtml(club.category)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</span><h3>${escapeHtml(club.name)}</h3>
+      ${club.description ? `<p class="club-desc">${escapeHtml(club.description)}</p>` : ""}
+      <div class="club-meta"><span>${icon("clock")}${escapeHtml(club.schedule)}${club.soBuoi ? ` · ${club.soBuoi} buổi` : ""}</span><span>${icon("pin")}${escapeHtml(club.room)} · ${escapeHtml(club.teacher)}</span></div>
       ${canhBao ? `<p class="club-conflict">${icon("clock")}${escapeHtml(canhBao.nhan)}</p>` : ""}
-      <div class="capacity"><div class="capacity-head"><span>Sĩ số đã đóng phí</span><strong>${club.enrolled}/${club.capacity}</strong></div><div class="capacity-track ${statusClass}"><span style="width:${ratio}%"></span></div>${dangCho > 0 ? `<p class="capacity-pending">${dangCho} đơn đã đăng ký nhưng chưa giữ chỗ · chỗ chỉ được giữ khi đã đóng phí</p>` : ""}</div>
-      <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>/ học kỳ</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${inCart || canhBao ? "disabled" : ""}>${inCart ? "Đã chọn" : canhBao ? canhBao.nut : left <= 0 ? "Vào DS chờ" : "Chọn"}</button></div></div>
+      <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>học phí</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${khoaNut ? "disabled" : ""}>${nhanNut}</button></div></div>
     </div>
   </article>`;
 }
@@ -895,29 +959,6 @@ function sapXepClbTheoTen(clubs) {
     || String(a.code || "").localeCompare(String(b.code || "")));
 }
 
-/**
- * Các em đang có đơn hiệu lực ở từ HAI ca trở lên của cùng một CLB (so theo tên) trong
- * cùng một đợt.
- *
- * Gộp CLB chỉ chặn đơn MỚI. Đơn trùng có từ trước khi gộp vẫn nằm nguyên, và gộp xong
- * thì cảnh báo trùng tên biến mất — nếu không có danh sách này thì không màn hình nào
- * còn nói ra chuyện một em đang bị thu hai lần học phí.
- */
-function donTrungClb() {
-  const caTheoId = new Map((state.catalog?.classes || []).map((row) => [row.id, row]));
-  const clbTheoId = new Map((state.catalog?.clubs || []).map((club) => [club.id, club]));
-  const nhom = new Map();
-  for (const don of adminApplications || []) {
-    if (!ACTIVE_REGISTRATION_STATUSES.includes(don.status)) continue;
-    const ca = caTheoId.get(don.classId);
-    const clb = ca && clbTheoId.get(ca.clubId);
-    if (!clb) continue;
-    const khoa = `${don.studentId}|${ca.periodId}|${khoaTenClb(clb.name)}`;
-    if (!nhom.has(khoa)) nhom.set(khoa, { hocSinh: don.student || don.studentId, tenClb: clb.name, don: [] });
-    nhom.get(khoa).don.push(don);
-  }
-  return [...nhom.values()].filter((item) => item.don.length > 1);
-}
 
 function currentCatalogPeriod() {
   return state.catalog?.periods.find((period) => period.id === state.catalogPeriodId) || null;
@@ -1126,7 +1167,6 @@ function renderClasses() {
       </div></div>
       ${state.importDraft ? renderCatalogImport() : ""}
       ${renderCanhBaoClbTrungTen()}
-      ${renderCanhBaoDonTrungClb()}
       ${period ? "" : '<div class="inline-alert">Hãy tạo một đợt đăng ký trước khi khai báo CLB và lớp.</div>'}
       ${clubBlocks || (period ? '<div class="empty-state"><h3>Đợt này chưa có lớp nào</h3><p>Tạo CLB rồi thêm ca học, hoặc nhập hàng loạt từ file Excel.</p></div>' : "")}
       ${orphanClubs.length ? `<div class="info-note"><strong>${orphanClubs.length} CLB chưa có lớp trong đợt này:</strong> ${orphanClubs.map((club) => {
@@ -1141,9 +1181,9 @@ function renderClasses() {
 /**
  * Cảnh báo đầu trang khi có CLB trùng tên, kèm đúng các bước gộp bằng tay.
  *
- * Nói rõ HẬU QUẢ chứ không chỉ nói "trùng tên": không ai bỏ công gộp dữ liệu vì một
- * cảnh báo mơ hồ, nhưng người ta sẽ làm khi biết một em đang có thể đóng hai lần
- * học phí cho cùng một CLB.
+ * Từ khi cho một em học nhiều lớp của cùng CLB (yêu cầu giáo vụ 11/09/2026), gộp không
+ * còn để chặn đăng ký trùng; nó để một CLB là MỘT bản ghi nhiều lớp — phụ huynh thấy
+ * một CLB, và danh sách lớp, báo cáo gom đúng theo CLB.
  */
 function renderCanhBaoClbTrungTen() {
   const nhom = [...clbTrungTen().values()];
@@ -1151,7 +1191,7 @@ function renderCanhBaoClbTrungTen() {
   return `<div class="inline-alert clb-trung-ten-khoi">
     <strong>${nhom.length} tên CLB đang bị trùng</strong> (${nhom.reduce((tong, ds) => tong + ds.length, 0)} bản ghi):
     ${nhom.map((ds) => `<b>${escapeHtml(ds[0].name)}</b> × ${ds.length}`).join(" · ")}.
-    <p style="margin:6px 0 0">Luật <b>"mỗi em chỉ một lớp của một CLB"</b> so theo mã CLB, nên KHÔNG chặn được giữa các CLB trùng tên — một em có thể đăng ký hai lớp và đóng hai lần học phí. Để gộp:</p>
+    <p style="margin:6px 0 0">Mỗi CLB nên là <b>một</b> bản ghi có nhiều lớp: phụ huynh thấy một CLB thay vì nhiều CLB giống hệt tên, và danh sách lớp, báo cáo gom đúng theo CLB. Để gộp:</p>
     <ol style="margin:6px 0 0;padding-left:18px">
       <li>Chọn MỘT CLB giữ lại trong mỗi nhóm (xem mã ở dòng xám dưới tên CLB).</li>
       <li>Ở từng ca của các CLB còn lại, bấm <b>Sửa</b> → đổi ô <b>Thuộc CLB</b> sang CLB giữ lại → Lưu. Đơn đăng ký đi theo ca, không mất; khối của ca được giữ nguyên như trước khi chuyển. Làm ở <b>mọi đợt</b> có ca của CLB đó (đổi đợt ở ô chọn đợt).</li>
@@ -1161,15 +1201,6 @@ function renderCanhBaoClbTrungTen() {
   </div>`;
 }
 
-function renderCanhBaoDonTrungClb() {
-  const ds = donTrungClb();
-  if (!ds.length) return "";
-  return `<div class="inline-alert clb-trung-ten-khoi">
-    <strong>${ds.length} em đang có đơn ở hai ca của cùng một CLB</strong> — có thể đang bị thu học phí hai lần. Gộp CLB không tự xử lý các đơn này: người có quyền duyệt đơn cần liên hệ gia đình rồi huỷ đơn thừa ở màn <b>Đơn đăng ký</b>.
-    <ul style="margin:6px 0 0;padding-left:18px">${ds.slice(0, 20).map((item) => `<li>${escapeHtml(item.hocSinh)} · ${escapeHtml(item.tenClb)}: ${item.don.map((don) => `${escapeHtml(don.id)} (${escapeHtml(statusBadge(don.status)[0])})`).join(", ")}</li>`).join("")}</ul>
-    ${ds.length > 20 ? `<p style="margin:6px 0 0">… và ${ds.length - 20} em khác.</p>` : ""}
-  </div>`;
-}
 
 /**
  * Nhãn "Trùng tên với ..." trên khối của một CLB. CLB đã ẩn VÀ hết ca thì không gắn:
@@ -1190,18 +1221,17 @@ function renderCatalogClubBlock(club, classes) {
     .slice()
     .sort((left, right) => left.sortOrder - right.sortOrder || left.dayOfWeek - right.dayOfWeek || left.startTime.localeCompare(right.startTime))
     .map((row) => {
-      const left = row.capacity - row.enrolled;
+      // Cùng một trạng thái phụ huynh đang thấy, để giáo vụ biết phụ huynh đang thấy gì.
+      const mauTrangThai = { "con-nhan": "green", "sap-du": "gold", "da-du": "red", "dung-tuyen": "purple" };
       const badge = !row.active ? ["Đang ẩn", "red"]
-        : left <= 0 ? ["Đã đầy", "red"]
-        : left <= 3 ? [`Còn ${left} chỗ`, "gold"]
-        : [`Còn ${left} chỗ`, "green"];
+        : [row.trangThaiLop?.nhan || "", mauTrangThai[row.trangThaiLop?.ma] || "blue"];
       const grades = row.grades?.length ? row.grades : club.grades;
       return `<tr>
         <td><strong>${escapeHtml(row.name || "Ca chính")}</strong><br><span style="color:var(--muted)">Khối ${grades.join(", ")}</span></td>
         <td>${escapeHtml(row.scheduleLabel)}</td>
         <td>${escapeHtml(row.room)}<br><span style="color:var(--muted)">${escapeHtml(row.teacher)}</span></td>
         <td>${row.enrolled}/${row.capacity}${row.pendingRegistrations ? `<br><span style="color:var(--muted)">+${row.pendingRegistrations} đơn chưa giữ chỗ</span>` : ""}${row.minCapacity ? `<br><span style="color:var(--muted)">tối thiểu ${row.minCapacity}</span>` : ""}</td>
-        <td>${formatMoney(row.fee)}</td>
+        <td>${formatMoney(row.fee + (row.hocLieu || 0))}${row.hocLieu ? `<br><span style="color:var(--muted)">gồm học liệu ${formatMoney(row.hocLieu)}</span>` : ""}${row.soBuoi ? `<br><span style="color:var(--muted)">${row.soBuoi} buổi</span>` : ""}</td>
         <td><span class="badge badge-${badge[1]}">${badge[0]}</span></td>
         <td>
           <button class="table-action" data-edit-class="${escapeHtml(row.id)}">Sửa</button>
@@ -1275,7 +1305,8 @@ function classFormMarkup(clubClass, clubId) {
   const club = state.catalog.clubs.find((item) => item.id === (clubClass?.clubId || clubId));
   const value = {
     name: "", dayOfWeek: 2, startTime: "16:15", endTime: "17:30", room: "", teacher: "",
-    capacity: 20, minCapacity: 0, enrolledBase: 0, fee: 0, grades: [], waitlistEnabled: true, sortOrder: 0, active: true,
+    capacity: 20, minCapacity: 0, enrolledBase: 0, fee: 0, hocLieu: 0, soBuoi: 0, nguongSapDu: 3, dangTuyen: true,
+    grades: [], waitlistEnabled: true, sortOrder: 0, active: true,
     ...(clubClass || {}),
   };
   const clubOptions = sapXepClbTheoTen(state.catalog.clubs)
@@ -1298,8 +1329,12 @@ function classFormMarkup(clubClass, clubId) {
       <label class="form-field"><span>Sĩ số tối đa</span><input type="number" name="capacity" min="1" max="500" value="${value.capacity}" required /></label>
       <label class="form-field"><span>Sĩ số tối thiểu</span><input type="number" name="minCapacity" min="0" max="500" value="${value.minCapacity}" /></label>
       <label class="form-field"><span>Học phí (đồng)</span><input name="fee" value="${value.fee}" required /></label>
+      <label class="form-field"><span>Học liệu (đồng)</span><input name="hocLieu" value="${value.hocLieu}" /><small class="field-hint">Phụ huynh thấy học phí tổng = học phí + học liệu.</small></label>
+      <label class="form-field"><span>Số buổi học</span><input type="number" name="soBuoi" min="0" max="500" value="${value.soBuoi}" /></label>
+      <label class="form-field"><span>Báo "Sắp đủ" khi còn</span><input type="number" name="nguongSapDu" min="0" max="500" value="${value.nguongSapDu}" /><small class="field-hint">chỗ trở xuống. Phụ huynh chỉ thấy trạng thái, không thấy số chỗ.</small></label>
       <label class="form-field"><span>Ghi danh sẵn ngoài hệ thống</span><input type="number" name="enrolledBase" min="0" max="500" value="${value.enrolledBase}" /></label>
       <div class="form-field form-span-2"><span>Khối riêng cho ca này (bỏ trống = theo CLB: khối ${club?.grades.join(", ") || "—"})</span>${gradeChips(value.grades)}</div>
+      <label class="confirm-row form-span-2"><input type="checkbox" name="dangTuyen" ${value.dangTuyen !== false ? "checked" : ""} /><span>Đang tuyển sinh — bỏ tích thì phụ huynh vẫn thấy lớp với nhãn "Dừng tuyển" nhưng không đăng ký được</span></label>
       <label class="confirm-row form-span-2"><input type="checkbox" name="waitlistEnabled" ${value.waitlistEnabled ? "checked" : ""} /><span>Nhận danh sách chờ khi hết chỗ</span></label>
       <label class="confirm-row form-span-2"><input type="checkbox" name="active" ${value.active ? "checked" : ""} /><span>Mở ca này cho phụ huynh đăng ký</span></label>
     </form><div id="form-error" class="form-error" role="alert"></div></div>
@@ -1324,6 +1359,9 @@ function openClassForm(classId, clubId = null) {
           capacity: Number(form.capacity),
           minCapacity: Number(form.minCapacity || 0),
           enrolledBase: Number(form.enrolledBase || 0),
+          soBuoi: Number(form.soBuoi || 0),
+          nguongSapDu: Number(form.nguongSapDu ?? 3),
+          dangTuyen: Boolean(form.dangTuyen),
         }),
       });
       await refreshCatalog();
@@ -2318,8 +2356,6 @@ const KET_CUC_XEP_LOP = {
   hocSinhNghiHoc: ["Học sinh đã nghỉ", "red"],
   trungGio: ["Trùng giờ với đơn cũ", "gold"],
   trungGioTrongFile: ["Trùng giờ với dòng khác trong file", "gold"],
-  trungClb: ["Đã học ca khác của CLB này", "gold"],
-  trungClbTrongFile: ["Hai ca của cùng một CLB trong file", "gold"],
   saiKhoi: ["Sai khối", "gold"],
   khongCoCaHopKhoi: ["Không có ca cho khối của em", "gold"],
   nhieuCaHopKhoi: ["Nhiều ca hợp khối — chưa rõ buổi", "gold"],
@@ -3152,29 +3188,24 @@ function flowNodes(nodes) {
 function addToCart(clubId) {
   if (state.cart.includes(clubId)) return;
   const target = clubs.find(c => c.id === clubId);
-  // Ba chuyện khác nhau, ba câu báo khác nhau: đã đăng ký đúng ca này, đã đăng ký
-  // một ca khác của cùng CLB, và trùng khoảng giờ với một CLB khác hẳn.
+  // Đã đăng ký đúng lớp này thì báo; trùng giờ thì hỏi có đổi sang lớp này không.
   const daGui = donDaGuiCuaCon();
   if (daGui.some((don) => don.id === target.id)) {
     toast(`“${target.name}” đã có trong đăng ký hiện tại.`, "error");
     return;
   }
-  if (daGui.some((don) => don.clubId && don.clubId === target.clubId)) {
-    toast(`Con đã đăng ký một ca khác của “${target.name}”.`, "error");
+  const khongChon = lyDoKhongChonDuoc(target);
+  if (khongChon) {
+    toast(khongChon, "error");
     return;
   }
   const vuongGio = findScheduleConflict(target);
   if (vuongGio) {
-    toast(conflictMessage(target, vuongGio.doiThu, { daDangKy: vuongGio.daDangKy }), "error");
-    return;
-  }
-  const sameClubInCart = state.cart.map((id) => clubs.find((club) => club.id === id)).find((club) => club && club.clubId === target.clubId);
-  if (sameClubInCart) {
-    toast(`Bạn đã chọn một ca khác của “${target.name}”. Vui lòng chỉ giữ một ca.`, "error");
+    hoiDoiLop(target, vuongGio);
     return;
   }
   state.cart.push(clubId);
-  toast(target.enrolled >= target.capacity ? "Đã thêm vào danh sách chờ." : "Đã thêm CLB vào giỏ đăng ký.", "success");
+  toast(target.trangThaiLop?.ma === "da-du" ? "Đã thêm vào danh sách chờ." : "Đã thêm CLB vào giỏ đăng ký.", "success");
   renderApp();
   openCart();
 }
@@ -3186,9 +3217,9 @@ function renderCart() {
     $("#cart-body").innerHTML = `<div class="empty-state"><div class="empty-icon">${icon("cart")}</div><h3>Giỏ đăng ký đang trống</h3><p>Chọn một hoặc nhiều CLB phù hợp với ${student().name}.</p><button class="button button-primary" data-drawer-go-clubs>Khám phá CLB</button></div>`;
     $("#cart-footer").innerHTML = "";
   } else {
-    $("#cart-body").innerHTML = `<div class="inline-alert">${icon("spark")}<span>Hệ thống đã kiểm tra khối/lứa tuổi. Trùng lịch và quota sẽ được kiểm tra lại khi gửi.</span></div>${items.map(club => `<div class="cart-item"><span class="cart-emoji">${club.emoji}</span><div class="cart-copy"><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.schedule}<br>${club.room}</p><strong>${club.enrolled >= club.capacity ? "Danh sách chờ" : formatMoney(club.fee)}</strong></div><button class="remove-item" data-remove="${club.id}" aria-label="Xóa">${icon("x")}</button></div>`).join("")}`;
-    const total = items.filter(c => c.enrolled < c.capacity).reduce((sum,c)=>sum+c.fee,0);
-    $("#cart-footer").innerHTML = `<div class="summary-lines"><div class="summary-line"><span>Học sinh</span><strong>${student().name}</strong></div><div class="summary-line"><span>${items.length} lựa chọn</span><strong>${items.some(c=>c.enrolled>=c.capacity)?"Có DS chờ":"Hợp lệ"}</strong></div><div class="summary-line total"><span>Phí dự kiến</span><strong>${formatMoney(total)}</strong></div></div><label class="confirm-row"><input id="terms-check" type="checkbox" /><span>Tôi đã kiểm tra lịch học, mức phí và đồng ý với quy định đổi/hủy của nhà trường.</span></label><button id="submit-cart" class="button button-primary" disabled>${icon("check")} Xác nhận và gửi đăng ký</button>`;
+    $("#cart-body").innerHTML = `<div class="inline-alert">${icon("spark")}<span>Hệ thống đã kiểm tra khối/lứa tuổi. Trùng lịch và quota sẽ được kiểm tra lại khi gửi.</span></div>${items.map(club => `<div class="cart-item"><span class="cart-emoji">${club.emoji}</span><div class="cart-copy"><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.schedule}<br>${club.room}</p><strong>${club.trangThaiLop?.ma === "da-du" ? "Danh sách chờ" : formatMoney(club.fee)}</strong></div><button class="remove-item" data-remove="${club.id}" aria-label="Xóa">${icon("x")}</button></div>`).join("")}`;
+    const total = items.filter(c => c.trangThaiLop?.ma !== "da-du").reduce((sum,c)=>sum+c.fee,0);
+    $("#cart-footer").innerHTML = `<div class="summary-lines"><div class="summary-line"><span>Học sinh</span><strong>${student().name}</strong></div><div class="summary-line"><span>${items.length} lựa chọn</span><strong>${items.some(c=>c.trangThaiLop?.ma === "da-du")?"Có DS chờ":"Hợp lệ"}</strong></div><div class="summary-line total"><span>Phí dự kiến</span><strong>${formatMoney(total)}</strong></div></div><label class="confirm-row"><input id="terms-check" type="checkbox" /><span>Tôi đã kiểm tra lịch học, mức phí và đồng ý với quy định đổi/hủy của nhà trường.</span></label><button id="submit-cart" class="button button-primary" disabled>${icon("check")} Xác nhận và gửi đăng ký</button>`;
   }
   bindDrawerEvents();
 }
@@ -3198,8 +3229,9 @@ function closeCart() { $("#cart-drawer").classList.remove("open"); $("#drawer-ov
 
 function showDetail(clubId) {
   const club = clubs.find(c => c.id === clubId);
-  const left = club.capacity - club.enrolled;
-  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${club.description}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${club.schedule}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${club.room}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${club.teacher}</strong></div><div class="detail-cell"><span>Sĩ số đã đóng phí</span><strong>${left > 0 ? `Còn ${left}/${club.capacity} chỗ` : "Đã đầy · nhận DS chờ"}</strong>${club.pending ? `<small style="display:block;color:var(--muted)">${club.pending} đơn đã đăng ký nhưng chưa giữ chỗ</small>` : ""}</div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)} / học kỳ</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id)?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":left<=0?"Vào DS chờ":"Chọn CLB"}</button></div>`);
+  const trangThai = club.trangThaiLop || { ma: "con-nhan", nhan: "Còn nhận" };
+  const khongChon = lyDoKhongChonDuoc(club);
+  showModal(`<div class="modal-head"><div><span class="eyebrow">${club.category}</span><h2>Chi tiết câu lạc bộ</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div><div class="modal-body"><div class="detail-hero"><span>${club.emoji}</span><div><h3>${escapeHtml(club.name)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</h3><p>${escapeHtml(club.description)}</p></div></div><div class="detail-grid"><div class="detail-cell"><span>Lịch học</span><strong>${escapeHtml(club.schedule)}</strong></div><div class="detail-cell"><span>Địa điểm</span><strong>${escapeHtml(club.room)}</strong></div><div class="detail-cell"><span>Giáo viên</span><strong>${escapeHtml(club.teacher)}</strong></div><div class="detail-cell"><span>Trạng thái lớp</span><strong>${escapeHtml(trangThai.nhan)}</strong></div><div class="detail-cell"><span>Khối áp dụng</span><strong>${club.grade.join(", ")}</strong></div><div class="detail-cell"><span>Học phí</span><strong>${formatMoney(club.fee)}${club.soBuoi ? ` · ${club.soBuoi} buổi` : ""}</strong></div></div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-modal-add="${club.id}" ${state.cart.includes(club.id) || khongChon ?"disabled":""}>${state.cart.includes(club.id)?"Đã chọn":trangThai.ma === "dung-tuyen"?"Dừng tuyển":trangThai.ma === "da-du"?(club.waitlistEnabled?"Vào DS chờ":"Đã đủ"):"Chọn CLB"}</button></div>`);
 }
 
 function showModal(content, { wide = false } = {}) {

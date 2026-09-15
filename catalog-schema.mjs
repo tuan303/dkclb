@@ -146,6 +146,21 @@ export function slugCode(name, prefix = "CLB") {
   return slug ? `${prefix}-${slug}` : "";
 }
 
+/**
+ * Trạng thái lớp phụ huynh được thấy — thay cho sĩ số và số chỗ còn lại (yêu cầu giáo
+ * vụ 11/09/2026: không cho phụ huynh thấy sĩ số, chỉ thấy trạng thái lớp).
+ *
+ * "Sắp đủ" tính cả đơn đã đăng ký mà CHƯA đóng phí: chỗ chỉ giữ khi đóng phí, nên một
+ * lớp còn 10 chỗ mà có 12 gia đình đang chờ đóng phí thì nói "Còn nhận" là nói sai.
+ */
+export function trangThaiLop({ capacity, enrolled, pending = 0, waitlistEnabled = true, dangTuyen = true, nguongSapDu = 3 }) {
+  if (dangTuyen === false) return { ma: "dung-tuyen", nhan: "Dừng tuyển" };
+  const conLai = Number(capacity) - Number(enrolled);
+  if (conLai <= 0) return waitlistEnabled ? { ma: "da-du", nhan: "Đã đủ – nhận DS chờ" } : { ma: "da-du", nhan: "Đã đủ" };
+  if (conLai <= Number(nguongSapDu) || Number(enrolled) + Number(pending) >= Number(capacity)) return { ma: "sap-du", nhan: "Sắp đủ" };
+  return { ma: "con-nhan", nhan: "Còn nhận" };
+}
+
 export function normalizePeriodInput(input = {}, { existing = null } = {}) {
   const status = text(input.status ?? existing?.status ?? "draft").toLowerCase();
   if (!PERIOD_STATUSES.includes(status)) throw invalid("PERIOD_STATUS_INVALID", "Trạng thái đợt đăng ký không hợp lệ.", "status");
@@ -213,6 +228,13 @@ export function normalizeClassInput(input = {}, { existing = null, knownPeriodId
     minCapacity,
     enrolledBase,
     fee: requireInteger(parseMoney(input.fee ?? existing?.fee) ?? 0, "fee", "học phí", { min: 0, max: 500_000_000 }),
+    // Học liệu tách riêng khỏi học phí (yêu cầu giáo vụ 11/09/2026); phụ huynh chỉ thấy tổng.
+    hocLieu: requireInteger(parseMoney(input.hocLieu ?? existing?.hocLieu) ?? 0, "hocLieu", "học liệu", { min: 0, max: 500_000_000 }),
+    soBuoi: requireInteger(parseMoney(input.soBuoi ?? existing?.soBuoi) ?? 0, "soBuoi", "số buổi", { min: 0, max: 500 }),
+    // Dừng tuyển khác Ngừng mở: lớp vẫn hiện cho phụ huynh với nhãn "Dừng tuyển", chỉ
+    // không nhận đơn mới; ngừng mở là ẩn hẳn lớp.
+    dangTuyen: input.dangTuyen === undefined ? existing?.dangTuyen !== false : Boolean(input.dangTuyen),
+    nguongSapDu: requireInteger(parseMoney(input.nguongSapDu ?? existing?.nguongSapDu) ?? 3, "nguongSapDu", "ngưỡng báo sắp đủ", { min: 0, max: 500 }),
     waitlistEnabled: input.waitlistEnabled === undefined ? existing?.waitlistEnabled !== false : Boolean(input.waitlistEnabled),
     sortOrder: requireInteger(input.sortOrder ?? existing?.sortOrder ?? 0, "sortOrder", "thứ tự hiển thị", { min: 0, max: 9999 }),
     active: input.active === undefined ? existing?.active !== false : Boolean(input.active),

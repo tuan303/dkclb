@@ -392,9 +392,8 @@ test("một em tick HAI CLB TRÙNG GIỜ trong cùng file thì chỉ xếp đư�
   assert.match(xem.rows[1].lyDo, /ở dòng 2 trong chính file này/);
 });
 
-test("hai ca khác nhau của CÙNG một CLB thì chỉ xếp được một", async () => {
-  // Cổng phụ huynh chặn đúng việc này ("Học sinh đã đăng ký một lớp khác của ..."),
-  // đường nhập trước đây thì không — em bị tính học hai ca và hai lần học phí.
+test("hai ca khác nhau của CÙNG một CLB thì xếp được cả hai, giống cổng phụ huynh", async () => {
+  // Yêu cầu giáo vụ 11/09/2026: một em được học nhiều lớp của cùng CLB vì khác ngày.
   const painting = await caPainting();
   const them = await server.request("/api/admin/classes", quanTri, {
     method: "POST",
@@ -412,9 +411,7 @@ test("hai ca khác nhau của CÙNG một CLB thì chỉ xếp được một", 
     files: [fileForm(["NSHM260311", "Mỹ thuật A"], ["NSHM260311", "Mỹ thuật B"])],
     mapping: { "my thuat a": "painting", "my thuat b": caMoi.id },
   })).json()).preview;
-  assert.equal(xem.dem.xepDuoc, 1);
-  assert.equal(xem.dem.trungClbTrongFile, 1);
-  assert.match(xem.rows[1].lyDo, /một ca khác của Mỹ thuật sáng tạo/);
+  assert.equal(xem.dem.xepDuoc, 2, JSON.stringify(xem.rows.map((row) => row.lyDo)));
 
   // Dọn lại: để ca thứ hai tồn tại thì mọi bài sau gõ "Mỹ thuật sáng tạo" đều rơi
   // vào "chưa ghép ca" — đúng hành vi mới, nhưng che mất thứ những bài đó muốn đo.
@@ -798,25 +795,25 @@ test("CLB trùng tên CHƯA gộp vẫn chọn được ca theo khối, không b
   }
 });
 
-test("CLB trùng tên CHƯA gộp: một em không lọt vào hai bản ghi, trong file cũng như với đơn đã có", async () => {
-  // Đã đo trước khi sửa: hai dòng "Võ - Thứ 3" và "VÕ - Thứ 5" của cùng một em đều xếp
-  // được vào hai bản ghi trùng tên — hai đơn đang học, hai lần thu phí. Luật một-CLB
-  // của đường nhập khi đó so theo mã CLB.
-  const a = await taoClbNhieuCa("VO-TRUNG-A", "Võ trùng tên", [["VTT Thứ 3", 2, [4]]]);
-  const b = await taoClbNhieuCa("VO-TRUNG-B", "VÕ TRÙNG TÊN", [["VTT Thứ 5", 4, [4]]]);
+test("CLB trùng tên CHƯA gộp: một em xếp được hai lớp khác ngày, và đơn cũ ở lớp kia không cản", async () => {
+  // Yêu cầu giáo vụ 11/09/2026: nhiều lớp của cùng CLB là hợp lệ, kể cả khi hai lớp
+  // nằm ở hai bản ghi CLB trùng tên chưa gộp. Dùng em khối 5 (NSHM260522): em khối 4
+  // ở các bài trước đã đủ hạn mức 3 CLB của đợt.
+  const a = await taoClbNhieuCa("VO-TRUNG-A", "Võ trùng tên", [["VTT Thứ 3", 2, [5]]]);
+  const b = await taoClbNhieuCa("VO-TRUNG-B", "VÕ TRÙNG TÊN", [["VTT Thứ 5", 4, [5]]]);
   try {
     const trongFile = await xemTruoc({ files: [fileForm(
-      ["NSHM260411", "Võ trùng tên - Thứ 3"], ["NSHM260411", "VÕ TRÙNG TÊN - Thứ 5"],
+      ["NSHM260522", "Võ trùng tên - Thứ 3"], ["NSHM260522", "VÕ TRÙNG TÊN - Thứ 5"],
     )] });
     assert.equal(trongFile.rows[0].ketCuc, "xepDuoc", trongFile.rows[0].lyDo);
-    assert.equal(trongFile.rows[1].ketCuc, "trungClbTrongFile", trongFile.rows[1].lyDo);
+    assert.equal(trongFile.rows[1].ketCuc, "xepDuoc", trongFile.rows[1].lyDo);
 
     const ghi = await goiNhap("commit", {
-      files: [fileForm(["NSHM260411", "Võ trùng tên - Thứ 3"])], confirmation: "NHAP_DANG_KY_HANG_LOAT",
+      files: [fileForm(["NSHM260522", "Võ trùng tên - Thứ 3"])], confirmation: "NHAP_DANG_KY_HANG_LOAT",
     });
     assert.equal(ghi.status, 200, await ghi.text());
-    const voiDonCu = await xemTruoc({ files: [fileForm(["NSHM260411", "Võ trùng tên - Thứ 5"])] });
-    assert.equal(voiDonCu.rows[0].ketCuc, "trungClb", voiDonCu.rows[0].lyDo);
+    const voiDonCu = await xemTruoc({ files: [fileForm(["NSHM260522", "Võ trùng tên - Thứ 5"])] });
+    assert.equal(voiDonCu.rows[0].ketCuc, "xepDuoc", voiDonCu.rows[0].lyDo);
   } finally {
     await tatCa([...a.ids, ...b.ids]);
   }

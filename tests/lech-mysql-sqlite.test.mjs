@@ -50,6 +50,9 @@ const THIEU_O_FIRESTORE_DA_BIET = [
   // thì chạy MySQL. Viết bản Firestore là viết cho một nền không ai dùng — nhưng
   // server.mjs phải nói rõ khi gặp nền thiếu, xem kiemNenHoTroNhapHangLoat.
   "listAllStudents", "listAllParentLinks", "nhapDangKyHangLoat",
+  // Phụ huynh đổi lớp khi trùng lịch (yêu cầu giáo vụ 11/09/2026): cùng lý do — nhà
+  // trường chạy MySQL; server.mjs trả 501 rõ ràng khi nền không có phương thức này.
+  "doiLopPhuHuynh",
 ].sort();
 
 test("khoảng lệch giữa hai kho dữ liệu không được rộng thêm", () => {

@@ -74,6 +74,10 @@ function normalizeCatalogRow(club, clubClass) {
     minCapacity: Number(clubClass.minCapacity || 0),
     enrolledBase: Number(clubClass.enrolledBase || 0),
     fee: Number(clubClass.fee || 0),
+    hocLieu: Number(clubClass.hocLieu || 0),
+    soBuoi: Number(clubClass.soBuoi || 0),
+    dangTuyen: clubClass.dangTuyen !== false,
+    nguongSapDu: clubClass.nguongSapDu === undefined ? 3 : Number(clubClass.nguongSapDu),
     waitlistEnabled: clubClass.waitlistEnabled !== false,
     active: clubClass.active !== false,
   };

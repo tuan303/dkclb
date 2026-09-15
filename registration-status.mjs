@@ -31,7 +31,13 @@ export const STATUS = {
   khongKhaiGiang: "khong_khai_giang",
   lopHuy: "cancelled",
   hoanPhi: "hoan_phi",
+  // Phụ huynh tự đổi sang lớp khác khi lớp cũ trùng lịch và CHƯA đóng phí (yêu cầu
+  // giáo vụ 11/09/2026). Chỉ hệ thống đặt, giáo vụ không đặt tay.
+  daDoiLop: "doi_lop",
 };
+
+/** Đơn phụ huynh còn tự đổi lớp được: chưa đóng phí, chưa giữ chỗ. */
+export const DOI_LOP_DUOC = [STATUS.dangKy, STATUS.xepCho, STATUS.choThanhToan];
 
 /** Thứ tự hiện trong ô chọn: sáu bước vòng đời trước, bốn ngoại lệ sau. */
 export const LIFECYCLE_STATUSES = [
@@ -58,6 +64,7 @@ export const STATUS_LABELS = {
   [STATUS.khongKhaiGiang]: ["Không khai giảng", "red"],
   [STATUS.lopHuy]: ["Lớp hủy", "red"],
   [STATUS.hoanPhi]: ["Hoàn phí", "red"],
+  [STATUS.daDoiLop]: ["Đã đổi lớp", "blue"],
   // Hai nhãn cũ: không còn được cấp cho đơn mới, nhưng dữ liệu cũ và dữ liệu minh
   // họa vẫn còn mang chúng. Bỏ đi là giao diện vỡ khi gặp một đơn cũ.
   draft: ["Bản nháp", "blue"],
@@ -87,8 +94,9 @@ export const SEAT_HOLDING_STATUSES = [
  * Đây là danh sách KHÁC HẲN danh sách trên, dù trước đây cả hai dùng chung một
  * hằng. Nó trả lời câu hỏi khác: không phải "chỗ đã có chủ chưa" mà "em này đã
  * đăng ký cái đó chưa". Dùng để chặn ba thứ:
- *   - đăng ký trùng lớp, hoặc trùng CLB ở một ca khác
- *   - đăng ký hai CLB trùng khung giờ
+ *   - đăng ký trùng đúng một lớp (nhiều lớp của cùng CLB thì được — yêu cầu giáo
+ *     vụ 11/09/2026, vì các lớp khác ngày học)
+ *   - đăng ký hai lớp trùng khung giờ
  *   - vượt giới hạn số CLB mỗi học sinh trong một đợt
  *
  * PHẢI RỘNG HƠN danh sách giữ chỗ, và đặc biệt phải chứa CHỜ THANH TOÁN. Đã dựng

@@ -17,7 +17,7 @@ import { toErrorResponse } from "./error-reporting.mjs";
 import { loadMasterKey } from "./field-crypto.mjs";
 import { formatActivationCode, generateActivationCode, normalizeActivationCode } from "./activation-code.mjs";
 import { isUnchanged } from "./record-diff.mjs";
-import { ACTIVE_REGISTRATION_STATUSES, ASSIGNABLE_STATUSES, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, holdsSeat, statusLabel } from "./registration-status.mjs";
+import { ACTIVE_REGISTRATION_STATUSES, ASSIGNABLE_STATUSES, DOI_LOP_DUOC, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, holdsSeat, statusLabel } from "./registration-status.mjs";
 import { conflictMessage, intervalsOverlap } from "./schedule-conflict.mjs";
 import { IMPORT_MODES, buildExcelDirectory } from "./directory-excel.mjs";
 import {
@@ -35,6 +35,7 @@ import {
 import {
   DAY_LABELS,
   MAX_IMPORT_ROWS,
+  trangThaiLop,
   analyzeCatalogImport,
   detectCatalogMapping,
   normalizeClassInput,
@@ -359,6 +360,10 @@ function initializeDatabase() {
       capacity INTEGER NOT NULL,
       enrolled_base INTEGER NOT NULL DEFAULT 0,
       fee INTEGER NOT NULL,
+      hoc_lieu INTEGER NOT NULL DEFAULT 0,
+      so_buoi INTEGER NOT NULL DEFAULT 0,
+      dang_tuyen INTEGER NOT NULL DEFAULT 1,
+      nguong_sap_du INTEGER NOT NULL DEFAULT 3,
       waitlist_enabled INTEGER NOT NULL DEFAULT 1,
       active INTEGER NOT NULL DEFAULT 1
     );
@@ -433,6 +438,10 @@ function initializeDatabase() {
   // chỉ được giữ lúc đóng phí, một đơn có thể vừa đã trả tiền vừa đang xếp chờ.
   ensureColumn("registrations", "fee_paid", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("club_classes", "grades_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn("club_classes", "hoc_lieu", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("club_classes", "so_buoi", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("club_classes", "dang_tuyen", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("club_classes", "nguong_sap_du", "INTEGER NOT NULL DEFAULT 3");
   ensureColumn("users", "activation_code", "TEXT");
   ensureColumn("users", "last_login_at", "TEXT");
   widenUserRoleConstraint();
@@ -712,7 +721,7 @@ async function clubRows(studentId, periodId = null) {
   const rows = businessStore ? await businessStore.listClubs() : db.prepare(`SELECT cc.id AS id, c.id AS club_id, c.code AS club_code, c.name, c.category,
       c.description, c.emoji, c.visual, c.grades_json, cc.grades_json AS class_grades_json, cc.name AS class_name, cc.period_id,
       cc.day_of_week, cc.start_time, cc.end_time, cc.schedule_label, cc.room, cc.teacher,
-      cc.capacity, cc.min_capacity, cc.enrolled_base, cc.fee, cc.waitlist_enabled
+      cc.capacity, cc.min_capacity, cc.enrolled_base, cc.fee, cc.hoc_lieu, cc.so_buoi, cc.dang_tuyen, cc.nguong_sap_du, cc.waitlist_enabled
     FROM clubs c JOIN club_classes cc ON cc.club_id = c.id
     WHERE c.active = 1 AND cc.active = 1
     ORDER BY c.sort_order, c.category, c.name, cc.sort_order, cc.day_of_week, cc.start_time`).all();
@@ -733,6 +742,15 @@ async function clubRows(studentId, periodId = null) {
     // Khối khai riêng cho từng ca được ưu tiên; không khai thì dùng khối chung của CLB.
     const grades = classGrades.length ? classGrades : clubGrades;
     const waitlist = row.waitlistEnabled ?? row.waitlist_enabled;
+    const dangTuyenRaw = row.dangTuyen ?? row.dang_tuyen;
+    const dangTuyen = dangTuyenRaw !== 0 && dangTuyenRaw !== false;
+    const fee = asInt(row.fee);
+    const hocLieu = asInt(row.hocLieu ?? row.hoc_lieu);
+    const capacity = asInt(row.capacity);
+    const enrolled = asInt(enrollmentCounts[row.id]?.enrolled ?? row.enrolledBase ?? row.enrolled_base);
+    const pending = asInt(enrollmentCounts[row.id]?.pending);
+    const nguongSapDuRaw = row.nguongSapDu ?? row.nguong_sap_du;
+    const nguongSapDu = nguongSapDuRaw === undefined || nguongSapDuRaw === null ? 3 : asInt(nguongSapDuRaw);
     return {
       id: row.id,
       clubId: row.clubId || row.club_id,
@@ -748,14 +766,19 @@ async function clubRows(studentId, periodId = null) {
       schedule: row.scheduleLabel || row.schedule_label,
       room: row.room,
       teacher: row.teacher,
-      capacity: asInt(row.capacity),
+      capacity,
       minCapacity: asInt(row.minCapacity ?? row.min_capacity),
-      enrolled: asInt(enrollmentCounts[row.id]?.enrolled ?? row.enrolledBase ?? row.enrolled_base),
-      // Số đơn đã đăng ký nhưng CHƯA đóng phí. Từ khi chỗ chỉ tính lúc đóng phí, giấu
-      // con số này đi tức là để phụ huynh chọn một lớp "còn 5 chỗ" trong khi 30 gia
-      // đình đang xếp trước — rồi đóng phí xong mới biết mình bị đẩy sang xếp chờ.
-      pending: asInt(enrollmentCounts[row.id]?.pending),
-      fee: asInt(row.fee),
+      enrolled,
+      // Số đơn đã đăng ký nhưng CHƯA đóng phí — chỉ để nhà trường xem và để tính trạng
+      // thái lớp; phụ huynh không nhận con số này (xem choPhuHuynhXem).
+      pending,
+      fee,
+      hocLieu,
+      phiTong: fee + hocLieu,
+      soBuoi: asInt(row.soBuoi ?? row.so_buoi),
+      dangTuyen,
+      nguongSapDu,
+      trangThaiLop: trangThaiLop({ capacity, enrolled, pending, waitlistEnabled: waitlist !== 0 && waitlist !== false, dangTuyen, nguongSapDu }),
       waitlistEnabled: waitlist !== 0 && waitlist !== false,
       eligible: student ? grades.includes(student.grade) : true,
       dayOfWeek: row.dayOfWeek ?? row.day_of_week,
@@ -765,14 +788,22 @@ async function clubRows(studentId, periodId = null) {
   });
 }
 
-async function validateRegistration(user, studentId, clubIds) {
+/**
+ * Bản ghi lớp gửi cho PHỤ HUYNH: bỏ sĩ số, số chỗ, số đơn đang chờ đóng phí và phần
+ * tách học phí / học liệu — chỉ còn trạng thái lớp và học phí tổng (yêu cầu giáo vụ
+ * 11/09/2026). Bỏ ngay ở máy chủ: chỉ ẩn trên giao diện thì mở công cụ trình duyệt
+ * vẫn đọc được con số.
+ */
+function choPhuHuynhXem(club) {
+  const { capacity, minCapacity, enrolled, pending, hocLieu, phiTong, nguongSapDu, ...conLai } = club;
+  return { ...conLai, fee: phiTong ?? club.fee };
+}
+
+async function validateRegistration(user, studentId, clubIds, { boQuaDonIds = [] } = {}) {
   if (!studentId || !Array.isArray(clubIds) || clubIds.length === 0) {
     throw httpError(400, "INVALID_REGISTRATION", "Vui lòng chọn học sinh và ít nhất một CLB.");
   }
   const period = await requireActivePeriod();
-  if (clubIds.length > period.maxClubsPerStudent) {
-    throw httpError(422, "MAX_CLUBS", `Mỗi học sinh được đăng ký tối đa ${period.maxClubsPerStudent} CLB trong đợt này.`);
-  }
   const ownership = businessStore ? await businessStore.parentOwnsStudent(user.id, studentId) : db.prepare(`SELECT s.* FROM students s JOIN parent_students ps ON ps.student_id = s.id
     WHERE ps.parent_user_id = ? AND s.id = ? AND s.status = 'active'`).get(user.id, studentId);
   if (!ownership) throw httpError(403, "STUDENT_SCOPE", "Học sinh không thuộc tài khoản phụ huynh hiện tại.");
@@ -784,7 +815,9 @@ async function validateRegistration(user, studentId, clubIds) {
   const issues = [];
   for (const club of selected) {
     if (!club.eligible) issues.push({ type: "ineligible", clubId: club.id, message: `${club.name} không áp dụng cho khối của học sinh.` });
-    if (club.enrolled >= club.capacity && !club.waitlistEnabled) {
+    if (club.dangTuyen === false) {
+      issues.push({ type: "dung-tuyen", clubId: club.id, message: `${club.name}${club.className ? ` · ${club.className}` : ""} đã dừng tuyển.` });
+    } else if (club.enrolled >= club.capacity && !club.waitlistEnabled) {
       issues.push({ type: "full", clubId: club.id, message: `${club.name} đã đủ sĩ số và không nhận danh sách chờ.` });
     }
   }
@@ -797,6 +830,8 @@ async function validateRegistration(user, studentId, clubIds) {
   }
   const existing = (await rawRegistrationRows({ studentId }))
     .filter((registration) => ACTIVE_REGISTRATION_STATUSES.includes(registration.status))
+    // Đơn đang được đổi đi thì không tính là vướng với chính lớp thay nó.
+    .filter((registration) => !boQuaDonIds.includes(registration.id))
     .map((registration) => {
       const known = available.get(registration.classId);
       return {
@@ -812,18 +847,11 @@ async function validateRegistration(user, studentId, clubIds) {
       };
     });
 
-  // Hai lớp khác nhau của cùng một CLB vẫn bị coi là đăng ký trùng CLB.
-  const chosenClubIds = new Set();
-  for (const club of selected) {
-    if (chosenClubIds.has(club.clubId)) {
-      issues.push({ type: "duplicate", clubId: club.id, message: `Đã chọn hai lớp của cùng CLB ${club.name}. Vui lòng chỉ giữ một lớp.` });
-    }
-    chosenClubIds.add(club.clubId);
-  }
+  // Nhiều lớp của CÙNG một CLB thì được (yêu cầu giáo vụ 11/09/2026: các lớp khác
+  // ngày học). Vẫn chặn đăng ký trùng đúng một lớp và trùng khung giờ.
   for (const club of selected) {
     for (const current of existing) {
       if (current.id === club.id) issues.push({ type: "duplicate", clubId: club.id, message: `${club.name} đã có trong đăng ký hiện tại.` });
-      else if (current.inPeriod && current.clubId === club.clubId) issues.push({ type: "duplicate", clubId: club.id, message: `Học sinh đã đăng ký một lớp khác của ${club.name}.` });
       else if (intervalsOverlap(club, current)) issues.push({ type: "conflict", clubId: club.id, message: conflictMessage(club, current, { daDangKy: true }) });
     }
   }
@@ -1413,16 +1441,13 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
       const hop = caHopVoiEm(nhom, { khoi: asInt(em.grade), thu });
       const vaoThu = thu === null ? "" : ` vào ${DAY_LABELS[thu]}`;
       const chiEm = { studentId: em.id, studentTen: em.name };
-      // Em đã có đơn ở một ca của nhóm này thì đó là câu trả lời, không phải "chưa rõ
-      // buổi" bắt người vận hành sửa file: ca đó hợp với dòng này thì dẫn về đúng ca ấy
-      // để bước "đã có đơn" bên dưới bỏ qua; không hợp thì em đang học ca khác của CLB.
-      const donTrongNhom = donCu.find((don) => nhom.ca.some((caNhom) => caNhom.id === don.classId));
-      if (donTrongNhom && !hop.some((caHop) => caHop.id === donTrongNhom.classId)) {
-        ghi("trungClb", `Em đã có đơn cho một ca khác của ${nhom.tenClb} (${caById.get(donTrongNhom.classId)?.scheduleLabel || donTrongNhom.classId}).`, chiEm);
-        continue;
-      }
-      if (donTrongNhom) {
-        classId = donTrongNhom.classId;
+      // Em đã có đơn ở MỘT trong các ca hợp với dòng này thì đó là câu trả lời, không
+      // phải "chưa rõ buổi" bắt người vận hành sửa file: dẫn về đúng ca ấy để bước "đã
+      // có đơn" bên dưới bỏ qua. Đơn ở một ca KHÁC của CLB không cản gì — một em được
+      // học nhiều lớp của cùng CLB (yêu cầu giáo vụ 11/09/2026).
+      const donTrongHop = donCu.find((don) => hop.some((caHop) => caHop.id === don.classId));
+      if (donTrongHop) {
+        classId = donTrongHop.classId;
       } else {
         if (!hop.length) {
           ghi("khongCoCaHopKhoi", `${nhom.tenClb} không có ca nào cho khối ${em.grade}${vaoThu}. Các ca đang mở: ${nhom.ca.map(moTaCa).map((ca) => `${ca.lich} (khối ${ca.khoi.join(", ") || "mọi khối"})`).join("; ")}.`, chiEm);
@@ -1447,21 +1472,9 @@ async function phanTichXepLop({ files = [], mapping = {}, periodId, trangThai = 
 
     if (donCu.some((don) => don.classId === classId)) { ghi("daCoDon", "Em đã có đơn còn hiệu lực cho ca này — bỏ qua.", chung); continue; }
 
-    // Trùng CLB: hai ca khác nhau của CÙNG một CLB. Cổng phụ huynh chặn việc này,
-    // đường nhập cũng phải chặn — không thì em bị tính học hai ca và hai lần học phí.
-    const tenClb = boDauChuoi(ca.clubName);
-    const khoaClub = `${em.id}|${tenClb}`;
-    if (clubTrongFile.has(khoaClub)) {
-      ghi("trungClbTrongFile", `Dòng ${clubTrongFile.get(khoaClub)} đã xếp em này vào một ca khác của ${ca.clubName}.`, chung);
-      continue;
-    }
-    // Chỉ so với đơn CÙNG ĐỢT, đúng như cổng phụ huynh (current.inPeriod): em học CLB
-    // này học kỳ trước rồi học tiếp học kỳ này là bình thường.
-    const donCungClb = donCu.find((don) => (don.periodId || null) === periodId && tenClbCuaCa(don.classId) === tenClb);
-    if (donCungClb) {
-      ghi("trungClb", `Em đã có đơn cho một ca khác của ${ca.clubName}.`, chung);
-      continue;
-    }
+    // Nhiều lớp của cùng một CLB là hợp lệ, giống cổng phụ huynh. Khoá theo tên CLB chỉ
+    // còn dùng để đếm hạn mức số CLB trong đợt bên dưới.
+    const khoaClub = `${em.id}|${boDauChuoi(ca.clubName)}`;
 
     // Trùng giờ: so với đơn cũ VÀ với những dòng vừa nhận trong chính file này. Một
     // em tick hai CLB trùng khung giờ trong Form thì chỉ học được một buổi, nhưng
@@ -1661,7 +1674,7 @@ async function nhapDangKyHangLoat({ actorUserId, groupId, timestamp, trangThai, 
       if (!ca) continue;
       const registrationId = maDonConTrong(row.maDon, () => maTheoNgay("DK"));
       insert.run(registrationId, groupId, row.studentId, row.parentUserId || null, row.classId, periodId,
-        trangThai, asInt(ca.fee), daThuPhi ? 1 : 0, ca.scheduleLabel || "", timestamp, timestamp, timestamp);
+        trangThai, asInt(ca.fee) + asInt(ca.hocLieu), daThuPhi ? 1 : 0, ca.scheduleLabel || "", timestamp, timestamp, timestamp);
       db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, reason, created_at)
         VALUES (?, ?, 'IMPORT_REGISTRATION', 'registration', ?, ?, ?, ?)`)
         .run(id("audit"), actorUserId, registrationId,
@@ -1706,11 +1719,13 @@ async function adminCatalogData() {
         startTime: row.startTime, endTime: row.endTime, scheduleLabel: row.scheduleLabel, room: row.room, teacher: row.teacher,
         capacity: asInt(row.capacity), minCapacity: asInt(row.minCapacity), enrolledBase: asInt(row.enrolledBase),
         grades: Array.isArray(row.grades) ? row.grades : [],
-        fee: asInt(row.fee), waitlistEnabled: row.waitlistEnabled !== false, sortOrder: asInt(row.sortOrder), active: row.active !== false,
+        fee: asInt(row.fee), hocLieu: asInt(row.hocLieu), soBuoi: asInt(row.soBuoi), dangTuyen: row.dangTuyen !== false,
+        nguongSapDu: row.nguongSapDu === undefined || row.nguongSapDu === null ? 3 : asInt(row.nguongSapDu),
+        waitlistEnabled: row.waitlistEnabled !== false, sortOrder: asInt(row.sortOrder), active: row.active !== false,
         enrolled: asInt(catalog.enrolled[row.id] ?? row.enrolledBase),
         activeRegistrations: asInt(catalog.activeRegistrations[row.id]),
         pendingRegistrations: asInt(catalog.pendingRegistrations?.[row.id]),
-      })),
+      })).map(kemTrangThaiLop),
     };
   }
   const clubs = db.prepare(`SELECT id, code, name, category, description, emoji, visual, grades_json AS gradesJson,
@@ -1726,18 +1741,31 @@ async function adminCatalogData() {
     .map((row) => [row.id, { held: asInt(row.activeRegistrations), pending: asInt(row.pendingRegistrations) }]));
   const classes = db.prepare(`SELECT id, club_id AS clubId, period_id AS periodId, name, day_of_week AS dayOfWeek,
     start_time AS startTime, end_time AS endTime, schedule_label AS scheduleLabel, room, teacher, capacity,
-    min_capacity AS minCapacity, enrolled_base AS enrolledBase, fee, waitlist_enabled AS waitlistEnabled,
+    min_capacity AS minCapacity, enrolled_base AS enrolledBase, fee, hoc_lieu AS hocLieu, so_buoi AS soBuoi,
+    dang_tuyen AS dangTuyen, nguong_sap_du AS nguongSapDu, waitlist_enabled AS waitlistEnabled,
     grades_json AS gradesJson, sort_order AS sortOrder, active FROM club_classes ORDER BY sort_order, day_of_week, start_time`).all()
     .map(({ gradesJson, ...row }) => ({
       ...row, grades: JSON.parse(gradesJson || "[]"),
       capacity: asInt(row.capacity), minCapacity: asInt(row.minCapacity), enrolledBase: asInt(row.enrolledBase),
-      fee: asInt(row.fee), sortOrder: asInt(row.sortOrder), dayOfWeek: asInt(row.dayOfWeek),
+      fee: asInt(row.fee), hocLieu: asInt(row.hocLieu), soBuoi: asInt(row.soBuoi), dangTuyen: row.dangTuyen === 1,
+      nguongSapDu: asInt(row.nguongSapDu), sortOrder: asInt(row.sortOrder), dayOfWeek: asInt(row.dayOfWeek),
       waitlistEnabled: row.waitlistEnabled === 1, active: row.active === 1,
       activeRegistrations: counts[row.id]?.held || 0,
       pendingRegistrations: counts[row.id]?.pending || 0,
       enrolled: asInt(row.enrolledBase) + (counts[row.id]?.held || 0),
     }));
-  return { clubs, classes };
+  return { clubs, classes: classes.map(kemTrangThaiLop) };
+}
+
+/** Trạng thái lớp phụ huynh đang thấy, để màn quản lý hiện đúng nhãn đó. */
+function kemTrangThaiLop(row) {
+  return {
+    ...row,
+    trangThaiLop: trangThaiLop({
+      capacity: row.capacity, enrolled: row.enrolled, pending: row.pendingRegistrations,
+      waitlistEnabled: row.waitlistEnabled, dangTuyen: row.dangTuyen, nguongSapDu: row.nguongSapDu,
+    }),
+  };
 }
 
 async function saveClubRecord({ actorUserId, clubId, input }) {
@@ -1810,16 +1838,20 @@ async function saveClassRecord({ actorUserId, classId, input }) {
   } else if (existing) {
     db.prepare(`UPDATE club_classes SET club_id = ?, period_id = ?, name = ?, day_of_week = ?, start_time = ?, end_time = ?,
       schedule_label = ?, grades_json = ?, room = ?, teacher = ?, capacity = ?, min_capacity = ?, enrolled_base = ?, fee = ?,
+      hoc_lieu = ?, so_buoi = ?, dang_tuyen = ?, nguong_sap_du = ?,
       waitlist_enabled = ?, sort_order = ?, active = ? WHERE id = ?`)
       .run(data.clubId, data.periodId, data.name, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
         JSON.stringify(data.grades), data.room, data.teacher, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
+        data.hocLieu, data.soBuoi, data.dangTuyen ? 1 : 0, data.nguongSapDu,
         data.waitlistEnabled ? 1 : 0, data.sortOrder, data.active ? 1 : 0, targetId);
   } else {
     db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
-      grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
+      waitlist_enabled, sort_order, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(targetId, data.clubId, data.periodId, data.name, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
         JSON.stringify(data.grades), data.room, data.teacher, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
+        data.hocLieu, data.soBuoi, data.dangTuyen ? 1 : 0, data.nguongSapDu,
         data.waitlistEnabled ? 1 : 0, data.sortOrder, data.active ? 1 : 0);
   }
   await writeAudit({
@@ -1962,17 +1994,21 @@ async function commitCatalogImport({ actorUserId, analysis, periodId }) {
           // hai nền hành xử khác nhau, và khác nhau ở đâu thì kiểm thử mù ở đó.
           db.prepare(`UPDATE club_classes SET club_id = ?, period_id = ?, name = ?, day_of_week = ?, start_time = ?,
             end_time = ?, schedule_label = ?, grades_json = ?, room = ?, teacher = ?, capacity = ?, min_capacity = ?,
-            enrolled_base = ?, fee = ?, waitlist_enabled = ?, sort_order = ?, active = 1 WHERE id = ?`)
+            enrolled_base = ?, fee = ?, hoc_lieu = ?, so_buoi = ?, dang_tuyen = ?, nguong_sap_du = ?,
+            waitlist_enabled = ?, sort_order = ?, active = 1 WHERE id = ?`)
             .run(item.data.clubId, item.data.periodId, item.data.name, item.data.dayOfWeek, item.data.startTime,
               item.data.endTime, item.data.scheduleLabel, JSON.stringify(item.data.grades), item.data.room, item.data.teacher, item.data.capacity,
-              item.data.minCapacity, item.data.enrolledBase, item.data.fee, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder, item.id);
+              item.data.minCapacity, item.data.enrolledBase, item.data.fee, item.data.hocLieu, item.data.soBuoi,
+              item.data.dangTuyen ? 1 : 0, item.data.nguongSapDu, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder, item.id);
         } else {
           db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time,
-            schedule_label, grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
+            schedule_label, grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi,
+            dang_tuyen, nguong_sap_du, waitlist_enabled, sort_order, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
             .run(item.id, item.data.clubId, item.data.periodId, item.data.name, item.data.dayOfWeek, item.data.startTime,
               item.data.endTime, item.data.scheduleLabel, JSON.stringify(item.data.grades), item.data.room, item.data.teacher, item.data.capacity,
-              item.data.minCapacity, item.data.enrolledBase, item.data.fee, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder);
+              item.data.minCapacity, item.data.enrolledBase, item.data.fee, item.data.hocLieu, item.data.soBuoi,
+              item.data.dangTuyen ? 1 : 0, item.data.nguongSapDu, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder);
         }
       }
       db.exec("COMMIT");
@@ -2160,14 +2196,16 @@ function sqliteBackupData() {
         sortOrder: asInt(row.sort_order), active: asBool(row.active),
       })),
     clubClasses: all(`SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
-      grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, waitlist_enabled, sort_order, active
+      grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
+      waitlist_enabled, sort_order, active
       FROM club_classes`)
       .map((row) => ({
         id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "",
         dayOfWeek: asInt(row.day_of_week), startTime: row.start_time, endTime: row.end_time,
         scheduleLabel: row.schedule_label, grades: parseJsonField(row.grades_json, []),
         room: row.room, teacher: row.teacher, capacity: asInt(row.capacity), minCapacity: asInt(row.min_capacity),
-        enrolledBase: asInt(row.enrolled_base), fee: asInt(row.fee),
+        enrolledBase: asInt(row.enrolled_base), fee: asInt(row.fee), hocLieu: asInt(row.hoc_lieu), soBuoi: asInt(row.so_buoi),
+        dangTuyen: asBool(row.dang_tuyen), nguongSapDu: asInt(row.nguong_sap_du),
         waitlistEnabled: asBool(row.waitlist_enabled), sortOrder: asInt(row.sort_order), active: asBool(row.active),
       })),
     registrations: all(`SELECT r.id, r.group_id, r.student_id, r.parent_user_id, r.class_id, r.period_id, r.status,
@@ -2519,7 +2557,8 @@ async function handleApi(req, res, url) {
     // Phụ huynh chỉ thấy lớp thuộc đợt đang mở; quản trị có thể xem theo đợt bất kỳ.
     const periodId = user.role !== "parent" ? url.searchParams.get("periodId") || active?.id || null : active?.id || null;
     if (user.role === "parent" && !periodId) return sendJson(res, 200, { clubs: [], period: null });
-    return sendJson(res, 200, { clubs: await clubRows(studentId, periodId), period: publicPeriod(active) });
+    const danhSach = await clubRows(studentId, periodId);
+    return sendJson(res, 200, { clubs: user.role === "parent" ? danhSach.map(choPhuHuynhXem) : danhSach, period: publicPeriod(active) });
   }
 
   if (method === "GET" && url.pathname === "/api/period") {
@@ -2542,7 +2581,66 @@ async function handleApi(req, res, url) {
   if (method === "POST" && url.pathname === "/api/registrations/validate") {
     const user = await requireUser(req, "parent");
     const { studentId, clubIds } = await readJson(req);
-    return sendJson(res, 200, await validateRegistration(user, studentId, clubIds));
+    const validation = await validateRegistration(user, studentId, clubIds);
+    return sendJson(res, 200, { ...validation, clubs: validation.clubs.map(choPhuHuynhXem) });
+  }
+
+  // Phụ huynh chọn một lớp trùng lịch với lớp đã đăng ký → đổi luôn tại màn hình
+  // (yêu cầu giáo vụ 11/09/2026). Chỉ khi đơn cũ CHƯA đóng phí: đổi một lớp đã đóng
+  // phí là chuyện hoàn phí / chuyển phí, thuộc về giáo vụ (thao tác chuyển lớp).
+  const doiLopMatch = url.pathname.match(/^\/api\/registrations\/([^/]+)\/doi-lop$/);
+  if (method === "POST" && doiLopMatch) {
+    const user = await requireUser(req, "parent");
+    const donCuId = decodeURIComponent(doiLopMatch[1]);
+    const { classId, acceptedTerms } = await readJson(req);
+    if (!acceptedTerms) throw httpError(422, "TERMS_REQUIRED", "Vui lòng xác nhận lịch, phí và quy định đổi/hủy.");
+    const donCu = (await rawRegistrationRows({ parentUserId: user.id })).find((row) => row.id === donCuId);
+    if (!donCu) throw httpError(404, "REGISTRATION_NOT_FOUND", "Không tìm thấy đơn đăng ký cần đổi.");
+    if (!DOI_LOP_DUOC.includes(donCu.status) || donCu.feePaid) {
+      throw httpError(409, "DOI_LOP_DA_DONG_PHI",
+        "Lớp cũ đã đóng phí hoặc đã được xếp nên không tự đổi được. Vui lòng liên hệ nhà trường để chuyển lớp.");
+    }
+    const validation = await validateRegistration(user, donCu.studentId, [String(classId || "")], { boQuaDonIds: [donCuId] });
+    if (!validation.valid) throw httpError(422, "VALIDATION_FAILED", "Không đổi được sang lớp này.", validation.issues);
+    const groupId = maTheoNgay("GR");
+    const taoMaDon = () => maTheoNgay("DK");
+    const timestamp = nowIso();
+    if (businessStore) {
+      if (typeof businessStore.doiLopPhuHuynh !== "function") {
+        throw httpError(501, "DOI_LOP_CHUA_HO_TRO", "Nền lưu trữ đang dùng chưa hỗ trợ đổi lớp.");
+      }
+      const created = await businessStore.doiLopPhuHuynh({
+        donCuId, actorUserId: user.id, studentId: donCu.studentId, groupId, periodId: validation.period.id,
+        clubs: validation.clubs, registrationIds: validation.clubs.map(taoMaDon), taoMaDon, timestamp,
+      });
+      return sendJson(res, 201, { groupId, doiTu: donCuId, registrations: created });
+    }
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const hienTai = db.prepare("SELECT status, fee_paid FROM registrations WHERE id = ?").get(donCuId);
+      if (!hienTai || !DOI_LOP_DUOC.includes(hienTai.status) || asInt(hienTai.fee_paid) === 1) {
+        throw httpError(409, "DOI_LOP_DA_DONG_PHI",
+          "Lớp cũ đã đóng phí hoặc đã được xếp nên không tự đổi được. Vui lòng liên hệ nhà trường để chuyển lớp.");
+      }
+      db.prepare("UPDATE registrations SET status = ?, updated_at = ? WHERE id = ?").run(STATUS.daDoiLop, timestamp, donCuId);
+      const club = validation.clubs[0];
+      const refreshed = (await clubRows(donCu.studentId, validation.period.id)).find((item) => item.id === club.id);
+      const status = refreshed.enrolled >= refreshed.capacity ? "waitlist" : "payment";
+      const registrationId = maDonConTrong(taoMaDon(), taoMaDon);
+      db.prepare(`INSERT INTO registrations
+        (id, group_id, student_id, parent_user_id, class_id, period_id, status, fee_snapshot, schedule_snapshot, terms_accepted_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(registrationId, groupId, donCu.studentId, user.id, club.id, validation.period.id, status, club.phiTong, club.schedule, timestamp, timestamp, timestamp);
+      db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, before_json, after_json, created_at)
+        VALUES (?, ?, 'PARENT_SWITCH_CLASS', 'registration', ?, ?, ?, ?)`)
+        .run(id("audit"), user.id, registrationId, JSON.stringify({ registrationId: donCuId, status: donCu.status, classId: donCu.classId }),
+          JSON.stringify({ status, classId: club.id, studentId: donCu.studentId }), timestamp);
+      db.exec("COMMIT");
+      return sendJson(res, 201, { groupId, doiTu: donCuId, registrations: [{ id: registrationId, status, clubId: club.id }] });
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   if (method === "POST" && url.pathname === "/api/registrations") {
@@ -2572,7 +2670,7 @@ const groupId = maTheoNgay("GR");
         const refreshed = (await clubRows(studentId, validation.period.id)).find((item) => item.id === club.id);
         const status = refreshed.enrolled >= refreshed.capacity ? "waitlist" : "payment";
         const registrationId = maDonConTrong(registrationIds[index], taoMaDon);
-        insert.run(registrationId, groupId, studentId, user.id, club.id, validation.period.id, status, club.fee, club.schedule, timestamp, timestamp, timestamp);
+        insert.run(registrationId, groupId, studentId, user.id, club.id, validation.period.id, status, club.phiTong, club.schedule, timestamp, timestamp, timestamp);
         db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, created_at)
           VALUES (?, ?, 'CREATE_REGISTRATION', 'registration', ?, ?, ?)`)
           .run(id("audit"), user.id, registrationId, JSON.stringify({ status, clubId: club.id, studentId }), timestamp);

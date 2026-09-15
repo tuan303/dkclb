@@ -245,7 +245,7 @@ test("phụ huynh thấy CLB vừa nhập và biết hạn của đợt đang m�
   assert.equal(guitarClasses.find((item) => item.className === "Ca 2").eligible, false, "học sinh lớp 3 không hợp lệ với ca dành cho khối 6-9");
 });
 
-test("chặn đăng ký hai lớp khác ca của cùng một CLB", async () => {
+test("cho đăng ký hai lớp khác ca của cùng một CLB (yêu cầu giáo vụ 11/09/2026)", async () => {
   const { clubs } = await (await request("/api/clubs?studentId=hs01", parentCookie)).json();
   const chess = clubs.filter((club) => club.name === "Cờ vua");
   assert.equal(chess.length, 2, "Cờ vua có hai ca, cả hai đều áp dụng khối 1-5");
@@ -257,8 +257,11 @@ test("chặn đăng ký hai lớp khác ca của cùng một CLB", async () => {
   });
   assert.equal(response.status, 200);
   const validation = await response.json();
-  assert.equal(validation.valid, false);
-  assert.ok(validation.issues.some((issue) => issue.type === "duplicate" && /cùng CLB/.test(issue.message)));
+  // Hai ca Cờ vua khác giờ: nay là hợp lệ. Trước đây bị chặn "Đã chọn hai lớp của
+  // cùng CLB"; giáo vụ yêu cầu bỏ vì các lớp khác ngày học.
+  assert.ok(!validation.issues.some((issue) => issue.type === "duplicate"), JSON.stringify(validation.issues));
+  // Phụ huynh không nhận sĩ số trong kết quả kiểm tra, chỉ nhận trạng thái lớp.
+  assert.ok(validation.clubs.every((item) => item.capacity === undefined && item.enrolled === undefined && item.trangThaiLop));
 });
 
 test("đơn vào lớp có mã riêng vẫn tra đúng tên CLB và tên ca", async () => {
