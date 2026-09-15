@@ -537,7 +537,10 @@ function renderPage() {
 }
 
 function renderParentHome() {
-  const recommendations = eligibleClubs().slice(0, 3);
+  const em = student();
+  const danhMuc = eligibleClubs();
+  const nhom = nhomDangLoc();
+  const danhSach = danhMuc.filter((club) => nhom === "all" || club.category === nhom);
   const open = Boolean(state.period);
   return `
     ${renderPeriodNotice()}
@@ -568,13 +571,54 @@ function renderParentHome() {
 
     <section class="section">
       <div class="section-head">
-        <div><span class="eyebrow">Gợi ý cho ${student().name}</span><h2>CLB phù hợp</h2><p>Dựa trên ${student().grade} và tình trạng còn chỗ.</p></div>
-        ${recommendations.length ? `<button class="text-button" data-go="clubs">Xem tất cả ${icon("arrow")}</button>` : ""}
+        <div><span class="eyebrow">Danh mục CLB cho ${escapeHtml(em?.name || "học sinh")}</span><h2>CLB con đăng ký được</h2>
+          <p>${danhMuc.length ? `${danhMuc.length} lớp dành cho ${escapeHtml(em?.grade || "")}. Chọn nhóm để lọc nhanh.` : ""}</p></div>
+        ${danhMuc.length ? `<button class="text-button" data-go="clubs">Tìm theo tên, trạng thái ${icon("arrow")}</button>` : ""}
       </div>
-      ${recommendations.length
-        ? `<div class="grid grid-3">${recommendations.map(renderClubCard).join("")}</div>`
+      ${renderLocNhomClb()}
+      ${danhSach.length
+        ? `<div class="grid grid-3">${danhSach.map(renderClubCard).join("")}</div>`
         : `<div class="panel empty-state"><div class="empty-icon">${icon("grid")}</div><h3>Chưa có CLB nào để hiển thị</h3><p>${open ? "Đợt hiện tại chưa có CLB phù hợp với khối của học sinh." : "Danh mục sẽ hiện khi nhà trường mở đợt đăng ký mới."}</p></div>`}
     </section>`;
+}
+
+/**
+ * Nhóm CLB có trong danh mục của em đang chọn, kèm số lớp mỗi nhóm. Tính từ đúng danh
+ * mục em đăng ký được, để không hiện nút lọc bấm vào ra rỗng.
+ */
+function nhomClbCuaEm() {
+  const dem = new Map();
+  for (const club of eligibleClubs()) dem.set(club.category, (dem.get(club.category) || 0) + 1);
+  return [...dem.entries()]
+    .map(([ten, so]) => ({ ten, so }))
+    .sort((a, b) => String(a.ten).localeCompare(String(b.ten), "vi"));
+}
+
+/** Nhóm đang lọc. Đổi sang em khác mà nhóm đó không có trong danh mục của em thì coi như Tất cả. */
+function nhomDangLoc() {
+  const nhom = state.filters.category;
+  return nhom !== "all" && nhomClbCuaEm().some((item) => item.ten === nhom) ? nhom : "all";
+}
+
+/**
+ * Hàng nút lọc theo nhóm CLB, dùng chung cho Tổng quan và Khám phá CLB.
+ *
+ * @param nguon  danh sách đã qua các bộ lọc KHÁC (tìm kiếm, trạng thái). Số trên mỗi nút
+ *               đếm trên đúng danh sách này, để nút ghi "Thể thao 3" thì bấm vào ra đúng 3
+ *               lớp. Bộ nút vẫn lấy từ cả danh mục của em, nên đang tìm kiếm thì nhóm
+ *               không khớp hiện số 0 chứ không biến mất khỏi hàng.
+ */
+function renderLocNhomClb(nguon = eligibleClubs()) {
+  const nhom = nhomClbCuaEm();
+  if (!nhom.length) return "";
+  const dangLoc = nhomDangLoc();
+  const dem = new Map();
+  for (const club of nguon) dem.set(club.category, (dem.get(club.category) || 0) + 1);
+  const nut = (giaTri, nhan, so) => `<button type="button" class="filter-chip ${dangLoc === giaTri ? "active" : ""}${so ? "" : " empty"}"
+    data-loc-nhom="${escapeHtml(giaTri)}" aria-pressed="${dangLoc === giaTri}">${escapeHtml(nhan)} <b>${so}</b></button>`;
+  return `<div class="filter-chips" role="group" aria-label="Lọc theo nhóm CLB">
+    ${nut("all", "Tất cả", nguon.length)}${nhom.map((item) => nut(item.ten, item.ten, dem.get(item.ten) || 0)).join("")}
+  </div>`;
 }
 
 function renderChildCard(item) {
@@ -598,14 +642,20 @@ function eligibleClubs() {
   return clubs.filter((club) => club.grade.includes(grade));
 }
 
-function filteredClubs() {
+/** Lớp khớp ô tìm kiếm và bộ lọc trạng thái — CHƯA lọc nhóm, để hàng nút nhóm đếm đúng trên nó. */
+function clubsTruocLocNhom() {
+  const tim = state.filters.search.toLowerCase();
   return eligibleClubs().filter((club) => {
-    const matchesSearch = club.name.toLowerCase().includes(state.filters.search.toLowerCase()) || club.category.toLowerCase().includes(state.filters.search.toLowerCase());
-    const matchesCategory = state.filters.category === "all" || club.category === state.filters.category;
+    const matchesSearch = club.name.toLowerCase().includes(tim) || club.category.toLowerCase().includes(tim);
     const open = ["con-nhan", "sap-du"].includes(club.trangThaiLop?.ma);
     const matchesAvailability = state.filters.availability === "all" || (state.filters.availability === "open" && open) || (state.filters.availability === "full" && !open);
-    return matchesSearch && matchesCategory && matchesAvailability;
+    return matchesSearch && matchesAvailability;
   });
+}
+
+function filteredClubs() {
+  const nhom = nhomDangLoc();
+  return clubsTruocLocNhom().filter((club) => nhom === "all" || club.category === nhom);
 }
 
 function renderClubsPage() {
@@ -617,13 +667,11 @@ function renderClubsPage() {
     <section class="section">
       <div class="filters">
         <label class="search-field">${icon("search")}<input id="club-search" type="search" value="${state.filters.search}" placeholder="Tìm tên CLB hoặc nhóm môn..." /></label>
-        <select id="category-filter" class="select-field" aria-label="Nhóm môn">
-          <option value="all">Tất cả nhóm môn</option>${[...new Set(eligibleClubs().map(c => c.category))].map(value => `<option ${state.filters.category === value ? "selected" : ""}>${value}</option>`).join("")}
-        </select>
         <select id="availability-filter" class="select-field" aria-label="Tình trạng chỗ">
           <option value="all">Tất cả trạng thái</option><option value="open" ${state.filters.availability === "open" ? "selected" : ""}>Còn nhận</option><option value="full" ${state.filters.availability === "full" ? "selected" : ""}>Đã đủ / Dừng tuyển</option>
         </select>
       </div>
+      <div style="margin-top:12px">${renderLocNhomClb(clubsTruocLocNhom())}</div>
     </section>
     <section class="section">
       <div class="section-head"><div><span class="eyebrow">${list.length} kết quả phù hợp</span><h2>Danh mục CLB</h2></div><button class="button button-secondary" data-open-cart>${icon("cart")} Giỏ đăng ký (${state.cart.length})</button></div>
@@ -658,7 +706,7 @@ function renderClubCard(club) {
     <div class="club-body">
       <span class="category">${escapeHtml(club.category)}${club.className ? ` · ${escapeHtml(club.className)}` : ""}</span><h3>${escapeHtml(club.name)}</h3>
       ${club.description ? `<p class="club-desc">${escapeHtml(club.description)}</p>` : ""}
-      <div class="club-meta"><span>${icon("clock")}${escapeHtml(club.schedule)}${club.soBuoi ? ` · ${club.soBuoi} buổi` : ""}</span><span>${icon("pin")}${escapeHtml(club.room)} · ${escapeHtml(club.teacher)}</span></div>
+      <div class="club-meta"><span>${icon("clock")}${escapeHtml(club.schedule)}${club.soBuoi ? ` · ${club.soBuoi} buổi` : ""}</span><span>${icon("pin")}${escapeHtml(club.room)} · ${escapeHtml(club.teacher)}</span>${(club.grade || []).length ? `<span>${icon("users")}Khối ${escapeHtml(club.grade.join(", "))}</span>` : ""}</div>
       ${canhBao ? `<p class="club-conflict">${icon("clock")}${escapeHtml(canhBao.nhan)}</p>` : ""}
       <div class="club-price"><div><strong>${formatMoney(club.fee)}</strong><small>học phí</small></div><div class="club-actions"><button class="button button-secondary" data-detail="${club.id}">Chi tiết</button><button class="button button-primary" data-add="${club.id}" ${khoaNut ? "disabled" : ""}>${nhanNut}</button></div></div>
     </div>
@@ -3841,7 +3889,13 @@ function bindPageEvents() {
       if (event.key === "Enter") { event.preventDefault(); $("#account-password-submit").click(); }
     }));
   $("#club-search")?.addEventListener("input", (event) => { state.filters.search = event.target.value; const cursor = event.target.selectionStart; renderPage(); $("#club-search")?.focus(); $("#club-search")?.setSelectionRange(cursor,cursor); });
-  $("#category-filter")?.addEventListener("change", e => { state.filters.category = e.target.value; renderPage(); });
+  // Vẽ lại cả trang thì nút vừa bấm bị thay bằng phần tử mới: trả tiêu điểm về đúng nút
+  // đó, không thì người dùng bàn phím bị đẩy về đầu trang sau mỗi lần lọc.
+  $$("[data-loc-nhom]").forEach((el) => el.addEventListener("click", () => {
+    state.filters.category = el.dataset.locNhom;
+    renderPage();
+    $$("[data-loc-nhom]").find((nut) => nut.dataset.locNhom === state.filters.category)?.focus({ preventScroll: true });
+  }));
   $("#availability-filter")?.addEventListener("change", e => { state.filters.availability = e.target.value; renderPage(); });
   $("[data-clear-filters]")?.addEventListener("click", () => { state.filters = {search:"",category:"all",availability:"all"}; renderPage(); });
   $$('[data-status-tab]').forEach(el => el.addEventListener("click", () => { state.adminStatus = el.dataset.statusTab; renderPage(); }));

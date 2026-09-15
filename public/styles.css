@@ -251,8 +251,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .roster-note { color: var(--muted); font-size: 9px; }
 .checkbox-row { display: flex; align-items: flex-start; gap: 8px; color: #353b5a; font-size: 10px; line-height: 1.5; }
 .clb-trung-ten { margin: 4px 0 0; color: #9a6a00; font-size: 10px; font-weight: 600; }
-/* Mô tả CLB trên thẻ phụ huynh: tối đa 3 dòng, bấm Chi tiết để đọc hết. */
-.club-desc { margin: 4px 0 8px; color: var(--muted); font-size: 12px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* Mô tả hiện đầy đủ: phụ huynh chọn CLB dựa trên chính đoạn này, cắt 3 dòng là mất thông tin. */
+.club-desc { margin: 4px 0 8px; color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; }
+/* Lọc theo nhóm CLB ở Tổng quan và Khám phá CLB. */
+.filter-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.filter-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; color: var(--ink); border: 1px solid var(--line); border-radius: 999px; background: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.filter-chip b { color: var(--muted); font-weight: 600; }
+.filter-chip:hover { border-color: #b9c2dc; }
+.filter-chip:focus-visible { outline: none; border-color: #8a99eb; box-shadow: 0 0 0 3px var(--blue-soft); }
+.filter-chip.active { color: #fff; border-color: var(--blue); background: var(--blue); }
+.filter-chip.active b { color: rgba(255,255,255,.82); }
+.filter-chip.empty:not(.active) { color: var(--muted); background: #f7f8fb; }
 /* .inline-alert là flex hàng ngang; khung này có tiêu đề, đoạn văn và danh sách nên phải xếp dọc, không thì vỡ thành các cột hẹp. */
 .clb-trung-ten-khoi { display: block; margin-bottom: 14px; line-height: 1.55; }
 .clb-trung-ten-khoi li { margin: 2px 0; }
@@ -275,7 +284,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .roster-table td.roster-stt { color: var(--muted); font-variant-numeric: tabular-nums; }
 .roster-table td.roster-stt::before { content: counter(roster-stt); }
 
-.club-price { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-top: 14px; padding-top: 13px; border-top: 1px solid #edeef4; }
+/* Mô tả dài ngắn khác nhau: đẩy giá và nút xuống đáy thẻ để các thẻ cùng hàng thẳng nhau. */
+.club-price { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-top: auto; padding-top: 13px; border-top: 1px solid #edeef4; }
+.club-body > :nth-last-child(2) { margin-bottom: 14px; }
 .club-price strong { font-family: "DM Sans", sans-serif; font-size: 14px; }
 .club-price small { color: var(--muted); font-size: 9px; }
 .club-actions { display: flex; gap: 7px; }
