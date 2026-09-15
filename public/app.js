@@ -71,7 +71,8 @@ const parentNav = [
   { section: "Tài khoản" },
   { id: "account", label: "Đổi mật khẩu", icon: "settings" },
   { section: "Hỗ trợ" },
-  { id: "support", label: "Yêu cầu hỗ trợ", icon: "help" },
+  // Hỗ trợ phụ huynh qua Zalo của trường, mở ở tab mới (yêu cầu ngày 15/09/2026).
+  { id: "support", label: "Yêu cầu hỗ trợ", icon: "help", href: "https://zalo.me/ngoisaohoangmai", title: "Mở Zalo Ngôi Sao Hoàng Mai ở tab mới" },
 ];
 
 // Mỗi mục gắn với một QUYỀN. Giáo vụ sẽ không thấy những mục mình không dùng
@@ -489,6 +490,14 @@ function renderNav() {
     .filter((item) => !item.cap || hasCap(item.cap));
   $("#main-nav").innerHTML = nav.map((item) => {
     if (item.section) return `<div class="nav-section">${item.section}</div>`;
+    // Mục trỏ ra ngoài (Zalo hỗ trợ) là liên kết thật mở tab mới, không phải một trang
+    // trong ứng dụng — để trình duyệt tự xử lý mở tab, và phụ huynh giữ nguyên trang đang xem.
+    if (item.href) {
+      return `<a class="nav-link" href="${escapeHtml(item.href)}" target="_blank" rel="noopener noreferrer"
+        title="${escapeHtml(item.title || "")}" data-lien-ket-ngoai>
+        ${icon(item.icon)}<span>${item.label}</span>${icon("external", "icon nav-external")}
+      </a>`;
+    }
     const badge = item.id === "registrations" ? state.registrations.filter((don) => don.status !== "doi_lop").length : item.id === "applications" ? state.dashboard?.needAction : item.badge;
     return `<button class="nav-link ${state.page === item.id ? "active" : ""}" data-page="${item.id}">
       ${icon(item.icon)}<span>${item.label}</span>${badge ? `<b class="nav-badge">${badge}</b>` : ""}
@@ -3783,6 +3792,8 @@ function exportCsv() {
 function bindGlobalEvents() {
   document.addEventListener("click", (event) => {
     const nav = event.target.closest("[data-page]"); if (nav) goTo(nav.dataset.page);
+    // Mở Zalo ở tab mới thì đóng luôn thanh bên trên điện thoại, quay lại không còn thấy nó che trang.
+    if (event.target.closest("[data-lien-ket-ngoai]")) closeSidebar();
     const role = event.target.closest("[data-role]"); if (role) setRole(role.dataset.role);
   });
   $("#menu-toggle").addEventListener("click", openSidebar);
