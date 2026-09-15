@@ -3210,7 +3210,8 @@ function renderSchoolAccounts() {
     // trong cơ sở dữ liệu sẽ bị ghi đè ở lần đăng nhập kế tiếp.
     const actions = account.lockedByEnv
       ? `<span class="badge badge-purple">Khoá bởi cấu hình máy chủ</span>`
-      : `<select data-account-role="${account.id}">${data.roles.map((role) =>
+      : `<button class="button button-secondary" data-account-edit="${account.id}">Sửa</button>
+         <select data-account-role="${account.id}">${data.roles.map((role) =>
           `<option value="${role.value}"${role.value === account.role ? " selected" : ""}>${escapeHtml(role.label)}</option>`).join("")}</select>
          <button class="button button-secondary" data-account-toggle="${account.id}" data-active="${account.active ? "1" : "0"}">
            ${account.active ? "Vô hiệu hoá" : "Kích hoạt lại"}
@@ -3281,6 +3282,61 @@ function renderSchoolAccounts() {
     </section>`;
 }
 
+/**
+ * Sửa email đăng nhập và họ tên của một tài khoản nhà trường — chủ yếu để sửa email gõ sai.
+ * Email chính là tên đăng nhập Microsoft 365: đổi email thì người của email mới vào được,
+ * email cũ không vào được nữa, và phiên đang mở của tài khoản bị đăng xuất.
+ */
+function moSuaTaiKhoanNhaTruong(account) {
+  const domain = state.schoolAccounts?.domain || "";
+  const daDangNhap = account.status === "dang-dung";
+  showModal(`<div class="modal-head"><div><span class="eyebrow">Tài khoản nhà trường</span><h2>Sửa thông tin đăng nhập</h2></div>
+      <button class="icon-button" data-close-modal>${icon("x")}</button></div>
+    <form class="modal-body" id="sua-tai-khoan-form" novalidate>
+      <div class="form-grid">
+        <label class="form-field form-span-2"><span>Email đăng nhập (Microsoft 365)</span>
+          <input name="email" value="${escapeHtml(account.account)}" inputmode="email" autocomplete="off" maxlength="254" /></label>
+        <label class="form-field form-span-2"><span>Họ và tên</span>
+          <input name="displayName" value="${escapeHtml(account.displayName)}" autocomplete="off" maxlength="120" /></label>
+      </div>
+      <p class="field-hint">Email phải thuộc miền @${escapeHtml(domain)}. Đổi email thì người dùng email mới đăng nhập được ngay,
+        email cũ không vào được nữa và phiên đang mở của tài khoản này bị đăng xuất.
+        Họ tên sẽ tự cập nhật theo Microsoft 365 mỗi lần người đó đăng nhập.</p>
+      <div class="form-error" role="alert" data-loi></div>
+    </form>
+    <div class="modal-foot"><button class="button button-secondary" data-close-modal>Huỷ</button>
+      <button class="button button-primary" data-luu-tai-khoan>Lưu thay đổi</button></div>`);
+
+  const form = $("#sua-tai-khoan-form");
+  const luu = async () => {
+    const loi = form.querySelector("[data-loi]");
+    loi.textContent = "";
+    const email = form.elements.email.value.trim();
+    const displayName = form.elements.displayName.value.trim();
+    const body = {};
+    if (email.toLowerCase() !== String(account.account).toLowerCase()) body.email = email;
+    if (displayName !== account.displayName) body.displayName = displayName;
+    if (!Object.keys(body).length) { loi.textContent = "Chưa có gì thay đổi."; return; }
+    if (body.email !== undefined && !window.confirm(
+      `Đổi email đăng nhập ${account.account} → ${email}?\n\nNgười dùng email mới sẽ đăng nhập được; email cũ không vào được nữa`
+      + (daDangNhap ? " và phiên đang mở của tài khoản này bị đăng xuất." : "."))) return;
+    const nut = $("[data-luu-tai-khoan]");
+    nut.disabled = true;
+    try {
+      await api(`/admin/school-accounts/${encodeURIComponent(account.id)}`, { method: "PATCH", body: JSON.stringify(body) });
+      closeModal();
+      toast(body.email !== undefined ? "Đã đổi email đăng nhập." : "Đã lưu họ tên.", "success");
+      await loadSchoolAccounts();
+      renderPage();
+    } catch (error) {
+      loi.textContent = error.message;
+      nut.disabled = false;
+    }
+  };
+  $("[data-luu-tai-khoan]").addEventListener("click", luu);
+  form.addEventListener("submit", (event) => { event.preventDefault(); luu(); });
+}
+
 async function loadSchoolAccounts() {
   if (!hasCap("quan-ly-tai-khoan")) return;
   const search = state.schoolAccountSearch ? `?search=${encodeURIComponent(state.schoolAccountSearch)}` : "";
@@ -3316,6 +3372,11 @@ function bindSchoolAccountEvents() {
       toast(error.message, "error");
     }
   });
+
+  $$("[data-account-edit]").forEach((button) => button.addEventListener("click", () => {
+    const account = state.schoolAccounts?.accounts.find((item) => item.id === button.dataset.accountEdit);
+    if (account) moSuaTaiKhoanNhaTruong(account);
+  }));
 
   $$("[data-account-role]").forEach((select) => select.addEventListener("change", async (event) => {
     try {

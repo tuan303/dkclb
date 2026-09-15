@@ -1189,6 +1189,31 @@ async function setSchoolUserDisplayName(userId, displayName) {
   return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
 }
 
+/**
+ * Đổi email đăng nhập (Microsoft 365) của tài khoản nhà trường — sửa lỗi gõ sai email.
+ *
+ * Gỡ luôn liên kết Microsoft (microsoft_object_id) và mốc đăng nhập: đăng nhập tìm tài
+ * khoản theo object id TRƯỚC rồi mới theo email, nên giữ liên kết cũ là để người của email
+ * cũ vẫn vào được tài khoản vừa được giao cho email mới. Cắt phiên vì cùng lý do.
+ */
+async function setSchoolUserAccount(userId, account) {
+  if (businessStore) {
+    if (typeof businessStore.setSchoolUserAccount !== "function") {
+      throw httpError(501, "NEN_LUU_TRU_CHUA_HO_TRO", "Nền lưu trữ đang dùng chưa hỗ trợ đổi email tài khoản nhà trường.");
+    }
+    return businessStore.setSchoolUserAccount(userId, account);
+  }
+  try {
+    db.prepare(`UPDATE users SET account = ?, microsoft_object_id = NULL, last_login_at = NULL
+      WHERE id = ? AND role <> 'parent'`).run(account, userId);
+  } catch (error) {
+    if (/UNIQUE/i.test(String(error?.message))) throw httpError(409, "TAI_KHOAN_DA_TON_TAI", "Email này đã có tài khoản trong hệ thống.");
+    throw error;
+  }
+  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+}
+
 async function setSchoolUserRole(userId, role) {
   if (businessStore) return businessStore.setSchoolUserRole(userId, role);
   db.prepare("UPDATE users SET role = ? WHERE id = ? AND role <> 'parent'").run(role, userId);
@@ -3242,7 +3267,53 @@ const groupId = maTheoNgay("GR");
     // ghi đè ở lần đăng nhập kế tiếp — nói thẳng thay vì để người dùng tưởng đã đổi.
     assertSchoolAccountWritable(target);
 
+    // Kiểm tra hết họ tên và email TRƯỚC khi ghi bất cứ gì: một trường sai thì không trường
+    // nào được ghi, không để lại tài khoản đổi tên xong mà email thì chưa.
+    let hoTenMoi = null;
+    if (body.displayName !== undefined) {
+      const displayName = String(body.displayName || "").replace(/\s+/g, " ").trim();
+      if (!displayName) throw httpError(422, "THIEU_HO_TEN", "Vui lòng nhập họ và tên.");
+      if (displayName.length > 120) throw httpError(422, "TEN_QUA_DAI", "Họ và tên dài quá 120 ký tự.");
+      if (displayName !== target.display_name) hoTenMoi = displayName;
+    }
+    let emailMoi = null;
+    if (body.email !== undefined) {
+      const email = normalizeAccount(body.email);
+      if (email !== normalizeAccount(target.account)) {
+        // Phiên đang dùng bị cắt ngay và liên kết Microsoft bị gỡ: tự đổi là tự khoá mình ra ngoài.
+        if (target.id === actor.id) {
+          throw httpError(409, "KHONG_TU_DOI_EMAIL", "Không thể tự đổi email đăng nhập của chính mình. Nhờ một quản trị cao nhất khác đổi giúp.");
+        }
+        if (!isSchoolEmail(email, MICROSOFT_ALLOWED_DOMAIN)) {
+          throw httpError(422, "EMAIL_NGOAI_MIEN", `Email phải thuộc miền @${MICROSOFT_ALLOWED_DOMAIN}.`);
+        }
+        // Đổi sang một email trong SUPERADMIN_ACCOUNTS là nâng tài khoản này lên quyền cao nhất.
+        if (isSuperadminAccount(email, SUPERADMIN_ACCOUNTS)) {
+          throw httpError(409, "EMAIL_QUAN_TRI_CAO_NHAT", "Email này là tài khoản quản trị cao nhất do cấu hình máy chủ quy định, không gán cho tài khoản khác được.");
+        }
+        const trung = await findSchoolUserForLogin({ objectId: null, email });
+        if (trung && trung.id !== target.id) throw httpError(409, "TAI_KHOAN_DA_TON_TAI", "Email này đã có tài khoản trong hệ thống.");
+        emailMoi = email;
+      }
+    }
+
     let updated = target;
+    if (hoTenMoi) {
+      updated = await setSchoolUserDisplayName(target.id, hoTenMoi);
+      await writeAudit({
+        actorUserId: actor.id, action: "SCHOOL_ACCOUNT_NAME_CHANGED", entityType: "school_account",
+        entityId: target.id, before: { displayName: target.display_name }, after: { displayName: hoTenMoi },
+      });
+    }
+    if (emailMoi) {
+      updated = await setSchoolUserAccount(target.id, emailMoi);
+      await writeAudit({
+        actorUserId: actor.id, action: "SCHOOL_ACCOUNT_EMAIL_CHANGED", entityType: "school_account",
+        entityId: target.id, before: { email: target.account, daLienKetMicrosoft: Boolean(target.microsoft_object_id) },
+        after: { email: emailMoi }, reason: String(body.reason || "").trim() || null,
+      });
+    }
+
     if (body.role !== undefined) {
       const role = normalizeSchoolRole(body.role);
       if (!role) throw httpError(422, "VAI_TRO_KHONG_HOP_LE", `Vai trò chỉ nhận: ${ASSIGNABLE_SCHOOL_ROLES.join(", ")}.`);

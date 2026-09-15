@@ -229,6 +229,86 @@ test("không tìm thấy hoặc trỏ vào tài khoản phụ huynh đều trả
   })).status, 404);
 });
 
+/* ---------- Sửa email đăng nhập và họ tên (15/09/2026) ---------- */
+
+const suaTaiKhoan = (id, body) => request(`/api/admin/school-accounts/${id}`, superCookie, { method: "PATCH", body: JSON.stringify(body) });
+
+test("sửa email gõ sai của tài khoản chưa đăng nhập lần nào", async () => {
+  const { account } = await json(await request("/api/admin/school-accounts", superCookie, {
+    method: "POST", body: JSON.stringify({ email: "nguyen.vna@hoangmaistarschool.edu.vn", displayName: "Nguyễn Văn A", role: "admin" }),
+  }));
+  const response = await suaTaiKhoan(account.id, { email: " Nguyen.VanA@hoangmaistarschool.edu.vn " });
+  assert.equal(response.status, 200);
+  const sua = (await json(response)).account;
+  assert.equal(sua.account, "nguyen.vana@hoangmaistarschool.edu.vn", "email được chuẩn hoá về chữ thường");
+  assert.equal(sua.role, "admin", "đổi email không đụng tới vai trò");
+  assert.equal(sua.status, "cho-dang-nhap-lan-dau");
+
+  const ds = await json(await request("/api/admin/school-accounts", superCookie));
+  assert.ok(!ds.accounts.some((item) => item.account === "nguyen.vna@hoangmaistarschool.edu.vn"), "email gõ sai không còn");
+
+  // Email cũ trả về trống: thêm lại được đúng email đó cho người khác.
+  assert.equal((await request("/api/admin/school-accounts", superCookie, {
+    method: "POST", body: JSON.stringify({ email: "nguyen.vna@hoangmaistarschool.edu.vn", displayName: "Người khác", role: "giaovu" }),
+  })).status, 201);
+});
+
+test("email mới sai miền, trùng tài khoản khác hoặc là email quản trị cao nhất đều bị chặn, không ghi gì", async () => {
+  const { account } = await json(await request("/api/admin/school-accounts", superCookie, {
+    method: "POST", body: JSON.stringify({ email: "chan.doi@hoangmaistarschool.edu.vn", displayName: "Chặn Đổi", role: "giaovu" }),
+  }));
+  const ngoaiMien = await suaTaiKhoan(account.id, { email: "chan.doi@gmail.com", displayName: "Tên mới" });
+  assert.equal(ngoaiMien.status, 422);
+  assert.equal((await json(ngoaiMien)).error.code, "EMAIL_NGOAI_MIEN");
+
+  const trung = await suaTaiKhoan(account.id, { email: "trung.lap@hoangmaistarschool.edu.vn" });
+  assert.equal(trung.status, 409);
+  assert.equal((await json(trung)).error.code, "TAI_KHOAN_DA_TON_TAI");
+
+  // Đổi sang email trong SUPERADMIN_ACCOUNTS là nâng tài khoản này lên quyền cao nhất.
+  const leoQuyen = await suaTaiKhoan(account.id, { email: "admin@nshm.edu.vn" });
+  assert.ok([409, 422].includes(leoQuyen.status), `phải chặn, nhận ${leoQuyen.status}`);
+
+  const ds = await json(await request("/api/admin/school-accounts", superCookie));
+  const conNguyen = ds.accounts.find((item) => item.id === account.id);
+  assert.equal(conNguyen.account, "chan.doi@hoangmaistarschool.edu.vn");
+  assert.equal(conNguyen.displayName, "Chặn Đổi", "một trường sai thì trường kia cũng không được ghi");
+});
+
+test("đổi email sang miền đúng mà trùng email quản trị cao nhất thì báo đúng lý do", async () => {
+  const mayChu = await startTestServer({ prefix: "nshm-doi-email-sa-", env: { SUPERADMIN_ACCOUNTS: "admin@nshm.edu.vn,it@hoangmaistarschool.edu.vn" } });
+  try {
+    const cookie = await mayChu.loginCookie("admin@nshm.edu.vn", "Admin@123");
+    const { account } = await (await mayChu.request("/api/admin/school-accounts", cookie, {
+      method: "POST", body: JSON.stringify({ email: "binh.thuong@hoangmaistarschool.edu.vn", displayName: "Bình Thường", role: "giaovu" }),
+    })).json();
+    const response = await mayChu.request(`/api/admin/school-accounts/${account.id}`, cookie, {
+      method: "PATCH", body: JSON.stringify({ email: "IT@hoangmaistarschool.edu.vn" }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, "EMAIL_QUAN_TRI_CAO_NHAT");
+  } finally {
+    await mayChu.stop();
+  }
+});
+
+test("tài khoản khoá bởi cấu hình không đổi được email", async () => {
+  const ds = await json(await request("/api/admin/school-accounts", superCookie));
+  const locked = ds.accounts.find((item) => item.lockedByEnv);
+  const response = await suaTaiKhoan(locked.id, { email: "doi.cua.sa@hoangmaistarschool.edu.vn" });
+  assert.equal(response.status, 409);
+  assert.equal((await json(response)).error.code, "TAI_KHOAN_KHOA_BOI_CAU_HINH");
+});
+
+test("sửa họ tên: gộp khoảng trắng thừa, bỏ trống thì bị từ chối", async () => {
+  const { account } = await json(await request("/api/admin/school-accounts", superCookie, {
+    method: "POST", body: JSON.stringify({ email: "ho.ten@hoangmaistarschool.edu.vn", displayName: "Ho Ten", role: "giaovu" }),
+  }));
+  const ok = await json(await suaTaiKhoan(account.id, { displayName: "  Hồ   Thị Tên " }));
+  assert.equal(ok.account.displayName, "Hồ Thị Tên");
+  assert.equal((await suaTaiKhoan(account.id, { displayName: "   " })).status, 422);
+});
+
 /* ---------- Tìm kiếm ---------- */
 
 test("tìm kiếm theo email hoặc theo tên", async () => {
@@ -279,4 +359,16 @@ test("xem trước rồi mới ghi, còn dòng lỗi thì không ghi gì", async
   }));
   assert.equal(again.result.counters.created, 0);
   assert.equal(again.result.summary.unchanged, 1);
+});
+
+test("đổi email tài khoản đang dùng: phiên đang mở bị đăng xuất, chỉ email mới đăng nhập được", async () => {
+  // Chạy CUỐI tệp vì đổi luôn tài khoản giáo vụ mà các bài phía trên dùng.
+  const me = await json(await request("/api/me", giaovuCookie));
+  const response = await request(`/api/admin/school-accounts/${me.user.id}`, superCookie, {
+    method: "PATCH", body: JSON.stringify({ email: "giao.vu@hoangmaistarschool.edu.vn" }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await request("/api/me", giaovuCookie)).status, 401, "phiên của email cũ phải bị cắt");
+  assert.equal((await server.login("giaovu@nshm.edu.vn", "Admin@123")).status, 401, "email cũ không vào được nữa");
+  assert.equal((await server.login("giao.vu@hoangmaistarschool.edu.vn", "Admin@123")).status, 200);
 });

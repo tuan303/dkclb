@@ -593,6 +593,23 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
     },
 
+    // Đổi email đăng nhập: ghi account VÀ account_index cùng lúc, gỡ liên kết Microsoft và
+    // cắt phiên — xem setSchoolUserAccount trong server.mjs.
+    async setSchoolUserAccount(userId, account) {
+      try {
+        await query(
+          `UPDATE users SET account = ?, account_index = ?, microsoft_object_id = NULL, last_login_at = NULL
+           WHERE id = ? AND role <> 'parent'`,
+          [crypto.encrypt(account), crypto.blindIndex(account), userId],
+        );
+      } catch (error) {
+        if (error?.code === "ER_DUP_ENTRY") throw createHttpError(409, "TAI_KHOAN_DA_TON_TAI", "Email này đã có tài khoản trong hệ thống.");
+        throw error;
+      }
+      await query("DELETE FROM sessions WHERE user_id = ?", [userId]);
+      return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);
+    },
+
     async setSchoolUserRole(userId, role) {
       await query("UPDATE users SET role = ? WHERE id = ? AND role <> 'parent'", [role, userId]);
       return asServerUser(await first("SELECT * FROM users WHERE id = ?", [userId]), crypto);

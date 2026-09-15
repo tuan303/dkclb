@@ -44,7 +44,7 @@ test("jsonOrNull nhận được cả chuỗi lẫn object đã phân giải", (
 const THIEU_O_FIRESTORE_DA_BIET = [
   "close", "findSchoolUserForLogin", "linkMicrosoftLogin", "createSchoolUser",
   "listSchoolUsers", "getUserById", "setSchoolUserDisplayName", "setSchoolUserRole",
-  "setSchoolUserActive",
+  "setSchoolUserActive", "setSchoolUserAccount",
   // Nhập đăng ký hàng loạt từ file Google Form: CỐ Ý chỉ làm cho MySQL. Đây là công
   // cụ chuyển một đợt đăng ký cũ sang hệ thống, dùng vài lần rồi thôi, mà nhà trường
   // thì chạy MySQL. Viết bản Firestore là viết cho một nền không ai dùng — nhưng
