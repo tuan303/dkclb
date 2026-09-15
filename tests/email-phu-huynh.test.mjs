@@ -90,9 +90,9 @@ test("file thiếu cột email KHÔNG xoá email đã có", () => {
   assert.deepEqual(ghiUser, [], "không được ghi gì khi nguồn không có email");
 });
 
-test("email đã khớp thì KHÔNG ghi lại — nếu không, 15 phút một lần ghi đè 7.119 tài khoản", () => {
-  // Đây là bài quan trọng nhất của tệp. isUnchanged chỉ so những trường có trong
-  // data, nên bản ghi ĐỌC RA bắt buộc phải mang email.
+test("file KHÔNG ghi email vào tài khoản đã có — email sửa ở màn Thông tin học sinh không bị đè", () => {
+  // Trước 15/09/2026 file được điền email còn trống và đè email khác đi. Từ khi có màn
+  // sửa tay, tài khoản đã có không bao giờ bị file ghi, dù email khớp hay không.
   const chay = (emailTrongCoSoDuLieu) => planDirectoryWrites({
     snapshot: {
       students: [{ code: "NSHM260301", name: "Trần Tuệ An", dateOfBirth: "10/10/2018", className: "3A4", educationLevel: "Tiểu học", grade: 3 }],
@@ -106,16 +106,11 @@ test("email đã khớp thì KHÔNG ghi lại — nếu không, 15 phút một l
     allSourcesLoaded: true,
   });
 
-  const daKhop = chay("tunm@petrolimex.vn");
-  assert.deepEqual(daKhop.writes.filter((write) => write.collection === "users"), [],
-    "email không đổi thì tuyệt đối không được ghi lại");
-  assert.equal(daKhop.counters.parentsUnchanged, 1);
-
-  const chuaCo = chay(null);
-  const ghi = chuaCo.writes.filter((write) => write.collection === "users");
-  assert.equal(ghi.length, 1, "email mới thì phải ghi");
-  assert.equal(ghi[0].data.email, "tunm@petrolimex.vn");
-  assert.equal(chuaCo.counters.parentsUpdated, 1);
+  for (const emailDangCo of ["tunm@petrolimex.vn", null, "da-sua-tay@gmail.com"]) {
+    const ketQua = chay(emailDangCo);
+    assert.deepEqual(ketQua.writes, [], `email đang có ${emailDangCo}: không được ghi gì`);
+    assert.equal(ketQua.counters.parentsUpdated, 0);
+  }
 });
 
 test("tài khoản phụ huynh tạo mới mang theo email ngay từ đầu", () => {

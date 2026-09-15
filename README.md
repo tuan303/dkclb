@@ -158,6 +158,14 @@ Em lớp 5 sang năm nằm ở file THCS và biến mất khỏi file Tiểu h�
 
 Mã học sinh trùng giữa hai file được báo rõ (giữ bản gặp trước) chứ không ghi đè im lặng.
 
+### Nhập file chỉ tạo mới, sửa liên hệ ở màn Thông tin học sinh (15/09/2026)
+
+Nhập danh bạ từ file **chỉ thêm học sinh mới**. Em đã có mã trong hệ thống được bỏ qua và báo lại ở màn xem trước; tài khoản phụ huynh đã có **không bao giờ** bị file ghi (không đè email, không tạo lại SĐT cũ đã đổi). Riêng chế độ đối chiếu toàn trường (khoá sau `CHO_PHEP_DOI_CHIEU`) còn cập nhật lớp của em đã có, nhưng cũng không đụng liên hệ phụ huynh.
+
+Sửa SĐT, email, họ tên phụ huynh ở menu **Thông tin học sinh** — chỉ quản trị (`thong-tin-hoc-sinh`), giáo vụ không vào. SĐT phụ huynh là số đăng nhập: đổi số là đổi số đăng nhập của tài khoản đó tại chỗ (giữ mật khẩu, các con, các đơn), bị chặn nếu số mới đã là tài khoản khác. Ô "số cũ sai người" xoá mật khẩu riêng và đăng xuất mọi thiết bị. "Thêm SĐT phụ huynh" gắn em vào tài khoản đã có hoặc tạo tài khoản mới (mật khẩu khởi tạo là chính số). Nhật ký chỉ ghi số đã che (`091****678`).
+
+Đồng bộ Google Sheets vào hệ thống **đã khoá** (cả nút bấm tay lẫn lịch tự chạy) cho tới khi đặt `CHO_PHEP_DONG_BO_GOOGLE=1`; nút Kiểm tra kết nối vẫn dùng được.
+
 ### Tự đồng bộ và theo dõi
 
 Lịch tự đồng bộ **mặc định TẮT** (`SHEETS_SYNC_INTERVAL_MINUTES` không đặt hoặc đặt 0). Đặt `SHEETS_SYNC_INTERVAL_MINUTES=15` nếu muốn máy chủ tự chạy 15 phút một lần. Bấm tay trong lúc lịch đang chạy thì cùng chờ lượt đó, không mở thêm một lượt ghi song song.
@@ -188,6 +196,7 @@ Tài khoản PH mới lấy số điện thoại làm tên đăng nhập theo qu
 GOOGLE_SHEETS_SOURCES           # JSON, ghi đè toàn bộ danh sách nguồn
 GOOGLE_SHEETS_SERVICE_ACCOUNT   # email service account hiển thị trên giao diện
 SHEETS_SYNC_INTERVAL_MINUTES    # chu kỳ tự đồng bộ, đặt 0 để tắt
+CHO_PHEP_DONG_BO_GOOGLE         # 1 mới cho đồng bộ Google Sheets ghi vào hệ thống (mặc định khoá)
 ```
 
 `GOOGLE_SHEETS_SOURCES` nhận nguyên đường dẫn dán từ thanh địa chỉ, không phải tự bóc mã file:

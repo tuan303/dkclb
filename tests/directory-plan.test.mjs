@@ -51,20 +51,20 @@ test("lần đồng bộ đầu tiên tạo học sinh, tài khoản và liên k
   assert.equal(account.data.accountLower, "0975662437");
 });
 
-test("đồng bộ lại đúng dữ liệu đó thì không ghi gì thêm", () => {
+test("nhập lại đúng dữ liệu đó thì không ghi gì thêm", () => {
   idFactory.counter = 0;
   const first = planDirectoryWrites({ snapshot: snapshotOf(), timestamp: TIMESTAMP, idFactory });
   const state = applyPlan(first);
 
   const second = planDirectoryWrites({ snapshot: snapshotOf(), ...state, timestamp: TIMESTAMP, idFactory });
-  assert.equal(second.counters.writes, 0, "đây là tính chất quyết định việc tiết kiệm hạn ngạch");
+  assert.equal(second.counters.writes, 0);
   assert.deepEqual(second.writes, []);
-  assert.equal(second.counters.studentsUnchanged, 2);
-  assert.equal(second.counters.parentsUnchanged, 2);
-  assert.equal(second.counters.linksUnchanged, 3);
+  assert.equal(second.counters.studentsExisting, 2, "em đã có được đếm để báo lại, không lặng lẽ bỏ");
+  assert.deepEqual(second.daCo.map((item) => item.code), ["NSHM01", "NSHM02"]);
 });
 
-test("chỉ ghi đúng những bản ghi thực sự đổi", () => {
+test("CHỈ TẠO MỚI: file ghi lớp khác cho em đã có thì bỏ qua, không cập nhật", () => {
+  // Quyết định của nhà trường ngày 15/09/2026: nhập file chỉ thêm em mới.
   idFactory.counter = 0;
   const state = applyPlan(planDirectoryWrites({ snapshot: snapshotOf(), timestamp: TIMESTAMP, idFactory }));
 
@@ -73,6 +73,20 @@ test("chỉ ghi đúng những bản ghi thực sự đổi", () => {
   changed.students[0].grade = 4;
 
   const plan = planDirectoryWrites({ snapshot: changed, ...state, timestamp: TIMESTAMP, idFactory });
+  assert.equal(plan.counters.writes, 0);
+  assert.equal(plan.counters.studentsUpdated, 0);
+  assert.equal(plan.counters.studentsExisting, 2);
+});
+
+test("đối chiếu toàn trường (capNhatHocSinhDaCo) chỉ ghi đúng những em thực sự đổi lớp", () => {
+  idFactory.counter = 0;
+  const state = applyPlan(planDirectoryWrites({ snapshot: snapshotOf(), timestamp: TIMESTAMP, idFactory }));
+
+  const changed = snapshotOf();
+  changed.students[0].className = "4A2";
+  changed.students[0].grade = 4;
+
+  const plan = planDirectoryWrites({ snapshot: changed, ...state, timestamp: TIMESTAMP, idFactory, capNhatHocSinhDaCo: true });
   assert.equal(plan.counters.writes, 1);
   assert.equal(plan.counters.studentsUpdated, 1);
   assert.equal(plan.counters.studentsUnchanged, 1);
@@ -80,7 +94,7 @@ test("chỉ ghi đúng những bản ghi thực sự đổi", () => {
   assert.equal(plan.writes[0].data.homeroom, "4A2");
 });
 
-test("học sinh mới bổ sung vào Sheet được tạo cùng liên kết, phần cũ giữ nguyên", () => {
+test("học sinh mới bổ sung vào file được tạo cùng liên kết, phần cũ giữ nguyên", () => {
   idFactory.counter = 0;
   const state = applyPlan(planDirectoryWrites({ snapshot: snapshotOf(), timestamp: TIMESTAMP, idFactory }));
 
@@ -91,37 +105,68 @@ test("học sinh mới bổ sung vào Sheet được tạo cùng liên kết, ph
   const plan = planDirectoryWrites({ snapshot: grown, ...state, timestamp: TIMESTAMP, idFactory });
   assert.equal(plan.counters.studentsCreated, 1);
   assert.equal(plan.counters.linksCreated, 1);
-  assert.equal(plan.counters.writes, 2);
-  assert.equal(plan.counters.studentsUnchanged, 2);
-  assert.equal(plan.counters.parentsUnchanged, 2);
+  assert.equal(plan.counters.writes, 2, "một em mới và một liên kết — không ghi gì vào tài khoản đã có");
+  assert.equal(plan.counters.studentsExisting, 2);
+  assert.equal(plan.counters.parentsUnchanged, 1, "số bố đã có tài khoản: gắn em mới vào đó");
+  assert.equal(plan.counters.parentsCreated, 0);
 });
 
-test("một số điện thoại khai ở cả cột bố và cột mẹ được ghi nhận là Bố/Mẹ", () => {
+test("SĐT đã đổi ở màn Thông tin học sinh KHÔNG sống lại khi nhập lại file cũ", () => {
+  // Đây là lý do có quy tắc chỉ tạo mới. Trước đây nhập lại file cũ là tạo lại tài
+  // khoản cho số cũ rồi gắn lại vào em: người cầm số cũ vào xem được con người khác.
   idFactory.counter = 0;
-  const snapshot = snapshotOf();
-  const state = applyPlan(planDirectoryWrites({ snapshot, timestamp: TIMESTAMP, idFactory }));
+  const state = applyPlan(planDirectoryWrites({ snapshot: snapshotOf(), timestamp: TIMESTAMP, idFactory }));
+  const bo = state.users.find((user) => user.account === "0975662437");
+  Object.assign(bo, { account: "0912000111", accountLower: "0912000111" });
 
-  const swapped = snapshotOf();
-  swapped.guardians[1].students[0].relationship = "Mẹ";
-  const plan = planDirectoryWrites({ snapshot: swapped, ...state, timestamp: TIMESTAMP, idFactory });
-  assert.equal(plan.counters.linksUpdated, 1);
-  assert.equal(plan.writes[0].data.relationship, "Bố/Mẹ");
-
-  // Đã là "Bố/Mẹ" rồi thì lần sau không ghi lại nữa.
-  const settled = planDirectoryWrites({ snapshot: swapped, ...applyPlan(plan, state), timestamp: TIMESTAMP, idFactory });
-  assert.equal(settled.counters.writes, 0);
+  const plan = planDirectoryWrites({ snapshot: snapshotOf(), ...state, timestamp: TIMESTAMP, idFactory });
+  assert.equal(plan.counters.writes, 0);
+  assert.equal(plan.writes.filter((write) => write.collection === "users").length, 0, "không tạo lại tài khoản cho số cũ");
+  assert.equal(plan.writes.filter((write) => write.collection === "parentStudents").length, 0);
 });
 
-test("tài khoản đang tắt được bật lại, tài khoản đang bật thì bỏ qua", () => {
+test("đối chiếu cập nhật lớp của em đã có nhưng KHÔNG đụng liên hệ phụ huynh", () => {
+  idFactory.counter = 0;
+  const state = applyPlan(planDirectoryWrites({ snapshot: snapshotOf(), timestamp: TIMESTAMP, idFactory }));
+  Object.assign(state.users.find((user) => user.account === "0975662437"), { account: "0912000111", accountLower: "0912000111" });
+
+  const changed = snapshotOf();
+  changed.students[0].className = "4A2";
+  changed.students[0].grade = 4;
+  changed.guardians[0].email = "moi@vd.vn";
+
+  const plan = planDirectoryWrites({ snapshot: changed, ...state, timestamp: TIMESTAMP, idFactory, capNhatHocSinhDaCo: true });
+  assert.deepEqual(plan.writes.map((write) => write.collection), ["students"]);
+});
+
+test("một số điện thoại khai ở cả cột bố và cột mẹ của em mới được ghi nhận là Bố/Mẹ", () => {
+  idFactory.counter = 0;
+  const snapshot = {
+    students: [snapshotOf().students[0]],
+    guardians: [
+      { account: "0901234567", displayName: "Mai Lan", students: [{ studentCode: "NSHM01", relationship: "Mẹ" }] },
+      { account: "0901234567", displayName: "Mai Lan", students: [{ studentCode: "NSHM01", relationship: "Bố" }] },
+    ],
+  };
+  const plan = planDirectoryWrites({ snapshot, timestamp: TIMESTAMP, idFactory });
+  const lienKet = plan.writes.filter((write) => write.collection === "parentStudents");
+  assert.equal(lienKet.length, 2, "cùng một khoá liên kết, lần sau ghi đè lần trước");
+  assert.equal(lienKet[1].data.relationship, "Bố/Mẹ");
+});
+
+test("tài khoản đã có không bị file ghi gì — kể cả đang tắt; em mới chỉ được gắn thêm", () => {
   idFactory.counter = 0;
   const state = applyPlan(planDirectoryWrites({ snapshot: snapshotOf(), timestamp: TIMESTAMP, idFactory }));
   state.users[0].active = false;
 
-  const plan = planDirectoryWrites({ snapshot: snapshotOf(), ...state, timestamp: TIMESTAMP, idFactory });
-  assert.equal(plan.counters.parentsUpdated, 1);
-  assert.equal(plan.counters.parentsUnchanged, 1);
-  assert.equal(plan.writes.length, 1);
-  assert.equal(plan.writes[0].data.active, true);
+  const lai = planDirectoryWrites({ snapshot: snapshotOf(), ...state, timestamp: TIMESTAMP, idFactory });
+  assert.equal(lai.counters.writes, 0);
+
+  const grown = snapshotOf();
+  grown.students.push({ code: "NSHM03", name: "Lê Minh Khang", dateOfBirth: "2019-02-20", grade: 2, className: "2A1", educationLevel: "Tiểu học" });
+  grown.guardians[0].students.push({ studentCode: "NSHM03", relationship: "Mẹ" });
+  const plan = planDirectoryWrites({ snapshot: grown, ...state, timestamp: TIMESTAMP, idFactory });
+  assert.deepEqual(plan.writes.map((write) => write.collection).sort(), ["parentStudents", "students"]);
 });
 
 test("số điện thoại phụ huynh trùng với tài khoản nhà trường thì dừng và báo rõ", () => {
@@ -133,18 +178,18 @@ test("số điện thoại phụ huynh trùng với tài khoản nhà trường 
   );
 });
 
-test("bản ghi cũ thiếu accountLower được bổ sung đúng một lần", () => {
+test("số chỉ đi với em đã có thì không tạo tài khoản, không ghi gì", () => {
   idFactory.counter = 0;
   const state = {
-    students: [],
-    users: [{ id: "u_old", account: "0901234567", role: "parent", active: true }],
+    students: [{ id: "hs1", code: "NSHM01", name: "Nguyễn Minh An", dateOfBirth: "2018-05-02", grade: 3, homeroom: "3A2", level: "Tiểu học", status: "active" }],
+    users: [],
     links: [],
   };
-  const snapshot = { students: [], guardians: [{ account: "0901234567", displayName: "Mai Lan", students: [] }] };
-  const first = planDirectoryWrites({ snapshot, ...state, timestamp: TIMESTAMP, idFactory });
-  assert.equal(first.counters.parentsUpdated, 1);
-  assert.equal(first.writes[0].data.accountLower, "0901234567");
-
-  const second = planDirectoryWrites({ snapshot, ...applyPlan(first, state), timestamp: TIMESTAMP, idFactory });
-  assert.equal(second.counters.writes, 0);
+  const snapshot = {
+    students: [snapshotOf().students[0]],
+    guardians: [{ account: "0901234567", displayName: "Mai Lan", students: [{ studentCode: "NSHM01", relationship: "Mẹ" }] }],
+  };
+  const plan = planDirectoryWrites({ snapshot, ...state, timestamp: TIMESTAMP, idFactory });
+  assert.equal(plan.counters.writes, 0, "em chưa có SĐT phụ huynh thì thêm ở màn Thông tin học sinh, không phải nhập lại file");
+  assert.equal(plan.counters.parentsCreated, 0);
 });

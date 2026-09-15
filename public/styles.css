@@ -561,6 +561,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .form-field select { padding: 0 11px; }
 .form-field input[type="file"] { padding: 11px 13px; font-size: 11px; }
 .field-hint { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+/* Màn Thông tin học sinh: mỗi tài khoản phụ huynh một khung sửa riêng. */
+.hs-lien-he { line-height: 1.6; }
+.lien-he-the { margin-bottom: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: #fbfbfe; }
+.lien-he-the .inline-alert { margin-top: 10px; }
+.lien-he-them { border-style: dashed; }
+.lien-he-dau { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.lien-he-nut { display: flex; justify-content: flex-end; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
 .chip-toggle { position: relative; }
 .chip-toggle input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }

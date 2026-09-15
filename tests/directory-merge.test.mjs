@@ -142,6 +142,8 @@ test("học sinh lên cấp không bị coi là nghỉ học", () => {
   const plan = planDirectoryWrites({
     snapshot: merged.snapshot, students: EXISTING, timestamp: TIMESTAMP, idFactory, codeFactory,
     allSourcesLoaded: merged.allSourcesLoaded,
+    // Lên cấp là việc của đối chiếu đầu năm — chế độ duy nhất còn cập nhật lớp của em đã có.
+    capNhatHocSinhDaCo: true,
   });
   assert.equal(plan.counters.studentsDeactivated, 0, "không được vô hiệu hóa em đã lên cấp");
   assert.equal(plan.counters.studentsUpdated, 3, "chỉ cập nhật khối và lớp hành chính");

@@ -21,6 +21,10 @@ import { ACTIVE_REGISTRATION_STATUSES, ASSIGNABLE_STATUSES, DOI_LOP_DUOC, PENDIN
 import { conflictMessage, intervalsOverlap } from "./schedule-conflict.mjs";
 import { IMPORT_MODES, buildExcelDirectory } from "./directory-excel.mjs";
 import {
+  cheSdt, chiTietHocSinh, docBoLoc, docYeuCauSua, docYeuCauThem, ghepDanhBa, lapKeHoachSua, lapKeHoachThem, locDanhBa,
+  taoHangDoiGhi,
+} from "./lien-he-phu-huynh.mjs";
+import {
   THEO_KHOI, caHopVoiEm, chiConMoTaLich, docThuNgoaiTenClb, doanCaHoc, docFileXepLop, gomCaTheoTenClb, gomOChonClb,
   khoaTenClb, timNhomClb,
 } from "./xep-lop-import.mjs";
@@ -129,6 +133,15 @@ const SYNC_INTERVAL_MS = Math.max(0, Number(process.env.SHEETS_SYNC_INTERVAL_MIN
 const CHO_PHEP_DOI_CHIEU = process.env.CHO_PHEP_DOI_CHIEU === "1";
 
 /**
+ * Đồng bộ danh bạ từ Google Sheets — mặc định KHOÁ (quyết định ngày 15/09/2026).
+ *
+ * Nhà trường sửa SĐT, email phụ huynh ngay trên phần mềm ở màn Thông tin học sinh, và
+ * nhập file thì chỉ tạo em mới. Một nút bấm kéo dữ liệu từ file Google đã ngừng cập
+ * nhật là mời người ta tưởng nó "làm mới" danh bạ. Khoá cả nút bấm tay lẫn lịch tự chạy.
+ */
+const CHO_PHEP_DONG_BO_GOOGLE = process.env.CHO_PHEP_DONG_BO_GOOGLE === "1";
+
+/**
  * Nhập đăng ký hàng loạt — mặc định TẮT vì CHƯA XONG.
  *
  * Vòng rà soát đối kháng tìm 18 lỗi, 10 lỗi nặng, tất cả tái hiện được bằng mã chạy
@@ -157,7 +170,7 @@ const CHO_PHEP_NHAP_HANG_LOAT = process.env.CHO_PHEP_NHAP_HANG_LOAT === "1";
  * khoá toàn bộ đường vô hiệu hoá, dù lượt ghi đến từ file Excel hay từ Google Sheets.
  */
 const chapNhanCoNghiHoc = (allSourcesLoaded) => Boolean(allSourcesLoaded) && CHO_PHEP_DOI_CHIEU;
-const SYNC_SCHEDULE_ENABLED = SYNC_INTERVAL_MS > 0 && !process.env.VERCEL;
+const SYNC_SCHEDULE_ENABLED = SYNC_INTERVAL_MS > 0 && !process.env.VERCEL && CHO_PHEP_DONG_BO_GOOGLE;
 const EXCEL_IMPORT_LIMIT = 12_000_000;
 
 const syncScheduler = createSyncScheduler({
@@ -415,6 +428,11 @@ function initializeDatabase() {
       before_json TEXT,
       after_json TEXT,
       reason TEXT,
+      created_at TEXT NOT NULL
+    );
+    -- Số phụ huynh đã bị đổi đi ở màn Thông tin học sinh: nhập file không tạo lại tài khoản cho số này.
+    CREATE TABLE IF NOT EXISTS retired_parent_phones (
+      account TEXT PRIMARY KEY,
       created_at TEXT NOT NULL
     );
   `);
@@ -1013,6 +1031,31 @@ async function countActiveStudents() {
   return asInt(db.prepare("SELECT COUNT(*) AS n FROM students WHERE status = 'active'").get()?.n);
 }
 
+/** Mã học sinh đang có → trạng thái. null khi nền lưu trữ không đọc được cả danh bạ. */
+async function maHocSinhDangCo() {
+  if (businessStore) {
+    if (typeof businessStore.listAllStudents !== "function") return null;
+    return new Map((await businessStore.listAllStudents()).map((row) => [row.code, row.status]));
+  }
+  return new Map(db.prepare("SELECT code, status FROM students").all().map((row) => [row.code, row.status]));
+}
+
+/**
+ * Em MỚI trong file đi kèm một số đã bị đổi đi ở màn Thông tin học sinh: lượt ghi sẽ
+ * không tạo tài khoản cho số đó (xem planDirectoryWrites), nên báo trước để người nhập
+ * biết em nào sẽ vào hệ thống mà chưa có SĐT phụ huynh.
+ */
+async function soDaDoiTrongFile(snapshot, maDaCo) {
+  if (!maDaCo) return { soDaDoi: null, emMatSoDaDoi: [] };
+  const soCuaEmMoi = snapshot.guardians.filter((guardian) => guardian.students.some((item) => !maDaCo.has(item.studentCode)));
+  const daDoi = await locSoDaDoi(soCuaEmMoi.map((guardian) => guardian.account));
+  if (!daDoi) return { soDaDoi: null, emMatSoDaDoi: [] };
+  const tapDaDoi = new Set(daDoi.map((account) => String(account).toLowerCase()));
+  const emMat = soCuaEmMoi.filter((guardian) => tapDaDoi.has(guardian.account.toLowerCase()))
+    .flatMap((guardian) => guardian.students.filter((item) => !maDaCo.has(item.studentCode)).map((item) => item.studentCode));
+  return { soDaDoi: tapDaDoi.size, emMatSoDaDoi: [...new Set(emMat)].slice(0, 30) };
+}
+
 async function syncGoogleDirectory(actorUserId) {
   const loaded = await directorySource.loadForSync();
   const timestamp = nowIso();
@@ -1022,6 +1065,7 @@ async function syncGoogleDirectory(actorUserId) {
     allSourcesLoaded: chapNhanCoNghiHoc(loaded.allSourcesLoaded),
   };
   const result = businessStore ? await businessStore.syncDirectory(context) : syncDirectoryLocal(context);
+  xoaBoNhoDanhBa();
   // Kết quả từng file được trả về nguyên vẹn để màn hình quản trị chỉ đúng file
   // đang hỏng, thay vì chỉ báo chung chung là "đồng bộ lỗi".
   return {
@@ -1034,14 +1078,18 @@ async function syncGoogleDirectory(actorUserId) {
 
 // Nhánh SQLite dùng chung bộ lập kế hoạch với MySQL và Firestore, để ba nền lưu
 // trữ hành xử y hệt nhau — nhất là ở quy tắc đánh dấu nghỉ học.
-function syncDirectoryLocal({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded }) {
+function syncDirectoryLocal({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded, capNhatHocSinhDaCo = false }) {
   const plan = planDirectoryWrites({
     snapshot,
     students: db.prepare("SELECT id, code, name, date_of_birth AS dateOfBirth, grade, homeroom, level, status FROM students").all(),
     users: db.prepare("SELECT id, account, lower(account) AS accountLower, role, active, email FROM users").all()
       .map((row) => ({ ...row, active: asInt(row.active) === 1 })),
     links: db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students").all(),
-    timestamp, idFactory, allSourcesLoaded: chapNhanCoNghiHoc(allSourcesLoaded),
+    timestamp, idFactory, allSourcesLoaded: chapNhanCoNghiHoc(allSourcesLoaded), capNhatHocSinhDaCo,
+    laSoDaDoi: (() => {
+      const tapDaDoi = new Set(db.prepare("SELECT account FROM retired_parent_phones").all().map((row) => row.account));
+      return (account) => tapDaDoi.has(String(account).toLowerCase());
+    })(),
   });
 
   db.exec("BEGIN IMMEDIATE");
@@ -1085,7 +1133,7 @@ function syncDirectoryLocal({ snapshot, actorUserId, timestamp, idFactory, sourc
       .run(idFactory("audit"), actorUserId, syncId,
         JSON.stringify({ source, counters: plan.counters, scannedRows: analysis.scannedRows }), timestamp);
     db.exec("COMMIT");
-    return { syncId, counters: plan.counters, scannedRows: analysis.scannedRows, deactivated: plan.deactivated };
+    return { syncId, counters: plan.counters, scannedRows: analysis.scannedRows, deactivated: plan.deactivated, daCo: plan.daCo, emMatSoDaDoi: plan.emMatSoDaDoi };
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
@@ -2075,8 +2123,8 @@ async function lookupAccount(rawAccount, { canSeeCode = false } = {}) {
       found: false,
       directory,
       diagnosis: directory.parents === 0
-        ? "Hệ thống chưa có tài khoản phụ huynh nào. Cần chạy Đồng bộ học sinh & tài khoản PH từ Google Sheets trước."
-        : "Không tìm thấy tài khoản cho số này. Thường do số điện thoại chưa có trong Google Sheets, nằm ở cột không được nhận diện, hoặc lần đồng bộ gần nhất chạy trước khi bổ sung số này.",
+        ? "Hệ thống chưa có tài khoản phụ huynh nào. Cần nhập danh bạ học sinh từ file Excel trước."
+        : "Không tìm thấy tài khoản cho số này: số chưa có trong danh bạ, hoặc đã được đổi sang số khác. Nhập lại file không bổ sung được số cho em đã có — quản trị tra em ở màn Thông tin học sinh để thêm hoặc sửa SĐT phụ huynh.",
     };
   }
 
@@ -2113,7 +2161,7 @@ async function lookupAccount(rawAccount, { canSeeCode = false } = {}) {
   else if (account.chuaKichHoat) diagnosis = "Tài khoản chưa kích hoạt. Phụ huynh đăng nhập bằng chính số điện thoại của mình, hoặc bằng mã đã được cấp, rồi đặt mật khẩu riêng.";
   else if (account.mustChangePassword) diagnosis = "Tài khoản chưa kích hoạt. Phụ huynh đăng nhập bằng chính số điện thoại của mình rồi đặt mật khẩu riêng.";
   else diagnosis = "Phụ huynh đã đổi sang mật khẩu riêng. Nếu quên thì bấm đặt lại — mật khẩu trở về chính số điện thoại và phải đổi ngay lần sau.";
-  if (!students.length) diagnosis += " Lưu ý: tài khoản chưa liên kết học sinh nào nên sau khi vào sẽ không thấy con.";
+  if (!students.length) diagnosis += " Lưu ý: tài khoản chưa liên kết học sinh nào nên sau khi vào sẽ không thấy con — quản trị gắn em vào số này ở màn Thông tin học sinh.";
 
   return { input, normalized, found: true, account, students, directory, diagnosis };
 }
@@ -2152,6 +2200,186 @@ async function resetInitialPassword({ actorUserId, rawAccount }) {
   });
   // Không trả mật khẩu về: nó chính là số điện thoại người gọi vừa nhập vào.
   return { account: normalized, mustChangePassword: true, initialPassword: "so-dien-thoai" };
+}
+
+// ---- Thông tin học sinh: sửa liên hệ phụ huynh (15/09/2026) ----
+//
+// Quy tắc nằm ở lien-he-phu-huynh.mjs; ở đây chỉ đọc/ghi SQLite và chuyển sang kho
+// dữ liệu khác khi chạy MySQL.
+
+function kiemNenHoTroLienHe(ten) {
+  if (businessStore && typeof businessStore[ten] !== "function") {
+    throw httpError(501, "NEN_LUU_TRU_CHUA_HO_TRO",
+      "Nền lưu trữ đang dùng chưa hỗ trợ màn Thông tin học sinh. Tính năng này làm cho MySQL.");
+  }
+}
+
+const hangPhuHuynhSqlite = (row) => ({
+  id: row.id, account: row.account, displayName: row.display_name, email: row.email || null,
+  active: asInt(row.active) === 1, daKichHoat: !usesInitialCredential(row),
+});
+const COT_PHU_HUYNH_SQLITE = "id, account, display_name, email, active, must_change_password, password_hash";
+
+/**
+ * Cả danh bạ đã giải mã, giữ tối đa 30 giây. Mỗi lượt gõ tìm kiếm là một lượt tải; trên
+ * MySQL đó là vài chục nghìn lần giải mã đồng bộ ngay trên luồng chính — đúng luồng đang
+ * phục vụ phụ huynh vào ngày mở đăng ký. Mọi lượt ghi danh bạ đều xoá bộ nhớ này ngay.
+ */
+let boNhoDanhBa = null;
+const BO_NHO_DANH_BA_MS = 30_000;
+function xoaBoNhoDanhBa() { boNhoDanhBa = null; }
+
+async function docDanhBaLienHe() {
+  kiemNenHoTroLienHe("listStudentContacts");
+  if (boNhoDanhBa && Date.now() - boNhoDanhBa.luc < BO_NHO_DANH_BA_MS) return boNhoDanhBa.duLieu;
+  const luot = { luc: Date.now() };
+  luot.duLieu = (async () => {
+    if (businessStore) return businessStore.listStudentContacts();
+    return {
+      students: db.prepare("SELECT id, code, name, grade, homeroom, level, status FROM students").all(),
+      links: db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students").all(),
+      parents: db.prepare(`SELECT ${COT_PHU_HUYNH_SQLITE} FROM users WHERE role = 'parent'`).all().map(hangPhuHuynhSqlite),
+    };
+  })();
+  boNhoDanhBa = luot;
+  try {
+    return await luot.duLieu;
+  } catch (error) {
+    if (boNhoDanhBa === luot) boNhoDanhBa = null;
+    throw error;
+  }
+}
+
+/** Một em, các phụ huynh của em, và các em khác dùng chung từng tài khoản — không tải cả danh bạ. */
+async function docLienHeMotHocSinh(studentId) {
+  kiemNenHoTroLienHe("lienHeCuaHocSinh");
+  if (businessStore) return businessStore.lienHeCuaHocSinh(studentId);
+  const dauHoi = (mang) => mang.map(() => "?").join(", ");
+  const parentIds = [...new Set(db.prepare("SELECT parent_user_id AS id FROM parent_students WHERE student_id = ?")
+    .all(studentId).map((row) => row.id))];
+  const links = parentIds.length
+    ? db.prepare(`SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students
+        WHERE parent_user_id IN (${dauHoi(parentIds)})`).all(...parentIds)
+    : [];
+  const studentIds = [...new Set([studentId, ...links.map((link) => link.studentId)])];
+  return {
+    students: db.prepare(`SELECT id, code, name, grade, homeroom, level, status FROM students WHERE id IN (${dauHoi(studentIds)})`)
+      .all(...studentIds),
+    links,
+    parents: parentIds.length
+      ? db.prepare(`SELECT ${COT_PHU_HUYNH_SQLITE} FROM users WHERE role = 'parent' AND id IN (${dauHoi(parentIds)})`)
+        .all(...parentIds).map(hangPhuHuynhSqlite)
+      : [],
+  };
+}
+
+/** Những số trong danh sách đã bị đổi đi ở màn này. null khi nền lưu trữ không hỗ trợ. */
+async function locSoDaDoi(accounts) {
+  if (businessStore) return typeof businessStore.locSoDaDoi === "function" ? businessStore.locSoDaDoi(accounts) : null;
+  const tapDaDoi = new Set(db.prepare("SELECT account FROM retired_parent_phones").all().map((row) => row.account));
+  return accounts.filter((account) => tapDaDoi.has(String(account).toLowerCase()));
+}
+
+// Xếp hàng rồi mới xin khoá danh bạ — xem taoHangDoiGhi.
+const ghiLienHeTuanTu = taoHangDoiGhi((task) => syncScheduler.runExclusive(task), xoaBoNhoDanhBa);
+
+async function suaLienHePhuHuynh({ actorUserId, userId, body }) {
+  const { thayDoi, saiNguoi } = docYeuCauSua(body);
+  const timestamp = nowIso();
+  kiemNenHoTroLienHe("capNhatLienHePhuHuynh");
+  if (businessStore) return businessStore.capNhatLienHePhuHuynh({ userId, thayDoi, saiNguoi, actorUserId, timestamp });
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const row = db.prepare("SELECT id, role, account, email, display_name FROM users WHERE id = ?").get(userId);
+    let trung = null;
+    if (row && thayDoi.account !== undefined && thayDoi.account !== row.account) {
+      const khac = db.prepare("SELECT id, role FROM users WHERE lower(account) = lower(?) AND id <> ?").get(thayDoi.account, userId);
+      if (khac) {
+        trung = { ...khac, soHocSinh: asInt(db.prepare("SELECT COUNT(*) AS n FROM parent_students WHERE parent_user_id = ?").get(khac.id)?.n) };
+      }
+    }
+    const keHoach = lapKeHoachSua({
+      hienTai: row && { id: row.id, role: row.role, account: row.account, email: row.email || null, displayName: row.display_name },
+      thayDoi, saiNguoi, trung,
+    });
+    if (!keHoach.khongDoi) {
+      if (keHoach.doiSo) {
+        // Đổi số thì xoá luôn đếm sai và khoá tạm: chúng thuộc về những lần gõ số cũ.
+        db.prepare("UPDATE users SET account = ?, login_failures = 0, locked_until = NULL WHERE id = ?").run(thayDoi.account, userId);
+        // Nhớ số cũ để lượt nhập file sau không tạo lại tài khoản cho nó; số mới thì
+        // đã có chủ nên bỏ khỏi danh sách (trường hợp đổi qua lại).
+        db.prepare("INSERT INTO retired_parent_phones (account, created_at) VALUES (?, ?) ON CONFLICT(account) DO NOTHING")
+          .run(String(row.account).toLowerCase(), timestamp);
+        db.prepare("DELETE FROM retired_parent_phones WHERE account = ?").run(thayDoi.account.toLowerCase());
+      }
+      if (keHoach.doiEmail) db.prepare("UPDATE users SET email = ? WHERE id = ?").run(thayDoi.email, userId);
+      if (keHoach.doiTen) db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(thayDoi.displayName, userId);
+      if (keHoach.saiNguoi) {
+        db.prepare(`UPDATE users SET password_salt = '', password_hash = '', activation_code = NULL,
+          must_change_password = 1, login_failures = 0, locked_until = NULL WHERE id = ?`).run(userId);
+        db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+      }
+      // Ghi thẳng trong giao dịch, không qua writeAudit: một lượt await ở giữa BEGIN và
+      // COMMIT là mở cửa cho request khác chạy câu lệnh lọt vào giao dịch này.
+      db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, before_json, after_json, reason, created_at)
+        VALUES (?, ?, 'UPDATE_PARENT_CONTACT', 'user', ?, ?, ?, ?, ?)`)
+        .run(id("audit"), actorUserId, userId, JSON.stringify(keHoach.nhatKy.before), JSON.stringify(keHoach.nhatKy.after),
+          "Sửa liên hệ phụ huynh ở màn Thông tin học sinh", timestamp);
+    }
+    db.exec("COMMIT");
+    const { nhatKy, ...ketQua } = keHoach;
+    return ketQua;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+async function themPhuHuynh({ actorUserId, studentId, body }) {
+  const yeuCau = docYeuCauThem(body);
+  const timestamp = nowIso();
+  const userIdMoi = id("u_parent");
+  kiemNenHoTroLienHe("themPhuHuynhChoHocSinh");
+  if (businessStore) return businessStore.themPhuHuynhChoHocSinh({ studentId, ...yeuCau, userIdMoi, actorUserId, timestamp });
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const coSan = db.prepare("SELECT id, role, display_name FROM users WHERE lower(account) = lower(?)").get(yeuCau.account) || null;
+    const taiKhoan = coSan && {
+      id: coSan.id, role: coSan.role, displayName: coSan.display_name,
+      hocSinh: db.prepare(`SELECT s.name, s.homeroom FROM students s JOIN parent_students ps ON ps.student_id = s.id
+        WHERE ps.parent_user_id = ? ORDER BY s.grade, s.name`).all(coSan.id),
+    };
+    const keHoach = lapKeHoachThem({
+      coHocSinh: Boolean(db.prepare("SELECT 1 FROM students WHERE id = ?").get(studentId)),
+      taiKhoan,
+      daLienKet: Boolean(taiKhoan && db.prepare("SELECT 1 FROM parent_students WHERE parent_user_id = ? AND student_id = ?").get(taiKhoan.id, studentId)),
+      ganVaoTaiKhoanCo: yeuCau.ganVaoTaiKhoanCo,
+    });
+    const parentUserId = keHoach.taoTaiKhoan ? userIdMoi : taiKhoan.id;
+    if (keHoach.taoTaiKhoan) {
+      db.prepare(`INSERT INTO users
+        (id, account, display_name, email, role, password_salt, password_hash, activation_code,
+          auth_provider, must_change_password, login_failures, locked_until, active, created_at)
+        VALUES (?, ?, ?, ?, 'parent', '', '', NULL, 'local', 1, 0, NULL, 1, ?)`)
+        .run(parentUserId, yeuCau.account, yeuCau.displayName, yeuCau.email, timestamp);
+    }
+    // Quản trị chủ động thêm lại chính số này: số đã có chủ, bỏ khỏi danh sách số đã đổi.
+    db.prepare("DELETE FROM retired_parent_phones WHERE account = ?").run(yeuCau.account.toLowerCase());
+    db.prepare("INSERT INTO parent_students (parent_user_id, student_id, relationship) VALUES (?, ?, ?)")
+      .run(parentUserId, studentId, yeuCau.relationship);
+    db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, reason, created_at)
+      VALUES (?, ?, 'ADD_PARENT_CONTACT', 'student', ?, ?, ?, ?)`)
+      .run(id("audit"), actorUserId, studentId, JSON.stringify({
+        parentUserId, account: cheSdt(yeuCau.account), relationship: yeuCau.relationship, taoTaiKhoan: keHoach.taoTaiKhoan,
+      }), "Thêm SĐT phụ huynh ở màn Thông tin học sinh", timestamp);
+    db.exec("COMMIT");
+    return { parentUserId, taoTaiKhoan: keHoach.taoTaiKhoan };
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 // ---- Xuất toàn bộ dữ liệu ----
@@ -2743,6 +2971,7 @@ const groupId = maTheoNgay("GR");
       integration: {
         ...directorySource.getStatus(),
         schedule: syncScheduler.getStatus(),
+        dongBoDaKhoa: !CHO_PHEP_DONG_BO_GOOGLE,
         // Kèm số liệu đọc từ cơ sở dữ liệu, để màn hình phân biệt được "tiến trình
         // chưa chạy lần nào kể từ lúc bật" với "hệ thống chưa có dữ liệu".
         stored: await directorySummary(),
@@ -2757,6 +2986,11 @@ const groupId = maTheoNgay("GR");
 
   if (method === "POST" && url.pathname === "/api/admin/integrations/google-sheets/sync") {
     const user = await requireSchoolUser(req, CAP.dongBoDanhBa);
+    if (!CHO_PHEP_DONG_BO_GOOGLE) {
+      throw httpError(403, "DONG_BO_GOOGLE_DA_KHOA",
+        "Đồng bộ từ Google Sheets đã khoá. Học sinh mới nhập bằng file Excel; sửa SĐT, email phụ huynh ở màn "
+        + "Thông tin học sinh. Cần mở lại thì đặt CHO_PHEP_DONG_BO_GOOGLE=1 trong .env.");
+    }
     const { confirmation = "" } = await readJson(req);
     if (confirmation !== "SYNC_STUDENT_DIRECTORY") throw httpError(422, "SYNC_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đồng bộ danh bạ học sinh.");
     // Đi qua bộ hẹn giờ để lượt bấm tay không chồng lên lượt chạy theo lịch:
@@ -2774,9 +3008,19 @@ const groupId = maTheoNgay("GR");
     const payload = await readJson(req, EXCEL_IMPORT_LIMIT);
     const ketQua = buildExcelDirectory(payload.files || [], { mode: payload.mode || IMPORT_MODES.boSung });
     const dangCo = await countActiveStudents();
+    // Chỉ tạo mới: nói TRƯỚC khi ghi bao nhiêu em sẽ được thêm và bao nhiêu em bị bỏ
+    // qua vì đã có, để người nhập không tưởng file vừa sửa lớp hay SĐT cho các em đó.
+    const maDaCo = await maHocSinhDangCo();
+    const emDaCo = maDaCo ? ketQua.snapshot.students.filter((item) => maDaCo.has(item.code)) : null;
     return sendJson(res, 200, {
       preview: {
         mode: ketQua.mode,
+        capNhatHocSinhDaCo: ketQua.mode === IMPORT_MODES.doiChieu,
+        studentsNew: emDaCo ? ketQua.snapshot.students.length - emDaCo.length : null,
+        studentsExisting: emDaCo ? emDaCo.length : null,
+        existingInactive: emDaCo ? emDaCo.filter((item) => maDaCo.get(item.code) !== "active").length : null,
+        existingSample: emDaCo ? emDaCo.slice(0, 30).map((item) => item.code) : [],
+        ...(await soDaDoiTrongFile(ketQua.snapshot, maDaCo)),
         readyToSync: ketQua.readyToSync,
         allSourcesLoaded: ketQua.allSourcesLoaded,
         scannedRows: ketQua.scannedRows,
@@ -2827,15 +3071,18 @@ const groupId = maTheoNgay("GR");
       source: { kind: "excel", mode, files: ketQua.results.map((item) => ({ key: item.key, label: item.label, ok: item.ok })) },
       analysis: { scannedRows: ketQua.scannedRows },
       allSourcesLoaded: chapNhanCoNghiHoc(ketQua.allSourcesLoaded),
+      // Chỉ đối chiếu toàn trường (khoá bằng CHO_PHEP_DOI_CHIEU) mới cập nhật lớp của em
+      // đã có. Bổ sung thì chỉ tạo mới — xem planDirectoryWrites.
+      capNhatHocSinhDaCo: mode === IMPORT_MODES.doiChieu,
     };
     // Đi qua cùng cái khóa với đồng bộ theo lịch: hai lượt ghi song song lên bảng
     // học sinh là chuyện phải tránh tuyệt đối.
     const result = await syncScheduler.runExclusive(() => (businessStore
       ? businessStore.syncDirectory(context)
-      : syncDirectoryLocal(context)));
+      : syncDirectoryLocal(context))).finally(xoaBoNhoDanhBa);
     return sendJson(res, 200, {
       result: {
-        ...result, mode, allSourcesLoaded: ketQua.allSourcesLoaded,
+        ...result, daCo: (result.daCo || []).slice(0, 30), emMatSoDaDoi: (result.emMatSoDaDoi || []).slice(0, 30), mode, allSourcesLoaded: ketQua.allSourcesLoaded,
         sources: ketQua.sources, duplicates: ketQua.duplicates,
       },
     });
@@ -3110,6 +3357,41 @@ const groupId = maTheoNgay("GR");
       throw httpError(422, "RESET_CONFIRMATION_REQUIRED", "Cần xác nhận rõ trước khi đặt lại mật khẩu của phụ huynh.");
     }
     return sendJson(res, 200, { result: await resetInitialPassword({ actorUserId: user.id, rawAccount: account }) });
+  }
+
+  // ---- Thông tin học sinh: chỉ quản trị (quyết định 15/09/2026). Giáo vụ không vào.
+  if (method === "GET" && url.pathname === "/api/admin/hoc-sinh") {
+    await requireSchoolUser(req, CAP.thongTinHocSinh);
+    return sendJson(res, 200, locDanhBa(ghepDanhBa(await docDanhBaLienHe()), docBoLoc(url.searchParams)));
+  }
+
+  const hocSinhMatch = url.pathname.match(/^\/api\/admin\/hoc-sinh\/([^/]+)$/);
+  if (method === "GET" && hocSinhMatch) {
+    await requireSchoolUser(req, CAP.thongTinHocSinh);
+    const studentId = decodeURIComponent(hocSinhMatch[1]);
+    const hocSinh = chiTietHocSinh(ghepDanhBa(await docLienHeMotHocSinh(studentId)), studentId);
+    if (!hocSinh) throw httpError(404, "HOC_SINH_KHONG_TON_TAI", "Không tìm thấy học sinh này.");
+    return sendJson(res, 200, { hocSinh });
+  }
+
+  const themPhuHuynhMatch = url.pathname.match(/^\/api\/admin\/hoc-sinh\/([^/]+)\/phu-huynh$/);
+  if (method === "POST" && themPhuHuynhMatch) {
+    const user = await requireSchoolUser(req, CAP.thongTinHocSinh);
+    const body = await readJson(req);
+    const ketQua = await ghiLienHeTuanTu(() => themPhuHuynh({
+      actorUserId: user.id, studentId: decodeURIComponent(themPhuHuynhMatch[1]), body,
+    }));
+    return sendJson(res, 201, { ketQua });
+  }
+
+  const suaPhuHuynhMatch = url.pathname.match(/^\/api\/admin\/phu-huynh\/([^/]+)$/);
+  if (method === "PATCH" && suaPhuHuynhMatch) {
+    const user = await requireSchoolUser(req, CAP.thongTinHocSinh);
+    const body = await readJson(req);
+    const ketQua = await ghiLienHeTuanTu(() => suaLienHePhuHuynh({
+      actorUserId: user.id, userId: decodeURIComponent(suaPhuHuynhMatch[1]), body,
+    }));
+    return sendJson(res, 200, { ketQua });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/periods") {
@@ -3466,6 +3748,9 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     }
   }
   const server = createAppServer();
+  if (SYNC_INTERVAL_MS > 0 && !CHO_PHEP_DONG_BO_GOOGLE) {
+    console.warn("[dong-bo] Bỏ qua SHEETS_SYNC_INTERVAL_MINUTES: đồng bộ Google Sheets đang khoá (CHO_PHEP_DONG_BO_GOOGLE).");
+  }
   if (SYNC_SCHEDULE_ENABLED) {
     syncScheduler.start();
     console.log(`Tự đồng bộ danh sách học sinh mỗi ${Math.round(SYNC_INTERVAL_MS / 60000)} phút.`);

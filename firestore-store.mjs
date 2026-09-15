@@ -594,9 +594,9 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
         });
       },
 
-      async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded }) {
+      async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded, capNhatHocSinhDaCo = false }) {
         const [studentSnapshot, userSnapshot, linkSnapshot] = await Promise.all([students.get(), users.get(), parentStudents.get()]);
-        const { writes, counters, deactivated } = planDirectoryWrites({
+        const { writes, counters, deactivated, daCo } = planDirectoryWrites({
           snapshot,
           students: snapshotRows(studentSnapshot),
           users: snapshotRows(userSnapshot),
@@ -604,6 +604,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           timestamp,
           idFactory,
           allSourcesLoaded,
+          capNhatHocSinhDaCo,
         });
         await bulkCommitDocuments(writes.map((write) => ({
           path: `${write.collection}/${write.id}`, options: { merge: true }, data: write.data,
@@ -613,7 +614,7 @@ export async function createFirestoreStore({ projectId, seed, authClient }) {
           actorUserId, action: "SYNC_STUDENT_DIRECTORY", entityType: "google_sheet", entityId: syncId,
           after: { source, counters, scannedRows: analysis.scannedRows }, createdAt: timestamp,
         });
-        return { syncId, counters, scannedRows: analysis.scannedRows, deactivated };
+        return { syncId, counters, scannedRows: analysis.scannedRows, deactivated, daCo };
       },
     };
   } catch (error) {

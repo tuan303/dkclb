@@ -198,3 +198,12 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   KEY idx_audit_entity (entity_type, entity_id),
   KEY idx_audit_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Số điện thoại phụ huynh đã bị đổi đi ở màn Thông tin học sinh (15/09/2026). Chỉ giữ
+-- CHỈ MỤC MÙ, không giữ số: đủ để lượt nhập file nhận ra "số này đã bị đổi đi" mà không
+-- tạo lại tài khoản cho người cầm số cũ. Đổi sang hoặc thêm lại chính số đó thì xoá dòng.
+CREATE TABLE IF NOT EXISTS retired_parent_phones (
+  account_index VARCHAR(190) NOT NULL,
+  created_at    VARCHAR(32)  NOT NULL,
+  PRIMARY KEY (account_index)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

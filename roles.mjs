@@ -50,6 +50,9 @@ export const CAP = {
   // quyền ĐĂNG NHẬP THAY một phụ huynh bất kỳ: cấp lại mã sẽ xoá mật khẩu riêng
   // của họ rồi trả mã mới cho người gọi. Vì vậy nó không đi chung với tra cứu.
   maKichHoat: "ma-kich-hoat",
+  // Màn Thông tin học sinh: xem và sửa SĐT, email phụ huynh. Sửa SĐT là ĐỔI SỐ ĐĂNG
+  // NHẬP của tài khoản đó, nên cùng tầm với cấp mã kích hoạt — chỉ quản trị (15/09/2026).
+  thongTinHocSinh: "thong-tin-hoc-sinh",
 };
 
 const ALL_CAPS = Object.values(CAP);
@@ -59,7 +62,7 @@ const ALL_CAPS = Object.values(CAP);
 // KHÔNG quản lý tài khoản nhà trường.
 const MATRIX = {
   [ROLE.superadmin]: ALL_CAPS,
-  [ROLE.admin]: [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.maKichHoat],
+  [ROLE.admin]: [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.maKichHoat, CAP.thongTinHocSinh],
   [ROLE.giaovu]: [CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.danhSachVanHanh],
   [ROLE.parent]: [],
 };

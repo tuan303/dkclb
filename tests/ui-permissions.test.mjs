@@ -33,6 +33,7 @@ test("mỗi mục điều hướng quản trị gắn với một quyền", () =
     ["rosters", "danh-sach-van-hanh"],
     ["reports", "danh-sach-van-hanh"],
     ["accounts", "quan-ly-tai-khoan"],
+    ["hocSinh", "thong-tin-hoc-sinh"],
     ["settings", "tra-cuu-ho-tro"],
   ]) {
     const line = nav.split("\n").find((row) => row.includes(`id: "${id}"`));

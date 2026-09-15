@@ -85,6 +85,7 @@ const adminNav = [
   { id: "rosters", label: "Danh sách lớp CLB", icon: "users", cap: "danh-sach-van-hanh" },
   { section: "Quản trị" },
   { id: "reports", label: "Báo cáo & xuất file", icon: "chart", cap: "danh-sach-van-hanh" },
+  { id: "hocSinh", label: "Thông tin học sinh", icon: "users", cap: "thong-tin-hoc-sinh" },
   { id: "accounts", label: "Tài khoản nhà trường", icon: "settings", cap: "quan-ly-tai-khoan" },
   { id: "structure", label: "Cấu trúc hệ thống", icon: "file" },
   { id: "settings", label: "Cấu hình & phân quyền", icon: "settings", cap: "tra-cuu-ho-tro" },
@@ -101,6 +102,7 @@ const pageMeta = {
   reports: ["Báo cáo & xuất file", "Trung tâm dữ liệu vận hành"], structure: ["Cấu trúc hệ thống", "Bản đồ module MVP"],
   settings: ["Cấu hình & phân quyền", "Quản trị hệ thống"],
   accounts: ["Tài khoản nhà trường", "Chỉ quản trị cao nhất truy cập được"],
+  hocSinh: ["Thông tin học sinh", "Sửa SĐT và email phụ huynh"],
 };
 
 // Bản sao của registration-status.mjs cho phía trình duyệt: app.js được nạp bằng
@@ -528,6 +530,7 @@ function renderPage() {
     rosters: renderRosters, reports: renderReports, structure: renderStructure, settings: renderSettings,
     nhapDangKy: renderNhapDangKy,
     accounts: renderSchoolAccounts,
+    hocSinh: renderHocSinh,
   };
   $("#page-content").innerHTML = (pages[state.page] || renderParentHome)();
   bindPageEvents();
@@ -2622,6 +2625,358 @@ function bindNhapDangKy() {
   });
 }
 
+/* ---------- Thông tin học sinh: sửa liên hệ phụ huynh (15/09/2026) ----------
+ *
+ * Chỉ quản trị. Lọc ở MÁY CHỦ và trả từng trang: 4.445 em kèm SĐT, email phụ huynh
+ * không có lý do gì phải nằm trọn trong bộ nhớ một tab trình duyệt mở cả ngày.
+ *
+ * SĐT phụ huynh CHÍNH LÀ số đăng nhập. Mọi chữ trên màn này phải nói rõ điều đó, vì
+ * người sửa quen nghĩ đây chỉ là "số liên lạc".
+ */
+const HOC_SINH_BO_LOC = { q: "", khoi: "", lop: "", lienHe: "", trangThai: "dang-hoc", trang: 1, moiTrang: 20 };
+
+function hocSinhState() {
+  state.hocSinh = state.hocSinh || { boLoc: { ...HOC_SINH_BO_LOC }, ketQua: null, loi: "", luot: 0 };
+  return state.hocSinh;
+}
+
+function renderHocSinh() {
+  const b = hocSinhState().boLoc;
+  const chon = (dieuKien) => (dieuKien ? "selected" : "");
+  return `<section class="section" style="margin-top:0">
+    <div class="section-head"><div><span class="eyebrow">Quản trị</span><h2>Thông tin học sinh</h2>
+    <p>Tra học sinh rồi bấm <strong>Sửa liên hệ</strong> để đổi SĐT, email phụ huynh. <strong>SĐT phụ huynh là số đăng nhập</strong>: đổi số thì phụ huynh đăng nhập bằng số mới, số cũ không vào được nữa.</p></div></div>
+    <div class="filters">
+      <label class="search-field">${icon("search")}<input id="hs-tim" placeholder="Tên, mã học sinh, lớp, SĐT hoặc email phụ huynh..." value="${escapeHtml(b.q)}" /></label>
+      <select id="hs-khoi" class="select-field" aria-label="Khối"><option value="">Mọi khối</option>
+        ${Array.from({ length: 12 }, (_, i) => i + 1).map((khoi) => `<option value="${khoi}" ${chon(String(b.khoi) === String(khoi))}>Khối ${khoi}</option>`).join("")}</select>
+      <select id="hs-lop" class="select-field" aria-label="Lớp">${renderHocSinhOLop()}</select>
+      <select id="hs-lien-he" class="select-field" aria-label="Tình trạng liên hệ">
+        <option value="">Mọi tình trạng liên hệ</option>
+        <option value="chua-co-sdt" ${chon(b.lienHe === "chua-co-sdt")}>Chưa có SĐT phụ huynh</option>
+        <option value="thieu-email" ${chon(b.lienHe === "thieu-email")}>Còn thiếu email</option>
+      </select>
+      <select id="hs-trang-thai" class="select-field" aria-label="Trạng thái học sinh">
+        <option value="dang-hoc" ${chon(b.trangThai === "dang-hoc")}>Đang học</option>
+        <option value="tat-ca" ${chon(b.trangThai === "tat-ca")}>Kể cả em đã nghỉ</option>
+      </select>
+    </div>
+  </section>
+  <section class="section panel" id="hs-ket-qua">${renderHocSinhKetQua()}</section>`;
+}
+
+function renderHocSinhOLop() {
+  const { boLoc, ketQua } = hocSinhState();
+  const lop = (ketQua?.lopCoSan || []).filter((item) => !boLoc.khoi || String(item.khoi) === String(boLoc.khoi));
+  return `<option value="">Mọi lớp</option>${lop.map((item) =>
+    `<option value="${escapeHtml(item.lop)}" ${boLoc.lop === item.lop ? "selected" : ""}>${escapeHtml(item.lop)}</option>`).join("")}`;
+}
+
+function renderHocSinhKetQua() {
+  const { ketQua: kq, loi } = hocSinhState();
+  if (loi) return `<div class="panel-body"><div class="inline-alert">${icon("clock")}<span>${escapeHtml(loi)}</span></div></div>`;
+  if (!kq) return `<div class="panel-body"><p class="field-hint">Đang tải danh sách học sinh...</p></div>`;
+  const batDau = (kq.trang - 1) * kq.moiTrang;
+  const than = kq.rows.length
+    ? kq.rows.map((row, i) => `<tr>
+        <td>${batDau + i + 1}</td>
+        <td><strong>${escapeHtml(row.name)}</strong>${row.status !== "active" ? ` <span class="badge badge-red">Đã nghỉ</span>` : ""}<br><span class="roster-note">${escapeHtml(row.code)}</span></td>
+        <td>${escapeHtml(row.homeroom || "—")}</td>
+        <td>${row.phuHuynh.length
+          ? row.phuHuynh.map((ph) => `<div class="hs-lien-he"><b>${escapeHtml(ph.relationship)}</b> ${escapeHtml(ph.account)}
+              · ${ph.email ? escapeHtml(ph.email) : `<span class="roster-note">chưa có email</span>`}</div>`).join("")
+          : `<span class="badge badge-gold">Chưa có SĐT phụ huynh</span>`}</td>
+        <td><button class="table-action" data-hs-sua="${escapeHtml(row.id)}">Sửa liên hệ</button></td>
+      </tr>`).join("")
+    : `<tr><td colspan="5" class="empty-cell">Không có học sinh nào khớp bộ lọc.</td></tr>`;
+
+  const so = [];
+  for (let i = 1; i <= kq.soTrang; i += 1) {
+    if (i === 1 || i === kq.soTrang || Math.abs(i - kq.trang) <= 2) so.push(i);
+    else if (so[so.length - 1] !== "…") so.push("…");
+  }
+  const phanTrang = kq.tong ? `<div class="roster-pager">
+      <span class="roster-note">Hiển thị ${batDau + 1}–${Math.min(kq.tong, batDau + kq.moiTrang)} trên ${kq.tong} học sinh</span>
+      <div class="roster-pager-nav">
+        <button class="table-action" data-hs-trang="${kq.trang - 1}" ${kq.trang <= 1 ? "disabled" : ""}>‹</button>
+        ${so.map((i) => (i === "…" ? `<span class="roster-note">…</span>`
+          : `<button class="table-action ${i === kq.trang ? "active" : ""}" data-hs-trang="${i}">${i}</button>`)).join("")}
+        <button class="table-action" data-hs-trang="${kq.trang + 1}" ${kq.trang >= kq.soTrang ? "disabled" : ""}>›</button>
+        <select id="hs-moi-trang" class="select-field">${[20, 50, 100].map((n) =>
+          `<option value="${n}" ${n === kq.moiTrang ? "selected" : ""}>${n} / trang</option>`).join("")}</select>
+      </div>
+    </div>` : "";
+
+  return `<div class="panel-head"><div><h3>${kq.tong} học sinh</h3><p>Sắp theo khối, lớp rồi tên.</p></div></div>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th style="width:44px">#</th><th>Học sinh</th><th>Lớp</th><th>Phụ huynh · SĐT đăng nhập · Email</th><th style="width:120px"></th></tr></thead>
+      <tbody>${than}</tbody>
+    </table></div>
+    ${phanTrang}`;
+}
+
+/** Tải một trang theo bộ lọc hiện tại. Kết quả của lượt gõ cũ về muộn thì bỏ, không vẽ đè lượt mới. */
+async function taiHocSinh() {
+  const hs = hocSinhState();
+  const luot = hs.luot + 1;
+  hs.luot = luot;
+  const query = new URLSearchParams(Object.entries(hs.boLoc)
+    .filter(([, value]) => value !== "" && value !== null && value !== undefined)
+    .map(([key, value]) => [key, String(value)]));
+  try {
+    const ketQua = await api(`/admin/hoc-sinh?${query}`);
+    if (luot !== hs.luot) return;
+    hs.ketQua = ketQua;
+    hs.loi = "";
+    hs.boLoc.trang = ketQua.trang;
+  } catch (error) {
+    if (luot !== hs.luot) return;
+    hs.loi = error.message;
+  }
+  if (state.page !== "hocSinh") return;
+  const khung = $("#hs-ket-qua");
+  if (khung) { khung.innerHTML = renderHocSinhKetQua(); bindHocSinhKetQua(); }
+  // Chỉ vẽ lại ô chọn lớp, KHÔNG vẽ lại ô tìm kiếm: bộ gõ tiếng Việt đang soạn chữ
+  // ngay trong phần tử đó — xem chú thích ở ô tìm kiếm của màn danh sách lớp.
+  const oLop = $("#hs-lop");
+  if (oLop) oLop.innerHTML = renderHocSinhOLop();
+}
+
+function bindHocSinh() {
+  if (state.page !== "hocSinh" || !$("#hs-ket-qua")) return;
+  const hs = hocSinhState();
+  const doiBoLoc = (thayDoi) => {
+    Object.assign(hs.boLoc, thayDoi, { trang: 1 });
+    taiHocSinh();
+  };
+  let hen = null;
+  const oTim = $("#hs-tim");
+  const timSau = () => {
+    clearTimeout(hen);
+    hen = setTimeout(() => doiBoLoc({ q: oTim.value }), 300);
+  };
+  oTim?.addEventListener("input", (event) => { if (!event.isComposing) timSau(); });
+  oTim?.addEventListener("compositionend", timSau);
+  $("#hs-khoi")?.addEventListener("change", (event) => {
+    doiBoLoc({ khoi: event.target.value, lop: "" });
+    $("#hs-lop").innerHTML = renderHocSinhOLop();
+  });
+  $("#hs-lop")?.addEventListener("change", (event) => doiBoLoc({ lop: event.target.value }));
+  $("#hs-lien-he")?.addEventListener("change", (event) => doiBoLoc({ lienHe: event.target.value }));
+  $("#hs-trang-thai")?.addEventListener("change", (event) => doiBoLoc({ trangThai: event.target.value }));
+  bindHocSinhKetQua();
+  // Mỗi lần vào màn là tải lại: người khác có thể vừa sửa, và bảng cũ hiện số đã đổi đi
+  // là mời sửa nhầm.
+  taiHocSinh();
+}
+
+function bindHocSinhKetQua() {
+  const khung = $("#hs-ket-qua");
+  if (!khung) return;
+  const hs = hocSinhState();
+  khung.querySelectorAll("[data-hs-sua]").forEach((el) => el.addEventListener("click", () => moSuaLienHe(el.dataset.hsSua)));
+  khung.querySelectorAll("[data-hs-trang]").forEach((el) => el.addEventListener("click", () => {
+    hs.boLoc.trang = Math.max(1, Number(el.dataset.hsTrang) || 1);
+    taiHocSinh();
+  }));
+  khung.querySelector("#hs-moi-trang")?.addEventListener("change", (event) => {
+    Object.assign(hs.boLoc, { moiTrang: Number(event.target.value) || 20, trang: 1 });
+    taiHocSinh();
+  });
+}
+
+/**
+ * Mở (hoặc mở lại) cửa sổ sửa liên hệ của một em.
+ *
+ * - Bấm em A rồi em B thật nhanh: phản hồi của A về sau B thì bỏ, không đè cửa sổ B.
+ * - Mở lại sau khi lưu: chỉ khi cửa sổ của ĐÚNG em đó còn đang mở — người dùng đã đóng
+ *   thì không bật lại lên.
+ * - giuNhap: giá trị đang gõ dở ở các khung khác được điền lại sau khi vẽ lại.
+ */
+async function moSuaLienHe(studentId, { chiKhiDangMo = false, giuNhap = null } = {}) {
+  const hs = hocSinhState();
+  const luot = (hs.luotMo || 0) + 1;
+  hs.luotMo = luot;
+  try {
+    const { hocSinh } = await api(`/admin/hoc-sinh/${encodeURIComponent(studentId)}`);
+    if (luot !== hs.luotMo) return;
+    if (chiKhiDangMo && !$(`[data-hs-modal="${CSS.escape(studentId)}"]`)) return;
+    showModal(renderSuaLienHe(hocSinh), { wide: true });
+    if (giuNhap) dienLaiNhap(giuNhap);
+    bindSuaLienHe(hocSinh);
+  } catch (error) {
+    if (luot === hs.luotMo) toast(error.message, "error");
+  }
+}
+
+/** Chụp giá trị các khung trong cửa sổ, trừ khung vừa gửi (khung đó lấy theo dữ liệu mới). */
+function chupNhap(boQua) {
+  return $$("#modal-root form").filter((form) => form !== boQua).map((form) => ({
+    khoa: form.dataset.lienHe ? `[data-lien-he="${CSS.escape(form.dataset.lienHe)}"]` : "[data-them-lien-he]",
+    truong: [...form.elements].filter((el) => el.name).map((el) => [el.name, el.type === "checkbox" ? el.checked : el.value]),
+  }));
+}
+
+function dienLaiNhap(anh) {
+  for (const { khoa, truong } of anh) {
+    const form = $(`#modal-root form${khoa}`);
+    if (!form) continue;
+    for (const [ten, giaTri] of truong) {
+      const el = form.elements[ten];
+      if (!el) continue;
+      if (el.type === "checkbox") el.checked = giaTri;
+      else el.value = giaTri;
+    }
+  }
+}
+
+function renderSuaLienHe(hocSinh) {
+  return `<span hidden data-hs-modal="${escapeHtml(hocSinh.id)}"></span><div class="modal-head"><div><span class="eyebrow">Thông tin học sinh · ${escapeHtml(hocSinh.code)} · Lớp ${escapeHtml(hocSinh.homeroom || "—")}</span>
+      <h2>${escapeHtml(hocSinh.name)}</h2></div><button class="icon-button" data-close-modal>${icon("x")}</button></div>
+    <div class="modal-body">
+      ${hocSinh.phuHuynh.length
+        ? hocSinh.phuHuynh.map(renderTheLienHe).join("")
+        : `<div class="inline-alert">${icon("clock")}<span>Em chưa có SĐT phụ huynh nào, nên chưa ai đăng nhập được để đăng ký CLB cho em.</span></div>`}
+      ${renderThemLienHe()}
+    </div>
+    <div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button></div>`;
+}
+
+function renderTheLienHe(ph) {
+  const khac = ph.hocSinhKhac || [];
+  return `<form class="lien-he-the" data-lien-he="${escapeHtml(ph.userId)}" novalidate>
+    <div class="lien-he-dau"><strong>${escapeHtml(ph.relationship)}</strong>
+      <span class="badge ${ph.daKichHoat ? "badge-green" : "badge-gold"}">${ph.daKichHoat ? "Đã đặt mật khẩu riêng" : "Chưa kích hoạt"}</span></div>
+    ${khac.length ? `<div class="inline-alert">${icon("users")}<span>Số này dùng chung cho ${khac.length} em khác: ${khac.map((em) =>
+      `${escapeHtml(em.name)} (${escapeHtml(em.homeroom || "—")})`).join(", ")}. Sửa ở đây là sửa cho cả các em đó.</span></div>` : ""}
+    <div class="form-grid">
+      <label class="form-field"><span>SĐT đăng nhập</span><input name="account" value="${escapeHtml(ph.account)}" inputmode="tel" maxlength="20" autocomplete="off" /></label>
+      <label class="form-field"><span>Email</span><input name="email" value="${escapeHtml(ph.email || "")}" inputmode="email" maxlength="254" autocomplete="off" /></label>
+      <label class="form-field form-span-2"><span>Họ tên phụ huynh</span><input name="displayName" value="${escapeHtml(ph.displayName)}" maxlength="120" autocomplete="off" /></label>
+    </div>
+    <p class="field-hint" data-goi-y-doi-so hidden>Đổi số: phụ huynh đăng nhập bằng số mới${ph.daKichHoat
+      ? " với mật khẩu riêng đang dùng" : "; tài khoản chưa kích hoạt nên mật khẩu cũng chính là số mới"}. Số cũ không đăng nhập được nữa.</p>
+    <label class="confirm-row"><input type="checkbox" name="saiNguoi" disabled /><span>Số cũ không phải của phụ huynh này — đặt lại mật khẩu về số MỚI và đăng xuất khỏi mọi thiết bị đang đăng nhập. Chỉ chọn được sau khi đã nhập số đúng.</span></label>
+    <div class="form-error" role="alert" data-loi></div>
+    <div class="lien-he-nut"><button class="button button-primary" type="submit">Lưu thay đổi</button></div>
+  </form>`;
+}
+
+function renderThemLienHe() {
+  return `<form class="lien-he-the lien-he-them" data-them-lien-he novalidate>
+    <div class="lien-he-dau"><strong>Thêm SĐT phụ huynh</strong></div>
+    <p class="field-hint">Số đã có tài khoản (thường là của anh/chị em ruột) thì em được gắn thêm vào tài khoản đó, giữ nguyên họ tên và email của tài khoản ấy. Số chưa có thì tạo tài khoản mới, mật khẩu khởi tạo là chính số điện thoại.</p>
+    <div class="form-grid">
+      <label class="form-field"><span>Quan hệ</span><select name="relationship"><option>Bố</option><option>Mẹ</option><option>Người giám hộ</option></select></label>
+      <label class="form-field"><span>SĐT</span><input name="account" inputmode="tel" maxlength="20" autocomplete="off" /></label>
+      <label class="form-field"><span>Họ tên phụ huynh</span><input name="displayName" maxlength="120" autocomplete="off" /></label>
+      <label class="form-field"><span>Email</span><input name="email" inputmode="email" maxlength="254" autocomplete="off" /></label>
+    </div>
+    <div class="form-error" role="alert" data-loi></div>
+    <div class="lien-he-nut"><button class="button button-secondary" type="submit">Thêm</button></div>
+  </form>`;
+}
+
+/** Chỉ so phần chữ số: "0901 234 567" và "0901234567" là cùng một số, không hỏi xác nhận đổi số. */
+const chuSoSdt = (value) => String(value ?? "").replace(/\D/g, "").replace(/^84(?=\d{9}$)/, "").replace(/^0/, "");
+
+function bindSuaLienHe(hocSinh) {
+  const moLai = async (formVuaGui) => {
+    await moSuaLienHe(hocSinh.id, { chiKhiDangMo: true, giuNhap: chupNhap(formVuaGui) });
+    taiHocSinh();
+  };
+
+  $$("[data-lien-he]").forEach((form) => {
+    const ph = hocSinh.phuHuynh.find((item) => item.userId === form.dataset.lienHe);
+    if (!ph) return;
+    const oSo = form.elements.account;
+    const oSaiNguoi = form.elements.saiNguoi;
+    const goiY = form.querySelector("[data-goi-y-doi-so]");
+    // "Số cũ sai người" chỉ bấm được khi đã nhập số mới: đặt lại mật khẩu mà giữ số cũ
+    // là trả chìa khoá cho đúng người cần đuổi ra — máy chủ cũng từ chối trường hợp đó.
+    const capNhatTheoSo = () => {
+      const doiSo = chuSoSdt(oSo.value) !== chuSoSdt(ph.account);
+      goiY.hidden = !doiSo;
+      oSaiNguoi.disabled = !doiSo;
+      if (!doiSo) oSaiNguoi.checked = false;
+    };
+    oSo.addEventListener("input", capNhatTheoSo);
+    capNhatTheoSo();
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const loi = form.querySelector("[data-loi]");
+      loi.textContent = "";
+      const body = {};
+      const ten = form.elements.displayName.value.trim();
+      const email = form.elements.email.value.trim();
+      if (chuSoSdt(oSo.value) !== chuSoSdt(ph.account)) body.account = oSo.value.trim();
+      if (email.toLowerCase() !== String(ph.email || "").toLowerCase()) body.email = email;
+      if (ten !== ph.displayName) body.displayName = ten;
+      if (oSaiNguoi.checked && body.account !== undefined) body.saiNguoi = true;
+      if (!Object.keys(body).length) { loi.textContent = "Chưa có gì thay đổi."; return; }
+
+      const canhBao = [];
+      if (body.account !== undefined) canhBao.push(`Đổi số đăng nhập ${ph.account} → ${body.account}. Phụ huynh sẽ đăng nhập bằng số mới; số cũ không vào được nữa.`);
+      if ((ph.hocSinhKhac || []).length && body.account !== undefined) {
+        canhBao.push(`Tài khoản này dùng chung cho ${ph.hocSinhKhac.length} em khác — thay đổi áp dụng cho cả các em đó.`);
+      }
+      if (body.saiNguoi) canhBao.push("Mật khẩu riêng (nếu có) bị xoá, mọi thiết bị đang đăng nhập tài khoản này bị đăng xuất.");
+      if (canhBao.length && !window.confirm(canhBao.join("\n\n"))) return;
+
+      const nut = form.querySelector('button[type="submit"]');
+      nut.disabled = true;
+      try {
+        const { ketQua } = await api(`/admin/phu-huynh/${encodeURIComponent(ph.userId)}`, { method: "PATCH", body: JSON.stringify(body) });
+        toast(ketQua.khongDoi ? "Không có gì thay đổi." : "Đã lưu liên hệ phụ huynh.", "success");
+        await moLai(form);
+      } catch (error) {
+        loi.textContent = error.message;
+        nut.disabled = false;
+      }
+    });
+  });
+
+  $("[data-them-lien-he]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const loi = form.querySelector("[data-loi]");
+    loi.textContent = "";
+    const nut = form.querySelector('button[type="submit"]');
+    nut.disabled = true;
+    const gui = (ganVaoTaiKhoanCo) => api(`/admin/hoc-sinh/${encodeURIComponent(hocSinh.id)}/phu-huynh`, {
+      method: "POST",
+      body: JSON.stringify({
+        relationship: form.elements.relationship.value, account: form.elements.account.value.trim(),
+        displayName: form.elements.displayName.value.trim(), email: form.elements.email.value.trim(),
+        ganVaoTaiKhoanCo,
+      }),
+    });
+    try {
+      let ketQua;
+      try {
+        ({ ketQua } = await gui(false));
+      } catch (error) {
+        // Số đã là tài khoản của một phụ huynh khác: máy chủ nêu tên và các em đang gắn,
+        // người sửa đọc rồi mới quyết. Dán nhầm số của gia đình khác là lỗi dễ mắc nhất.
+        if (error.code !== "CAN_XAC_NHAN_GAN_TAI_KHOAN") throw error;
+        if (!window.confirm(`${error.message}\n\nVẫn gắn em ${hocSinh.name} vào tài khoản này?`)) {
+          nut.disabled = false;
+          return;
+        }
+        ({ ketQua } = await gui(true));
+      }
+      toast(ketQua.taoTaiKhoan
+        ? "Đã tạo tài khoản mới và gắn vào em. Mật khẩu khởi tạo là chính số điện thoại."
+        : "Đã gắn em vào tài khoản có sẵn của số này.", "success");
+      await moLai(form);
+    } catch (error) {
+      loi.textContent = error.message;
+      nut.disabled = false;
+    }
+  });
+}
+
 function renderReports() {
   const reports = [
     ["Tổng quan đợt đăng ký","KPI, tỷ lệ lấp đầy, lớp đầy/thiếu sĩ số"],["Danh sách theo CLB/lớp","Học sinh, lớp hành chính, lịch, phí, ghi chú"],["Danh sách chờ & gọi lại","Thứ tự chờ, lý do, phương án thay thế, người phụ trách"],["Tài chính & công nợ","Phải thu, đã thu, chờ thu, hoàn/chuyển phí"],["Vận hành lớp","Phòng, giáo viên, min/max, lớp cần mở/gộp/hủy"],["Lịch sử thay đổi","Đổi lớp, hủy, chuyển lịch, người xử lý và lý do"],
@@ -2771,7 +3126,9 @@ function renderSheetPreview(preview) {
     <div class="sync-verdict ${preview.readyToSync ? "ready" : "blocked"}">${preview.readyToSync
       ? "✓ Tất cả file đọc được, cột và dữ liệu mẫu hợp lệ. Có thể đồng bộ vào hệ thống."
       : "Chưa cho phép ghi dữ liệu: cần xử lý cột thiếu hoặc lỗi ở các file nêu bên trên."}</div>
-    ${preview.readyToSync ? `<div class="sync-actions"><button class="button button-primary" data-sync-sheets>Đồng bộ học sinh & tài khoản PH</button><span>Chỉ thêm/cập nhật và đánh dấu nghỉ học; không xóa dữ liệu và không sửa Google Sheet.</span></div>` : ""}
+    ${state.sheetIntegration?.dongBoDaKhoa
+      ? `<div class="info-note"><strong>Đồng bộ từ Google Sheets đã khoá.</strong> Học sinh mới nhập bằng file Excel ở trên; sửa SĐT, email phụ huynh ở màn Thông tin học sinh. Nút kiểm tra kết nối vẫn dùng được, chỉ đọc.</div>`
+      : preview.readyToSync ? `<div class="sync-actions"><button class="button button-primary" data-sync-sheets>Đồng bộ học sinh & tài khoản PH</button><span>Chỉ thêm học sinh mới; em đã có được bỏ qua. Không xóa dữ liệu và không sửa Google Sheet.</span></div>` : ""}
   </div>`;
 }
 
@@ -3016,15 +3373,15 @@ function renderExcelImport() {
       <div class="import-modes">
         <label class="import-mode active">
           <input type="radio" name="excel-mode" value="${IMPORT_MODES.boSung}" checked />
-          <div><strong>Bổ sung học sinh mới</strong>
-            <span>Chỉ thêm và cập nhật. Không em nào bị cho nghỉ học, kể cả khi vắng mặt trong file. Đây là chế độ duy nhất, và là chế độ đúng cho mọi lần nhập.</span></div>
+          <div><strong>Chỉ thêm học sinh mới</strong>
+            <span>Em đã có mã trong hệ thống được bỏ qua, kể cả khi file ghi lớp, SĐT hay email khác. Sửa SĐT, email phụ huynh ở màn <b>Thông tin học sinh</b>. Không em nào bị cho nghỉ học.</span></div>
         </label>
       </div>
       <p class="field-hint">Chế độ <b>đối chiếu toàn trường</b> — coi file là toàn bộ danh sách trường và cho nghỉ học những em vắng mặt — đã được tắt. Danh bạ nay do phần mềm làm chủ; cho nghỉ học thì làm từng em ở màn danh bạ, để không ai bị mất tên vì một file thiếu dòng.</p>
 
       <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:13px">
         <button class="button button-secondary" id="excel-preview" ${files.length ? "" : "disabled"}>Kiểm tra file</button>
-        <button class="button button-primary" id="excel-commit" ${preview?.readyToSync ? "" : "disabled"}>Ghi vào hệ thống</button>
+        <button class="button button-primary" id="excel-commit" ${preview?.readyToSync && preview.studentsNew !== 0 ? "" : "disabled"}>Ghi vào hệ thống</button>
       </div>
       <div id="excel-error" class="form-error" role="alert"></div>
       ${preview ? renderExcelPreview(preview) : `<div class="info-note" style="margin-top:11px"><strong>Chưa kiểm tra:</strong> chọn file rồi bấm “Kiểm tra file”. Bước này chỉ đọc và đối chiếu, không ghi gì vào hệ thống.</div>`}
@@ -3038,6 +3395,9 @@ function renderExcelPreview(preview) {
     <div class="kpi-strip" style="margin-top:13px">
       <div class="kpi-item"><span>Đang học trong hệ thống</span><strong>${preview.activeStudentsNow}</strong></div>
       <div class="kpi-item"><span>Học sinh trong file</span><strong>${preview.studentsInFile}</strong></div>
+      ${preview.studentsNew === null || preview.studentsNew === undefined || preview.capNhatHocSinhDaCo ? "" : `
+      <div class="kpi-item"><span>Em mới sẽ thêm</span><strong>${preview.studentsNew}</strong></div>
+      <div class="kpi-item"><span>Em đã có · bỏ qua</span><strong>${preview.studentsExisting}</strong></div>`}
       <div class="kpi-item"><span>Phụ huynh trong file</span><strong>${preview.guardiansInFile}</strong></div>
       <div class="kpi-item"><span>Dòng đã đọc</span><strong>${preview.scannedRows}</strong></div>
     </div>
@@ -3046,6 +3406,9 @@ function renderExcelPreview(preview) {
       : preview.mode === IMPORT_MODES.doiChieu
         ? `<div class="info-note" style="margin-top:11px"><strong>Không em nào bị cho nghỉ học</strong> — mọi em đang học đều có mặt trong file.</div>`
         : `<div class="info-note" style="margin-top:11px"><strong>Chế độ bổ sung:</strong> không em nào bị cho nghỉ học, kể cả ${Math.max(0, preview.activeStudentsNow - preview.studentsInFile)} em không có trong file.</div>`}
+    ${!preview.capNhatHocSinhDaCo && preview.studentsExisting ? `<div class="info-note" style="margin-top:9px"><strong>${preview.studentsExisting} em đã có trong hệ thống sẽ được bỏ qua</strong>${preview.existingInactive ? ` (trong đó ${preview.existingInactive} em đang ở trạng thái nghỉ học, không tự bật lại)` : ""}: file không sửa lớp, SĐT hay email của các em này. Cần sửa liên hệ phụ huynh thì vào màn Thông tin học sinh. Ví dụ mã: ${preview.existingSample.map(escapeHtml).join(", ")}${preview.studentsExisting > preview.existingSample.length ? ", …" : ""}.</div>` : ""}
+    ${preview.soDaDoi ? `<div class="inline-alert" style="margin-top:9px">${icon("clock")}<span><strong>${preview.soDaDoi} SĐT trong file là số đã được đổi đi</strong> ở màn Thông tin học sinh, nên sẽ không tạo lại tài khoản cho số đó. Em mới đi kèm số ấy vẫn được thêm nhưng chưa có SĐT phụ huynh: ${preview.emMatSoDaDoi.map(escapeHtml).join(", ")}. Thêm đúng số cho các em ở màn Thông tin học sinh.</span></div>` : ""}
+    ${preview.studentsNew === 0 && !preview.capNhatHocSinhDaCo ? `<div class="inline-alert" style="margin-top:9px">${icon("clock")}<span>Không có em mới nào trong file nên không có gì để ghi.</span></div>` : ""}
     ${preview.duplicates?.length ? `<div class="inline-alert" style="margin-top:9px">${icon("clock")}<span>${preview.duplicates.length} mã học sinh xuất hiện ở nhiều file: ${preview.duplicates.slice(0, 8).map((item) => escapeHtml(item.code)).join(", ")}. Giữ bản gặp trước.</span></div>` : ""}
     ${conSot.length ? `<div class="inline-alert" style="margin-top:9px">${icon("clock")}<span>${conSot.length} sheet không đọc được: ${conSot.map((source) => `${escapeHtml(source.label)} — ${escapeHtml(source.error || "")}`).join(" · ")}</span></div>` : ""}
     ${preview.sources.filter((source) => source.ok).map(renderExcelSourceCard).join("")}`;
@@ -3156,7 +3519,9 @@ function bindExcelImport() {
       ? `Ghi ${hienTai.preview.studentsInFile} học sinh vào hệ thống theo chế độ ĐỐI CHIẾU TOÀN TRƯỜNG.`
         + (sePhaiNghi ? `\n\n${sePhaiNghi} em không có trong file sẽ bị đánh dấu NGHỈ HỌC.` : "")
         + "\n\nĐã nạp đủ cả ba cấp học chưa?"
-      : `Bổ sung ${hienTai.preview.studentsInFile} học sinh từ file vào hệ thống. Không em nào bị cho nghỉ học.`;
+      : `Thêm ${hienTai.preview.studentsNew ?? hienTai.preview.studentsInFile} học sinh mới từ file vào hệ thống.`
+        + (hienTai.preview.studentsExisting ? `\n\n${hienTai.preview.studentsExisting} em đã có sẽ được bỏ qua, không sửa gì.` : "")
+        + "\n\nKhông em nào bị cho nghỉ học.";
     if (!window.confirm(cauHoi)) return;
 
     const button = $("#excel-commit");
@@ -3176,8 +3541,11 @@ function bindExcelImport() {
       state.excelImport = null;
       await hydrateRole();
       renderApp();
-      toast(`Đã ghi: ${dem.studentsCreated || 0} em mới, ${dem.studentsUpdated || 0} em cập nhật`
-        + `, ${dem.studentsDeactivated || 0} em cho nghỉ học.`, "success");
+      toast(`Đã thêm ${dem.studentsCreated || 0} em mới`
+        + (dem.studentsExisting ? `; ${dem.studentsExisting} em đã có nên bỏ qua` : "")
+        + (dem.studentsUpdated ? `; ${dem.studentsUpdated} em cập nhật lớp` : "")
+        + (dem.parentsRetiredSkipped ? `; ${dem.parentsRetiredSkipped} SĐT đã đổi đi nên không tạo tài khoản` : "")
+        + (dem.studentsDeactivated ? `; ${dem.studentsDeactivated} em cho nghỉ học` : "") + ".", "success");
     } catch (error) {
       loi().textContent = error.message;
       button.disabled = false;
@@ -3191,7 +3559,7 @@ function renderSettings() {
   const preview = state.sheetPreview;
   return `<section class="grid grid-3">${renderModuleCard("01","Người dùng & vai trò","8 nhóm vai trò với phạm vi xem/thao tác khác nhau.",["Phụ huynh","Vận hành/Giáo vụ/Kế toán","GV/BGH/IT Admin"])}${renderModuleCard("02","Quy tắc nghiệp vụ","Cấu hình giới hạn CLB, waitlist, thời hạn đổi/hủy.",["Không hard-code theo năm","Ghi log mọi ngoại lệ"])}${renderModuleCard("03","Tích hợp","Kết nối dữ liệu học sinh, OTP, thông báo và kế toán.",["Google Sheets chỉ đọc","Mã hóa trước khi ghi Firestore"])}</section>
   ${hasCap("dong-bo-danh-ba") ? renderExcelImport() : ""}
-  ${hasCap("dong-bo-danh-ba") ? `<section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets · ${Number(integration.sourceCount || 0)} file theo cấp học</h3><p>${escapeHtml(integration.serviceAccountEmail || "—")} · quyền Viewer, chỉ đọc</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
+  ${hasCap("dong-bo-danh-ba") ? `<section class="section panel"><div class="panel-head"><div><span class="eyebrow">Nguồn dữ liệu học sinh</span><h3>Google Sheets · ${Number(integration.sourceCount || 0)} file theo cấp học</h3><p>${escapeHtml(integration.serviceAccountEmail || "—")} · quyền Viewer, chỉ đọc${integration.dongBoDaKhoa ? " · <b>đồng bộ vào hệ thống đã khoá</b>" : ""}</p></div><button class="button button-primary" data-preview-sheets>Kiểm tra kết nối</button></div><div class="panel-body">
     ${renderSyncSchedule(integration.schedule, integration.stored)}
     ${renderSheetSources(integration.sources, preview?.sources)}
     ${renderSheetPreview(preview)}
@@ -3563,6 +3931,7 @@ function bindPageEvents() {
   $("[data-export]")?.addEventListener("click", exportCsv);
   $("[data-roster-csv-all]")?.addEventListener("click", () => exportRosterCsv("", "hieu-luc"));
   bindRosterResults();
+  bindHocSinh();
   // Ô tìm kiếm nằm NGOÀI khối kết quả và không bao giờ được dựng lại: bộ gõ tiếng
   // Việt soạn chữ ngay trong phần tử đó, hủy nó giữa chừng là bộ gõ chèn lại cả cụm
   // vào cuối giá trị cũ. Đã đo bằng Chrome thật: gõ "mỹ thuật" ra

@@ -53,6 +53,8 @@ const THIEU_O_FIRESTORE_DA_BIET = [
   // Phụ huynh đổi lớp khi trùng lịch (yêu cầu giáo vụ 11/09/2026): cùng lý do — nhà
   // trường chạy MySQL; server.mjs trả 501 rõ ràng khi nền không có phương thức này.
   "doiLopPhuHuynh",
+  // Màn Thông tin học sinh (15/09/2026): cùng lý do; server.mjs trả 501 qua kiemNenHoTroLienHe.
+  "listStudentContacts", "lienHeCuaHocSinh", "locSoDaDoi", "capNhatLienHePhuHuynh", "themPhuHuynhChoHocSinh",
 ].sort();
 
 test("khoảng lệch giữa hai kho dữ liệu không được rộng thêm", () => {

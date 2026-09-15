@@ -15,15 +15,29 @@ function conflictError(message) {
 
 export function emptyCounters() {
   return {
-    studentsCreated: 0, studentsUpdated: 0, studentsUnchanged: 0,
+    studentsCreated: 0, studentsUpdated: 0, studentsUnchanged: 0, studentsExisting: 0,
     studentsDeactivated: 0, studentsDeactivationSkipped: 0,
-    parentsCreated: 0, parentsUpdated: 0, parentsUnchanged: 0,
+    parentsCreated: 0, parentsUpdated: 0, parentsUnchanged: 0, parentsRetiredSkipped: 0,
     linksCreated: 0, linksUpdated: 0, linksUnchanged: 0, writes: 0,
   };
 }
 
 /**
- * @param snapshot   dữ liệu đọc từ Sheet: { students, guardians }
+ * CHỈ TẠO MỚI (quyết định của nhà trường ngày 15/09/2026).
+ *
+ * Từ khi có màn Thông tin học sinh để sửa tay SĐT và email phụ huynh, file không còn
+ * là nguồn ghi đè. Trước đây nhập lại một file cũ là: email sửa tay bị đè, và SĐT cũ
+ * đã đổi được TẠO LẠI thành tài khoản đăng nhập rồi gắn lại vào em — người cầm số cũ
+ * vào xem được con người khác. Nên:
+ *   - Em đã có mã trong hệ thống: bỏ qua, đếm vào studentsExisting để báo lại.
+ *   - Tài khoản phụ huynh đã có: KHÔNG BAO GIỜ ghi (không đè email, không bật lại).
+ *   - Tạo tài khoản và liên kết CHỈ cho những em vừa được tạo trong lượt này.
+ *
+ * capNhatHocSinhDaCo chỉ bật cho chế độ đối chiếu toàn trường (khoá bằng biến môi
+ * trường, dùng làm sạch đầu năm): cập nhật lớp/khối/tên của em đã có, nhưng phần liên
+ * hệ phụ huynh vẫn theo đúng quy tắc trên — không file nào đè được sửa tay.
+ *
+ * @param snapshot   dữ liệu đọc từ file: { students, guardians }
  * @param students   các bản ghi học sinh hiện có, mỗi bản ghi có `id` và `code`
  * @param users      các tài khoản hiện có, mỗi bản ghi có `id`, `account`/`accountLower`, `role`
  * @param links      liên kết phụ huynh–học sinh hiện có, có `parentUserId`, `studentId`, `relationship`
@@ -36,18 +50,33 @@ export function planDirectoryWrites({
   // vẫn xử lý thì cả cấp học đó biến mất khỏi ảnh chụp và bị vô hiệu hóa nhầm.
   allSourcesLoaded = false,
   maxShrinkRatio = 0.2,
+  capNhatHocSinhDaCo = false,
+  // Số đã bị đổi đi ở màn Thông tin học sinh. Không có lá chắn này thì file cũ vẫn
+  // mang số cũ vào qua một em ruột MỚI nhập: tài khoản được tạo lại cho người cầm số
+  // cũ và gắn vào em đó — đúng chuyện chỉ-tạo-mới sinh ra để chặn.
+  laSoDaDoi = () => false,
 }) {
   const studentsByCode = new Map(students.map((student) => [student.code, student]));
   const usersByAccount = new Map(users.map((user) => [String(user.accountLower || user.account || "").toLowerCase(), user]));
   const linksByKey = new Map(links.map((link) => [`${link.parentUserId}_${link.studentId}`, link]));
   const counters = emptyCounters();
   const studentIdsByCode = new Map();
+  // Em vừa tạo trong lượt này — chỉ những em này mới được gắn phụ huynh từ file.
+  const idEmMoiTheoMa = new Map();
+  const daCo = [];
+  const emMatSoDaDoi = [];
   const writes = [];
 
   for (const student of snapshot.students) {
     const existing = studentsByCode.get(student.code);
+    if (existing && !capNhatHocSinhDaCo) {
+      counters.studentsExisting += 1;
+      daCo.push({ id: existing.id, code: existing.code, status: existing.status || "active" });
+      continue;
+    }
     const studentId = existing?.id || idFactory("hs");
     studentIdsByCode.set(student.code, studentId);
+    if (!existing) idEmMoiTheoMa.set(student.code, studentId);
     const data = {
       code: student.code, name: student.name, dateOfBirth: student.dateOfBirth, grade: student.grade,
       homeroom: student.className, level: student.educationLevel, status: "active",
@@ -62,10 +91,19 @@ export function planDirectoryWrites({
   }
 
   for (const guardian of snapshot.guardians) {
+    const emMoi = guardian.students.filter((item) => idEmMoiTheoMa.has(item.studentCode));
+    // Số này chỉ đi với em đã có: không tạo tài khoản, không ghi gì. Đây chính là chỗ
+    // chặn SĐT cũ đã sửa tay sống lại thành tài khoản đăng nhập.
+    if (!emMoi.length) continue;
     const accountLower = guardian.account.toLowerCase();
     let user = usersByAccount.get(accountLower);
     if (user && user.role !== "parent") {
       throw conflictError("Có SĐT phụ huynh trùng với một tài khoản vai trò khác; cần IT xử lý thủ công.");
+    }
+    if (!user && laSoDaDoi(guardian.account)) {
+      counters.parentsRetiredSkipped += 1;
+      emMatSoDaDoi.push(...emMoi.map((item) => item.studentCode));
+      continue;
     }
     if (!user) {
       const userId = idFactory("u_parent");
@@ -84,21 +122,13 @@ export function planDirectoryWrites({
       } });
       counters.parentsCreated += 1;
     } else {
-      // CHỈ ghi email khi nguồn thật sự có. Ba file danh bạ do ba giáo vụ quản;
-      // nếu một file thiếu cột email thì đưa null vào đây sẽ XOÁ email mà file kia
-      // vừa mang lại, và mỗi 15 phút hai file lại ghi đè lẫn nhau.
-      const data = { accountLower, active: true };
-      if (guardian.email) data.email = guardian.email;
-      if (isUnchanged(user, data)) counters.parentsUnchanged += 1;
-      else {
-        writes.push({ collection: "users", id: user.id, data });
-        counters.parentsUpdated += 1;
-      }
+      // Tài khoản đã có (thường là anh/chị của em mới): chỉ gắn thêm em vào, không đè
+      // email hay tên đã sửa tay ở màn Thông tin học sinh.
+      counters.parentsUnchanged += 1;
     }
 
-    for (const linkedStudent of guardian.students) {
-      const studentId = studentIdsByCode.get(linkedStudent.studentCode);
-      if (!studentId) continue;
+    for (const linkedStudent of emMoi) {
+      const studentId = idEmMoiTheoMa.get(linkedStudent.studentCode);
       const key = `${user.id}_${studentId}`;
       const existingLink = linksByKey.get(key);
       // Cùng một số điện thoại khai ở cả cột bố và cột mẹ thì ghi nhận là "Bố/Mẹ".
@@ -140,6 +170,8 @@ export function planDirectoryWrites({
     writes,
     counters,
     studentIdsByCode,
+    daCo,
+    emMatSoDaDoi: [...new Set(emMatSoDaDoi)],
     deactivated,
     deactivationSkipped: allSourcesLoaded ? [] : missing.map((student) => ({ id: student.id, code: student.code })),
   };

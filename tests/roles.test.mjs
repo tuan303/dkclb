@@ -29,7 +29,7 @@ test("quản trị cao nhất có mọi quyền", () => {
 
 test("admin vận hành được hệ thống nhưng không quản lý tài khoản", () => {
   assert.equal(can(ROLE.admin, CAP.quanLyTaiKhoan), false, "đây là ranh giới chính giữa admin và quản trị cao nhất");
-  for (const capability of [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.maKichHoat]) {
+  for (const capability of [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.maKichHoat, CAP.thongTinHocSinh]) {
     assert.equal(can(ROLE.admin, capability), true, `admin phải có quyền ${capability}`);
   }
 });
@@ -53,6 +53,9 @@ test("giáo vụ làm được việc hằng ngày nhưng không sao lưu và kh
   assert.equal(can(ROLE.giaovu, CAP.quanLyTaiKhoan), false);
   assert.equal(can(ROLE.giaovu, CAP.dongBoDanhBa), false);
   assert.equal(can(ROLE.giaovu, CAP.duyetDon), false);
+  // Màn Thông tin học sinh: sửa SĐT phụ huynh là đổi số đăng nhập của họ — cùng tầm
+  // với cấp mã kích hoạt. Nhà trường chốt chỉ quản trị (15/09/2026).
+  assert.equal(can(ROLE.giaovu, CAP.thongTinHocSinh), false);
 });
 
 test("phụ huynh không có quyền quản trị nào", () => {

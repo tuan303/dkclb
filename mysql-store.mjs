@@ -12,6 +12,7 @@ import { planDirectoryWrites } from "./directory-plan.mjs";
 import { ACTIVE_REGISTRATION_STATUSES, DOI_LOP_DUOC, PENDING_SEAT_SQL, SEAT_HOLDING_STATUSES, SEAT_HOLDING_SQL, STATUS, holdsSeat } from "./registration-status.mjs";
 import { CONFLICT_AT_COMMIT, intervalsOverlap } from "./schedule-conflict.mjs";
 import { createFieldCrypto } from "./field-crypto.mjs";
+import { cheSdt, lapKeHoachSua, lapKeHoachThem } from "./lien-he-phu-huynh.mjs";
 
 // Hai danh sách khác nhau, đừng gộp lại: một cái đếm CHỖ trong lớp, một cái đếm
 // ĐƠN của học sinh. Gộp lại là chuyện đã từng suýt xảy ra và hậu quả đo được.
@@ -296,6 +297,17 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
   }
 
   const auditId = () => `audit_${randomBytes(10).toString("hex")}`;
+
+  // Màn Thông tin học sinh: một hàng học sinh / tài khoản phụ huynh đã giải mã.
+  const hangHocSinhLienHe = (row) => ({
+    id: row.id, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name), grade: toInt(row.grade),
+    homeroom: row.homeroom, level: row.level, status: row.status,
+  });
+  const hangPhuHuynhLienHe = (row) => ({
+    id: row.id, account: crypto.decrypt(row.account), displayName: crypto.decrypt(row.display_name),
+    email: crypto.decrypt(row.email) || null, active: toBool(row.active),
+    daKichHoat: !(toBool(row.must_change_password) && !row.password_hash),
+  });
 
   async function insertAudit(connection, entry) {
     await (connection || pool).query(
@@ -694,6 +706,162 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
     async getStudent(studentId) {
       const row = await first("SELECT id, code, name, grade, homeroom, level, status FROM students WHERE id = ? LIMIT 1", [studentId]);
       return row ? { ...row, code: crypto.decrypt(row.code), name: crypto.decrypt(row.name), grade: toInt(row.grade) } : null;
+    },
+
+    /* ---------- Thông tin học sinh: liên hệ phụ huynh (15/09/2026) ---------- */
+
+    // Tên, mã, SĐT, email đều mã hoá nên không lọc bằng SQL được: nạp cả danh bạ, giải
+    // mã rồi lọc ở Node (lien-he-phu-huynh.mjs). Màn này chỉ quản trị dùng, vài lượt một ngày.
+    async listStudentContacts() {
+      const [studentRows, links, parentRows] = await Promise.all([
+        query("SELECT id, code, name, grade, homeroom, level, status FROM students"),
+        query("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students"),
+        query(`SELECT id, account, display_name, email, active, must_change_password, password_hash
+          FROM users WHERE role = 'parent'`),
+      ]);
+      return { students: studentRows.map(hangHocSinhLienHe), links, parents: parentRows.map(hangPhuHuynhLienHe) };
+    },
+
+    // Chi tiết một em: chỉ giải mã em đó, phụ huynh của em và các em dùng chung tài khoản.
+    async lienHeCuaHocSinh(studentId) {
+      const parentIds = [...new Set((await query("SELECT parent_user_id FROM parent_students WHERE student_id = ?", [studentId]))
+        .map((row) => row.parent_user_id))];
+      const links = parentIds.length
+        ? await query(`SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students
+            WHERE parent_user_id IN (?)`, [parentIds])
+        : [];
+      const studentIds = [...new Set([studentId, ...links.map((link) => link.studentId)])];
+      const [studentRows, parentRows] = await Promise.all([
+        query("SELECT id, code, name, grade, homeroom, level, status FROM students WHERE id IN (?)", [studentIds]),
+        parentIds.length
+          ? query(`SELECT id, account, display_name, email, active, must_change_password, password_hash
+              FROM users WHERE role = 'parent' AND id IN (?)`, [parentIds])
+          : [],
+      ]);
+      return { students: studentRows.map(hangHocSinhLienHe), links, parents: parentRows.map(hangPhuHuynhLienHe) };
+    },
+
+    // Bảng chỉ giữ chỉ mục mù nên phải băm từng số trong danh sách rồi đối chiếu.
+    async locSoDaDoi(accounts) {
+      if (!accounts.length) return [];
+      const theoChiMuc = new Map(accounts.map((account) => [crypto.blindIndex(account), account]));
+      const rows = await query("SELECT account_index FROM retired_parent_phones WHERE account_index IN (?)", [[...theoChiMuc.keys()]]);
+      return rows.map((row) => theoChiMuc.get(row.account_index)).filter(Boolean);
+    },
+
+    // Đổi số là ghi account VÀ account_index cùng lúc: lệch nhau một bên là tài khoản
+    // không ai đăng nhập được (tra theo chỉ mục) hoặc hiện sai số ở mọi màn hình.
+    async capNhatLienHePhuHuynh({ userId, thayDoi, saiNguoi, actorUserId, timestamp }) {
+      try {
+        return await withTransaction(async (connection) => {
+          const [rows] = await connection.query(
+            "SELECT id, role, account, account_index, email, display_name FROM users WHERE id = ? FOR UPDATE", [userId]);
+          const row = rows[0];
+          const hienTai = row && {
+            id: row.id, role: row.role, account: crypto.decrypt(row.account),
+            email: crypto.decrypt(row.email) || null, displayName: crypto.decrypt(row.display_name),
+          };
+          let trung = null;
+          if (hienTai && thayDoi.account !== undefined && thayDoi.account !== hienTai.account) {
+            const [khac] = await connection.query(
+              "SELECT id, role FROM users WHERE account_index = ? AND id <> ? LIMIT 1",
+              [crypto.blindIndex(thayDoi.account), userId]);
+            if (khac[0]) {
+              const [dem] = await connection.query("SELECT COUNT(*) AS n FROM parent_students WHERE parent_user_id = ?", [khac[0].id]);
+              trung = { ...khac[0], soHocSinh: toInt(dem[0]?.n) };
+            }
+          }
+          const keHoach = lapKeHoachSua({ hienTai, thayDoi, saiNguoi, trung });
+          if (!keHoach.khongDoi) {
+            if (keHoach.doiSo) {
+              await connection.query(
+                "UPDATE users SET account = ?, account_index = ?, login_failures = 0, locked_until = NULL WHERE id = ?",
+                [crypto.encrypt(thayDoi.account), crypto.blindIndex(thayDoi.account), userId]);
+              // Nhớ số cũ (chỉ mục mù) để lượt nhập file sau không tạo lại tài khoản cho nó;
+              // số mới đã có chủ nên bỏ khỏi danh sách (trường hợp đổi qua lại).
+              await connection.query("INSERT IGNORE INTO retired_parent_phones (account_index, created_at) VALUES (?, ?)",
+                [row.account_index, timestamp]);
+              await connection.query("DELETE FROM retired_parent_phones WHERE account_index = ?", [crypto.blindIndex(thayDoi.account)]);
+            }
+            if (keHoach.doiEmail) {
+              await connection.query("UPDATE users SET email = ? WHERE id = ?", [crypto.encrypt(thayDoi.email || null), userId]);
+            }
+            if (keHoach.doiTen) {
+              await connection.query("UPDATE users SET display_name = ? WHERE id = ?", [crypto.encrypt(thayDoi.displayName), userId]);
+            }
+            if (keHoach.saiNguoi) {
+              await connection.query(
+                `UPDATE users SET password_salt = NULL, password_hash = NULL, activation_code = NULL,
+                  must_change_password = 1, login_failures = 0, locked_until = NULL WHERE id = ?`, [userId]);
+              await connection.query("DELETE FROM sessions WHERE user_id = ?", [userId]);
+            }
+            await insertAudit(connection, {
+              actorUserId, action: "UPDATE_PARENT_CONTACT", entityType: "user", entityId: userId,
+              before: keHoach.nhatKy.before, after: keHoach.nhatKy.after,
+              reason: "Sửa liên hệ phụ huynh ở màn Thông tin học sinh", createdAt: timestamp,
+            });
+          }
+          const { nhatKy, ...ketQua } = keHoach;
+          return ketQua;
+        });
+      } catch (error) {
+        // Hai người cùng đổi hai tài khoản sang một số trong cùng một khoảnh khắc: lần
+        // kiểm tra ở trên đều thấy trống, ràng buộc UNIQUE chặn lượt ghi thứ hai.
+        if (error?.code === "ER_DUP_ENTRY") {
+          throw createHttpError(409, "SDT_DA_CO_TAI_KHOAN", "Số này vừa được dùng cho một tài khoản khác. Tải lại rồi thử lại.");
+        }
+        throw error;
+      }
+    },
+
+    async themPhuHuynhChoHocSinh({ studentId, account, relationship, email, displayName, ganVaoTaiKhoanCo = false, userIdMoi, actorUserId, timestamp }) {
+      try {
+        return await withTransaction(async (connection) => {
+          const [hocSinh] = await connection.query("SELECT id FROM students WHERE id = ? FOR UPDATE", [studentId]);
+          const [coSan] = await connection.query(
+            "SELECT id, role, display_name FROM users WHERE account_index = ? LIMIT 1 FOR UPDATE", [crypto.blindIndex(account)]);
+          let taiKhoan = null;
+          let daLienKet = false;
+          if (coSan[0]) {
+            const [cacEm] = await connection.query(
+              `SELECT s.id, s.name, s.homeroom FROM students s JOIN parent_students ps ON ps.student_id = s.id
+               WHERE ps.parent_user_id = ?`, [coSan[0].id]);
+            taiKhoan = {
+              id: coSan[0].id, role: coSan[0].role, displayName: crypto.decrypt(coSan[0].display_name),
+              hocSinh: cacEm.map((em) => ({ name: crypto.decrypt(em.name), homeroom: em.homeroom })),
+            };
+            daLienKet = cacEm.some((em) => em.id === studentId);
+          }
+          const keHoach = lapKeHoachThem({ coHocSinh: hocSinh.length > 0, taiKhoan, daLienKet, ganVaoTaiKhoanCo });
+          const parentUserId = keHoach.taoTaiKhoan ? userIdMoi : taiKhoan.id;
+          if (keHoach.taoTaiKhoan) {
+            // Y như tài khoản tạo lúc nhập danh bạ: chưa có mật khẩu riêng, mật khẩu khởi
+            // tạo là chính số điện thoại, bắt buộc đổi ngay lần đầu.
+            await connection.query(
+              `INSERT INTO users (id, account, account_index, display_name, email, role, password_salt, password_hash,
+                activation_code, auth_provider, must_change_password, login_failures, locked_until, active, created_at)
+               VALUES (?, ?, ?, ?, ?, 'parent', NULL, NULL, NULL, 'local', 1, 0, NULL, 1, ?)`,
+              [parentUserId, crypto.encrypt(account), crypto.blindIndex(account), crypto.encrypt(displayName),
+                crypto.encrypt(email || null), timestamp]);
+          }
+          // Quản trị chủ động thêm lại chính số này: số đã có chủ, bỏ khỏi danh sách số đã đổi.
+          await connection.query("DELETE FROM retired_parent_phones WHERE account_index = ?", [crypto.blindIndex(account)]);
+          await connection.query(
+            "INSERT INTO parent_students (parent_user_id, student_id, relationship) VALUES (?, ?, ?)",
+            [parentUserId, studentId, relationship]);
+          await insertAudit(connection, {
+            actorUserId, action: "ADD_PARENT_CONTACT", entityType: "student", entityId: studentId,
+            after: { parentUserId, account: cheSdt(account), relationship, taoTaiKhoan: keHoach.taoTaiKhoan },
+            reason: "Thêm SĐT phụ huynh ở màn Thông tin học sinh", createdAt: timestamp,
+          });
+          return { parentUserId, taoTaiKhoan: keHoach.taoTaiKhoan };
+        });
+      } catch (error) {
+        if (error?.code === "ER_DUP_ENTRY") {
+          throw createHttpError(409, "DA_LIEN_KET", "Số này vừa được thêm cho em hoặc vừa được tạo tài khoản. Tải lại rồi thử lại.");
+        }
+        throw error;
+      }
     },
 
     /* ---------- Danh mục ---------- */
@@ -1121,12 +1289,14 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
 
     /* ---------- Đồng bộ danh bạ và xuất dữ liệu ---------- */
 
-    async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded }) {
-      const [studentRows, userRows, links] = await Promise.all([
+    async syncDirectory({ snapshot, actorUserId, timestamp, idFactory, source, analysis, allSourcesLoaded, capNhatHocSinhDaCo = false }) {
+      const [studentRows, userRows, links, retiredRows] = await Promise.all([
         query("SELECT id, code, name, date_of_birth, grade, homeroom, level, status FROM students"),
         query("SELECT id, account, role, active, email FROM users"),
         query("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students"),
+        query("SELECT account_index FROM retired_parent_phones"),
       ]);
+      const chiMucDaDoi = new Set(retiredRows.map((row) => row.account_index));
       // So sánh phải làm trên bản rõ, nếu không thì mỗi lần mã hóa ra chuỗi khác nhau
       // sẽ khiến mọi bản ghi đều bị coi là đã thay đổi và lần đồng bộ nào cũng ghi lại tất cả.
       const plan = planDirectoryWrites({
@@ -1147,6 +1317,8 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         timestamp,
         idFactory,
         allSourcesLoaded,
+        capNhatHocSinhDaCo,
+        laSoDaDoi: (account) => chiMucDaDoi.has(crypto.blindIndex(account)),
       });
 
       await withTransaction(async (connection) => {
@@ -1198,7 +1370,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         plan.syncId = syncId;
       });
 
-      return { syncId: plan.syncId, counters: plan.counters, scannedRows: analysis.scannedRows, deactivated: plan.deactivated };
+      return { syncId: plan.syncId, counters: plan.counters, scannedRows: analysis.scannedRows, deactivated: plan.deactivated, daCo: plan.daCo, emMatSoDaDoi: plan.emMatSoDaDoi };
     },
 
     async exportCollection(name, { after = null, limit = 500 } = {}) {
