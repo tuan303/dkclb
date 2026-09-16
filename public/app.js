@@ -352,10 +352,20 @@ async function hydrateRole() {
 function applyDemoVisibility() {
   $(".role-switcher")?.classList.toggle("hidden", !state.demoAccounts);
   $("#credential-box")?.classList.toggle("hidden", !state.demoAccounts);
-  if (!state.demoAccounts) {
-    $("#login-account").value = "";
-    $("#login-password").value = "";
-  }
+  dienTaiKhoanMinhHoa();
+}
+
+/**
+ * Tài khoản minh họa CHỈ điền khi máy chủ báo đang chạy dữ liệu mẫu. Trên bản thật,
+ * hai ô phải trống: phụ huynh thấy một số điện thoại lạ điền sẵn sẽ tưởng hệ thống
+ * nhận nhầm tài khoản, và có người đã bấm Đăng nhập luôn với số đó.
+ */
+function dienTaiKhoanMinhHoa() {
+  const account = $("#login-account");
+  const password = $("#login-password");
+  if (!account || !password) return;
+  account.value = state.demoAccounts ? "0901234567" : "";
+  password.value = state.demoAccounts ? "123456" : "";
 }
 
 // Một nguồn sự thật duy nhất cho việc màn hình đăng nhập hiện gì theo cổng đang
@@ -3873,8 +3883,7 @@ function bindLoginEvents() {
     selectedLoginRole = button.dataset.loginRole;
     $$("[data-login-role]").forEach((item) => item.classList.toggle("active", item === button));
     applyLoginRoleView();
-    $("#login-account").value = "0901234567";
-    $("#login-password").value = "123456";
+    dienTaiKhoanMinhHoa();
     $("#credential-hint").textContent = "Phụ huynh: 0901234567 / 123456";
     $("#login-error").textContent = "";
   }));

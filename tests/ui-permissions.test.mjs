@@ -84,3 +84,17 @@ test("mọi tệp giao diện đều đi qua cơ chế đánh vân tay", () => {
     .map((match) => match[1]);
   assert.deepEqual(thieu, [], `tệp thiếu tham số phiên bản: ${thieu.join(", ")}`);
 });
+
+test("bản thật không tự điền tài khoản minh họa vào ô đăng nhập", async () => {
+  // Trên clb.nshm.vn, bấm tab "Phụ huynh"/"Nhà trường" từng điền sẵn 0901234567 / 123456
+  // vào hai ô: phụ huynh thấy số lạ và tưởng hệ thống nhận nhầm tài khoản.
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.ok(!/id="login-account"[^>]*value=/.test(html), "ô số điện thoại không được ghi cứng giá trị");
+  assert.ok(!/id="login-password"[^>]*value=/.test(html), "ô mật khẩu không được ghi cứng giá trị");
+
+  const dien = app.slice(app.indexOf("function dienTaiKhoanMinhHoa("), app.indexOf("\n}", app.indexOf("function dienTaiKhoanMinhHoa(")));
+  assert.match(dien, /state\.demoAccounts \? "0901234567" : ""/, "chỉ điền khi máy chủ báo đang chạy dữ liệu mẫu");
+  const tab = app.slice(app.indexOf("function bindLoginEvents("), app.indexOf("\n}", app.indexOf("function bindLoginEvents(")));
+  assert.ok(!/\$\("#login-account"\)\.value = "0901234567"/.test(tab), "bấm tab không được gán thẳng tài khoản minh họa");
+  assert.match(tab, /dienTaiKhoanMinhHoa\(\)/);
+});
