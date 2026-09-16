@@ -300,6 +300,18 @@ test("tài khoản khoá bởi cấu hình không đổi được email", async 
   assert.equal((await json(response)).error.code, "TAI_KHOAN_KHOA_BOI_CAU_HINH");
 });
 
+test("vai trò sai thì không trường nào được ghi, kể cả email", async () => {
+  const { account } = await json(await request("/api/admin/school-accounts", superCookie, {
+    method: "POST", body: JSON.stringify({ email: "thu.tu@hoangmaistarschool.edu.vn", displayName: "Thứ Tự", role: "giaovu" }),
+  }));
+  const response = await suaTaiKhoan(account.id, { email: "thu.tu.moi@hoangmaistarschool.edu.vn", role: "superadmin" });
+  assert.equal(response.status, 422);
+  const ds = await json(await request("/api/admin/school-accounts", superCookie));
+  const conNguyen = ds.accounts.find((item) => item.id === account.id);
+  assert.equal(conNguyen.account, "thu.tu@hoangmaistarschool.edu.vn", "email không được ghi khi vai trò sai");
+  assert.equal(conNguyen.role, "giaovu");
+});
+
 test("sửa họ tên: gộp khoảng trắng thừa, bỏ trống thì bị từ chối", async () => {
   const { account } = await json(await request("/api/admin/school-accounts", superCookie, {
     method: "POST", body: JSON.stringify({ email: "ho.ten@hoangmaistarschool.edu.vn", displayName: "Ho Ten", role: "giaovu" }),

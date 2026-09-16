@@ -3269,6 +3269,12 @@ const groupId = maTheoNgay("GR");
 
     // Kiểm tra hết họ tên và email TRƯỚC khi ghi bất cứ gì: một trường sai thì không trường
     // nào được ghi, không để lại tài khoản đổi tên xong mà email thì chưa.
+    let vaiTroMoi = null;
+    if (body.role !== undefined) {
+      const role = normalizeSchoolRole(body.role);
+      if (!role) throw httpError(422, "VAI_TRO_KHONG_HOP_LE", `Vai trò chỉ nhận: ${ASSIGNABLE_SCHOOL_ROLES.join(", ")}.`);
+      if (role !== target.role) vaiTroMoi = role;
+    }
     let hoTenMoi = null;
     if (body.displayName !== undefined) {
       const displayName = String(body.displayName || "").replace(/\s+/g, " ").trim();
@@ -3314,17 +3320,13 @@ const groupId = maTheoNgay("GR");
       });
     }
 
-    if (body.role !== undefined) {
-      const role = normalizeSchoolRole(body.role);
-      if (!role) throw httpError(422, "VAI_TRO_KHONG_HOP_LE", `Vai trò chỉ nhận: ${ASSIGNABLE_SCHOOL_ROLES.join(", ")}.`);
-      if (role !== target.role) {
-        updated = await setSchoolUserRole(target.id, role);
-        await writeAudit({
-          actorUserId: actor.id, action: "SCHOOL_ACCOUNT_ROLE_CHANGED", entityType: "school_account",
-          entityId: target.id, before: { role: target.role }, after: { role },
-          reason: String(body.reason || "").trim() || null,
-        });
-      }
+    if (vaiTroMoi) {
+      updated = await setSchoolUserRole(target.id, vaiTroMoi);
+      await writeAudit({
+        actorUserId: actor.id, action: "SCHOOL_ACCOUNT_ROLE_CHANGED", entityType: "school_account",
+        entityId: target.id, before: { role: target.role }, after: { role: vaiTroMoi },
+        reason: String(body.reason || "").trim() || null,
+      });
     }
 
     if (body.active !== undefined) {

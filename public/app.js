@@ -3299,8 +3299,8 @@ function moSuaTaiKhoanNhaTruong(account) {
         <label class="form-field form-span-2"><span>Họ và tên</span>
           <input name="displayName" value="${escapeHtml(account.displayName)}" autocomplete="off" maxlength="120" /></label>
       </div>
-      <p class="field-hint">Email phải thuộc miền @${escapeHtml(domain)}. Đổi email thì người dùng email mới đăng nhập được ngay,
-        email cũ không vào được nữa và phiên đang mở của tài khoản này bị đăng xuất.
+      <p class="field-hint">Email phải thuộc miền @${escapeHtml(domain)}. Đổi email thì người dùng email mới đăng nhập được bằng Microsoft 365
+        (nếu tài khoản đang bật), email cũ không vào được nữa và phiên đang mở của tài khoản này bị đăng xuất.
         Họ tên sẽ tự cập nhật theo Microsoft 365 mỗi lần người đó đăng nhập.</p>
       <div class="form-error" role="alert" data-loi></div>
     </form>
@@ -3308,6 +3308,9 @@ function moSuaTaiKhoanNhaTruong(account) {
       <button class="button button-primary" data-luu-tai-khoan>Lưu thay đổi</button></div>`);
 
   const form = $("#sua-tai-khoan-form");
+  form.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); form.requestSubmit ? form.requestSubmit() : luu(); }
+  });
   const luu = async () => {
     const loi = form.querySelector("[data-loi]");
     loi.textContent = "";
