@@ -1418,7 +1418,7 @@ function classFormMarkup(clubClass, clubId) {
   const isNew = !clubClass;
   const club = state.catalog.clubs.find((item) => item.id === (clubClass?.clubId || clubId));
   const value = {
-    name: "", code: "", dayOfWeek: 2, startTime: "16:15", endTime: "17:30", room: "", teacher: "",
+    name: "", code: "", dayOfWeek: 2, startTime: "16:15", endTime: "17:30", room: "", teacher: "", teacherPhone: "",
     capacity: 20, minCapacity: 0, enrolledBase: 0, fee: 0, hocLieu: 0, soBuoi: 0, nguongSapDu: 3, dangTuyen: true,
     grades: [], waitlistEnabled: true, sortOrder: 0, active: true,
     ...(clubClass || {}),
@@ -1442,6 +1442,7 @@ function classFormMarkup(clubClass, clubId) {
       <label class="form-field"><span>Giờ kết thúc</span><input type="time" name="endTime" value="${escapeHtml(value.endTime)}" required /></label>
       <label class="form-field"><span>Phòng học</span><input name="room" value="${escapeHtml(value.room)}" required /></label>
       <label class="form-field"><span>Giáo viên</span><input name="teacher" value="${escapeHtml(value.teacher)}" required /></label>
+      <label class="form-field"><span>SĐT giáo viên</span><input name="teacherPhone" value="${escapeHtml(value.teacherPhone || "")}" inputmode="tel" placeholder="0912 345 678" maxlength="40" /><small class="field-hint">Để giáo vụ gọi được khi lớp có việc. Bỏ trống cũng được.</small></label>
       <label class="form-field"><span>Sĩ số tối đa</span><input type="number" name="capacity" min="1" max="500" value="${value.capacity}" required /></label>
       <label class="form-field"><span>Sĩ số tối thiểu</span><input type="number" name="minCapacity" min="0" max="500" value="${value.minCapacity}" /></label>
       <label class="form-field"><span>Học phí (đồng)</span><input name="fee" value="${value.fee}" required /></label>
@@ -2382,6 +2383,7 @@ function renderRosterDetail() {
         ${detailField("Lịch học", ca.schedule)}
         ${detailField("Phòng học", ca.room)}
         ${detailField("Giáo viên phụ trách", ca.teacher)}
+        ${detailField("SĐT giáo viên", ca.teacherPhone || "—")}
         ${detailField("Khối áp dụng", (ca.grade || []).join(", "))}
         ${detailField("Học phí", ca.moCoi ? "" : `${formatMoney(conSo(ca.fee) + conSo(ca.hocLieu))}${conSo(ca.hocLieu) ? ` (gồm học liệu ${formatMoney(conSo(ca.hocLieu))})` : ""}`)}
         ${detailField("Sĩ số đang giữ chỗ", ca.moCoi ? "" : `${conSo(ca.enrolled)}/${conSo(ca.capacity)}`)}

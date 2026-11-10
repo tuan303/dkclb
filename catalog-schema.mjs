@@ -248,6 +248,11 @@ export function normalizeClassInput(input = {}, { existing = null, knownPeriodId
     grades: parseGradeList(input.grades ?? existing?.grades ?? []),
     room: requireText(input.room ?? existing?.room, "room", "phòng học", { max: 120 }),
     teacher: requireText(input.teacher ?? existing?.teacher, "teacher", "giáo viên", { max: 160 }),
+    // SĐT giáo viên: để trống được (nhiều lớp do giáo viên thỉnh giảng dạy, nhà
+    // trường không phải lúc nào cũng có số ngay lúc khai lớp). KHÔNG mã hoá như SĐT
+    // phụ huynh: đây là số liên hệ công việc, giáo vụ phải tra được nhanh khi lớp
+    // có việc, và nó không phải khoá đăng nhập của ai cả.
+    teacherPhone: optionalText(input.teacherPhone ?? existing?.teacherPhone ?? "", "teacherPhone", "SĐT giáo viên", { max: 40 }),
     capacity,
     minCapacity,
     enrolledBase,
@@ -280,6 +285,7 @@ const CATALOG_FIELD_ALIASES = {
   endTime: ["gio ket thuc", "ket thuc", "end", "end time", "den"],
   room: ["phong", "phong hoc", "dia diem", "room", "location"],
   teacher: ["giao vien", "gv", "giang vien", "phu trach", "teacher"],
+  teacherPhone: ["sdt giao vien", "so dien thoai giao vien", "dien thoai giao vien", "sdt gv", "teacher phone"],
   capacity: ["si so toi da", "si so", "so luong toi da", "toi da", "quota", "capacity", "max"],
   minCapacity: ["si so toi thieu", "toi thieu", "min", "min capacity"],
   fee: ["hoc phi", "phi", "gia", "fee", "tuition"],
@@ -392,6 +398,7 @@ export function analyzeCatalogImport(rows = [], mapping = {}, { periodId = "", d
       scheduleLabel: scheduleLabelOf({ dayOfWeek: day, startTime, endTime }),
       room,
       teacher,
+      teacherPhone: text(cellOf(row, mapping.teacherPhone)),
       capacity,
       minCapacity,
       fee,

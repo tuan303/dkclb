@@ -321,3 +321,47 @@ test("bản sao lưu mang theo mã lớp", async () => {
   const { rows } = await response.json();
   assert.ok(rows.some((row) => "code" in row), "bản sao lưu phải có trường code của lớp");
 });
+
+test("SĐT giáo viên lưu được và hiện ở danh sách lớp của nhà trường", async () => {
+  const clb = await clbTen("Mỹ thuật sáng tạo");
+  const dot = (await json("/api/admin/catalog", adminCookie)).periods[0];
+  const tao = await request("/api/admin/classes", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({
+      clubId: clb.id, periodId: dot.id, name: "Mỹ thuật nâng cao", code: "MT-NC",
+      dayOfWeek: 3, startTime: "14:00", endTime: "15:00", room: "Phòng MT 3",
+      teacher: "Cô Hạnh", teacherPhone: "0912345678", capacity: 15, fee: 0,
+    }),
+  });
+  assert.equal(tao.status, 201);
+  assert.equal((await tao.json()).class.teacherPhone, "0912345678");
+
+  const doc = (await json("/api/admin/catalog", adminCookie)).classes.find((row) => row.code === "MT-NC");
+  assert.equal(doc.teacherPhone, "0912345678", "danh mục quản trị phải mang SĐT giáo viên");
+
+  const nhaTruong = (await json("/api/clubs", adminCookie)).clubs.find((row) => row.id === doc.id);
+  assert.equal(nhaTruong.teacherPhone, "0912345678", "màn Danh sách lớp CLB phải thấy SĐT giáo viên");
+});
+
+test("phụ huynh KHÔNG nhận được SĐT giáo viên", async () => {
+  // Số của giáo viên là dữ liệu nhân sự của trường; phụ huynh không có việc gì gọi thẳng.
+  const payload = await json("/api/clubs", parentCookie);
+  for (const row of payload.clubs) {
+    assert.ok(!("teacherPhone" in row), `lớp ${row.id} vẫn gửi teacherPhone sang phụ huynh`);
+  }
+});
+
+test("SĐT giáo viên để trống vẫn lưu được", async () => {
+  const clb = await clbTen("Mỹ thuật sáng tạo");
+  const dot = (await json("/api/admin/catalog", adminCookie)).periods[0];
+  const tao = await request("/api/admin/classes", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({
+      clubId: clb.id, periodId: dot.id, name: "Mỹ thuật chiều", code: "MT-C",
+      dayOfWeek: 5, startTime: "14:00", endTime: "15:00", room: "Phòng MT 4",
+      teacher: "Cô Hạnh", capacity: 15, fee: 0,
+    }),
+  });
+  assert.equal(tao.status, 201);
+  assert.equal((await tao.json()).class.teacherPhone, "");
+});

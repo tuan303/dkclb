@@ -385,6 +385,7 @@ function initializeDatabase() {
       schedule_label TEXT NOT NULL,
       room TEXT NOT NULL,
       teacher TEXT NOT NULL,
+      teacher_phone TEXT NOT NULL DEFAULT '',
       capacity INTEGER NOT NULL,
       enrolled_base INTEGER NOT NULL DEFAULT 0,
       fee INTEGER NOT NULL,
@@ -476,6 +477,7 @@ function initializeDatabase() {
   ensureColumn("club_classes", "dang_tuyen", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("club_classes", "nguong_sap_du", "INTEGER NOT NULL DEFAULT 3");
   ensureColumn("club_classes", "code", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("club_classes", "teacher_phone", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("users", "activation_code", "TEXT");
   ensureColumn("users", "last_login_at", "TEXT");
   widenUserRoleConstraint();
@@ -754,7 +756,7 @@ async function clubRows(studentId, periodId = null) {
   const student = studentId ? (businessStore ? await businessStore.getStudent(studentId) : db.prepare("SELECT * FROM students WHERE id = ?").get(studentId)) : null;
   const rows = businessStore ? await businessStore.listClubs() : db.prepare(`SELECT cc.id AS id, c.id AS club_id, c.code AS club_code, c.name, c.category,
       c.description, c.emoji, c.visual, c.grades_json, cc.grades_json AS class_grades_json, cc.name AS class_name, cc.period_id,
-      cc.day_of_week, cc.start_time, cc.end_time, cc.schedule_label, cc.room, cc.teacher,
+      cc.day_of_week, cc.start_time, cc.end_time, cc.schedule_label, cc.room, cc.teacher, cc.teacher_phone,
       cc.capacity, cc.min_capacity, cc.enrolled_base, cc.fee, cc.hoc_lieu, cc.so_buoi, cc.dang_tuyen, cc.nguong_sap_du, cc.waitlist_enabled
     FROM clubs c JOIN club_classes cc ON cc.club_id = c.id
     WHERE c.active = 1 AND cc.active = 1
@@ -800,6 +802,7 @@ async function clubRows(studentId, periodId = null) {
       schedule: row.scheduleLabel || row.schedule_label,
       room: row.room,
       teacher: row.teacher,
+      teacherPhone: row.teacherPhone ?? row.teacher_phone ?? "",
       capacity,
       minCapacity: asInt(row.minCapacity ?? row.min_capacity),
       enrolled,
@@ -829,7 +832,7 @@ async function clubRows(studentId, periodId = null) {
  * vẫn đọc được con số.
  */
 function choPhuHuynhXem(club) {
-  const { capacity, minCapacity, enrolled, pending, hocLieu, phiTong, nguongSapDu, ...conLai } = club;
+  const { capacity, minCapacity, enrolled, pending, hocLieu, phiTong, nguongSapDu, teacherPhone, ...conLai } = club;
   return { ...conLai, fee: phiTong ?? club.fee };
 }
 
@@ -1822,7 +1825,8 @@ async function adminCatalogData() {
       classes: catalog.classes.map((row) => ({
         id: row.id, clubId: row.clubId, periodId: row.periodId, name: row.name || "", code: row.code || "",
         dayOfWeek: asInt(row.dayOfWeek),
-        startTime: row.startTime, endTime: row.endTime, scheduleLabel: row.scheduleLabel, room: row.room, teacher: row.teacher,
+        startTime: row.startTime, endTime: row.endTime, scheduleLabel: row.scheduleLabel, room: row.room,
+        teacher: row.teacher, teacherPhone: row.teacherPhone || "",
         capacity: asInt(row.capacity), minCapacity: asInt(row.minCapacity), enrolledBase: asInt(row.enrolledBase),
         grades: Array.isArray(row.grades) ? row.grades : [],
         fee: asInt(row.fee), hocLieu: asInt(row.hocLieu), soBuoi: asInt(row.soBuoi), dangTuyen: row.dangTuyen !== false,
@@ -1846,7 +1850,8 @@ async function adminCatalogData() {
     FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`).all()
     .map((row) => [row.id, { held: asInt(row.activeRegistrations), pending: asInt(row.pendingRegistrations) }]));
   const classes = db.prepare(`SELECT id, club_id AS clubId, period_id AS periodId, name, code, day_of_week AS dayOfWeek,
-    start_time AS startTime, end_time AS endTime, schedule_label AS scheduleLabel, room, teacher, capacity,
+    start_time AS startTime, end_time AS endTime, schedule_label AS scheduleLabel, room, teacher,
+    teacher_phone AS teacherPhone, capacity,
     min_capacity AS minCapacity, enrolled_base AS enrolledBase, fee, hoc_lieu AS hocLieu, so_buoi AS soBuoi,
     dang_tuyen AS dangTuyen, nguong_sap_du AS nguongSapDu, waitlist_enabled AS waitlistEnabled,
     grades_json AS gradesJson, sort_order AS sortOrder, active FROM club_classes ORDER BY sort_order, day_of_week, start_time`).all()
@@ -2143,20 +2148,20 @@ async function saveClassRecord({ actorUserId, classId, input }) {
     await businessStore.saveClass(targetId, data);
   } else if (existing) {
     db.prepare(`UPDATE club_classes SET club_id = ?, period_id = ?, name = ?, code = ?, day_of_week = ?, start_time = ?, end_time = ?,
-      schedule_label = ?, grades_json = ?, room = ?, teacher = ?, capacity = ?, min_capacity = ?, enrolled_base = ?, fee = ?,
+      schedule_label = ?, grades_json = ?, room = ?, teacher = ?, teacher_phone = ?, capacity = ?, min_capacity = ?, enrolled_base = ?, fee = ?,
       hoc_lieu = ?, so_buoi = ?, dang_tuyen = ?, nguong_sap_du = ?,
       waitlist_enabled = ?, sort_order = ?, active = ? WHERE id = ?`)
       .run(data.clubId, data.periodId, data.name, data.code, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
-        JSON.stringify(data.grades), data.room, data.teacher, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
+        JSON.stringify(data.grades), data.room, data.teacher, data.teacherPhone, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
         data.hocLieu, data.soBuoi, data.dangTuyen ? 1 : 0, data.nguongSapDu,
         data.waitlistEnabled ? 1 : 0, data.sortOrder, data.active ? 1 : 0, targetId);
   } else {
     db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, code, day_of_week, start_time, end_time, schedule_label,
-      grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
+      grades_json, room, teacher, teacher_phone, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
       waitlist_enabled, sort_order, active)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(targetId, data.clubId, data.periodId, data.name, data.code, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
-        JSON.stringify(data.grades), data.room, data.teacher, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
+        JSON.stringify(data.grades), data.room, data.teacher, data.teacherPhone, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
         data.hocLieu, data.soBuoi, data.dangTuyen ? 1 : 0, data.nguongSapDu,
         data.waitlistEnabled ? 1 : 0, data.sortOrder, data.active ? 1 : 0);
   }
@@ -2687,14 +2692,15 @@ function sqliteBackupData() {
         sortOrder: asInt(row.sort_order), active: asBool(row.active),
       })),
     clubClasses: all(`SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
-      grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
+      grades_json, room, teacher, teacher_phone, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
       waitlist_enabled, sort_order, active, code
       FROM club_classes`)
       .map((row) => ({
         id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "", code: row.code || "",
         dayOfWeek: asInt(row.day_of_week), startTime: row.start_time, endTime: row.end_time,
         scheduleLabel: row.schedule_label, grades: parseJsonField(row.grades_json, []),
-        room: row.room, teacher: row.teacher, capacity: asInt(row.capacity), minCapacity: asInt(row.min_capacity),
+        room: row.room, teacher: row.teacher, teacherPhone: row.teacher_phone || "",
+        capacity: asInt(row.capacity), minCapacity: asInt(row.min_capacity),
         enrolledBase: asInt(row.enrolled_base), fee: asInt(row.fee), hocLieu: asInt(row.hoc_lieu), soBuoi: asInt(row.so_buoi),
         dangTuyen: asBool(row.dang_tuyen), nguongSapDu: asInt(row.nguong_sap_du),
         waitlistEnabled: asBool(row.waitlist_enabled), sortOrder: asInt(row.sort_order), active: asBool(row.active),

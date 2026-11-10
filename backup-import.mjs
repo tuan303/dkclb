@@ -127,12 +127,12 @@ const INSERTS = {
   },
   clubClasses: {
     sql: `INSERT INTO club_classes (id, club_id, period_id, name, code, day_of_week, start_time, end_time, schedule_label,
-      grades, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
+      grades, room, teacher, teacher_phone, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
       waitlist_enabled, sort_order, active)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     values: (row) => [row.id, row.clubId, row.periodId, text(row.name, 120) || "", text(row.code, 64) || "", int(row.dayOfWeek),
       row.startTime, row.endTime, text(row.scheduleLabel, 120) || "", jsonText(row.grades),
-      text(row.room, 120) || "", text(row.teacher, 160) || "", int(row.capacity), int(row.minCapacity),
+      text(row.room, 120) || "", text(row.teacher, 160) || "", text(row.teacherPhone, 40) || "", int(row.capacity), int(row.minCapacity),
       int(row.enrolledBase), int(row.fee), int(row.hocLieu), int(row.soBuoi), row.dangTuyen === false ? 0 : 1,
       row.nguongSapDu === undefined || row.nguongSapDu === null ? 3 : int(row.nguongSapDu),
       row.waitlistEnabled === false ? 0 : 1, int(row.sortOrder),

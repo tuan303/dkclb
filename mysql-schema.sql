@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS club_classes (
   schedule_label  VARCHAR(120) NOT NULL,
   grades          JSON         NOT NULL,
   room            VARCHAR(120) NOT NULL,
+  teacher_phone   VARCHAR(40)  NOT NULL DEFAULT '',
   teacher         VARCHAR(160) NOT NULL,
   capacity        INT          NOT NULL,
   min_capacity    INT          NOT NULL DEFAULT 0,
