@@ -1012,6 +1012,9 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
         // Gộp: bỏ dòng nhóm nguồn SAU khi đã chuyển hết CLB sang tên đích.
         if (xoaId && xoaId !== id) await connection.query("DELETE FROM club_categories WHERE id = ?", [xoaId]);
         if (clubIds.length) {
+          // affectedRows ở đây là số dòng KHỚP chứ không phải số dòng ĐỔI, nhờ cờ
+          // FOUND_ROWS mà mysql2 bật sẵn. Bỏ cờ đó đi thì CLB đã mang đúng chữ mới sẽ
+          // không được tính, và phép kiểm dưới sẽ báo lệch oan.
           const [ketQua] = await connection.query("UPDATE clubs SET category = ? WHERE id IN (?)", [name, clubIds]);
           // Số dòng đổi ít hơn số đã hứa với người dùng nghĩa là có CLB vừa bị xoá
           // hoặc đổi nhóm ở một phiên khác. Dừng hẳn còn hơn báo "đã đổi 8 CLB" khi

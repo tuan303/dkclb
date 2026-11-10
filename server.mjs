@@ -1936,7 +1936,15 @@ async function ghiNhomMonVaoKho({ id: nhomId, name, nameKey, emoji, sortOrder, a
     // Cập nhật theo id, không theo `WHERE category = tên cũ`: xem chú thích ở
     // mysql-store.luuNhomMon — hai nền so chuỗi khác nhau.
     const doiMot = db.prepare("UPDATE clubs SET category = ? WHERE id = ?");
-    for (const clubId of clubIds || []) doiMot.run(name, clubId);
+    let daDoi = 0;
+    for (const clubId of clubIds || []) daDoi += asInt(doiMot.run(name, clubId).changes);
+    // Cùng một lá chắn như MySQL: CLB vừa bị xoá ở phiên khác thì dừng, chứ không báo
+    // "đã đổi 8 CLB" khi mới đổi 6. Hai nền phải hành xử giống nhau, nếu không thì bộ
+    // kiểm thử (chạy SQLite) không bao giờ đi qua nhánh này.
+    if (daDoi !== (clubIds || []).length) {
+      throw httpError(409, "NHOM_DOI_TEN_LECH",
+        `Chỉ cập nhật được ${daDoi}/${(clubIds || []).length} CLB — danh mục vừa bị sửa ở nơi khác. Hãy tải lại trang rồi làm lại.`);
+    }
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
