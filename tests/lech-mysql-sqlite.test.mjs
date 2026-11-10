@@ -59,6 +59,9 @@ const THIEU_O_FIRESTORE_DA_BIET = [
   // server.mjs trả 501 qua kiemNenHoTroNhomMon, và /api/clubs vẫn chạy bình thường
   // (chỉ mất thứ tự nhóm) để cổng đăng ký của phụ huynh không bị chặn theo.
   "listClubCategories", "luuNhomMon", "xoaNhomMon", "xoaClb",
+  // Thêm học sinh vào lớp từ màn Danh sách lớp CLB (10/11/2026): cùng lý do,
+  // server.mjs trả 501 qua kiemNenHoTroThemHocSinh.
+  "themHocSinhVaoLop",
 ].sort();
 
 test("khoảng lệch giữa hai kho dữ liệu không được rộng thêm", () => {

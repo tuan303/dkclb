@@ -155,6 +155,25 @@ Từ 10/11/2026, giao diện quản trị gọi thống nhất là **lớp** tha
 
 Nền Firestore (bản kế thừa) không có bảng này; máy chủ trả 501 với thông báo rõ thay vì vỡ. Danh mục nằm trong bản sao lưu (`clubCategories`); tệp sao lưu cũ không có khoá này vẫn khôi phục được bình thường.
 
+## Thêm học sinh vào lớp từ màn Danh sách lớp CLB (10/11/2026)
+
+Màn này trước đây **cố ý** không có nút thêm tay: thêm tay là đi vòng qua kiểm tra sĩ số lẫn bước thu phí, và chỗ đó không có đơn nào để đối chiếu. Nhà trường cần thêm bù những em đăng ký ngoài cổng, nên nút đã mở lại — nhưng đúng những lo ngại đó được trả lời:
+
+- Thêm một em là **tạo một đơn thật**: có mã đơn, có nhật ký `ADD_STUDENT_TO_CLASS`, hiện trong danh sách lớp, trong báo cáo và trong cổng của phụ huynh em đó.
+- Đi qua **cùng bộ luật** của cổng phụ huynh (`them-hoc-sinh-vao-lop.mjs`): trùng lớp, trùng khung giờ, sai khối, hạn mức số CLB mỗi đợt. Đơn đã huỷ không tính là trùng. Nhiều lớp của cùng một CLB vẫn chỉ tính một CLB.
+- **Chặn khi lớp đã đủ sĩ số** — chặt hơn cả cổng phụ huynh, vốn chỉ đẩy sang danh sách chờ. Sĩ số cộng dồn trong một lượt, nên thêm 5 em vào lớp còn 2 chỗ thì em thứ ba trở đi bị chặn kèm lý do.
+- **Hạ "ghi danh sẵn ngoài hệ thống" trong cùng giao dịch**, và chỉ cho em chưa từng có đơn ở lớp đó. Không hạ là sĩ số đếm hai lần; hạ cho em đã từng bị huỷ đơn là mở ra chỗ trống không có thật.
+- Đơn gắn **một** phụ huynh, chọn theo thứ tự ổn định. Em chưa có tài khoản phụ huynh vẫn thêm được, nhưng giao diện báo rõ **gia đình em đó sẽ không thấy đơn trong cổng** (truy vấn của cổng lọc theo `parent_user_id`).
+
+Trạng thái mặc định là **Đã đóng phí** (giữ chỗ ngay) kèm ô tích *Đã thu phí* tách riêng — trạng thái và việc đã thu tiền là hai chuyện.
+
+Hai đường vào, cùng một nút Thêm và cùng bộ luật:
+
+1. **Gõ tìm** mã học sinh, họ tên hoặc lớp hành chính (`GET /api/admin/tim-hoc-sinh?q=`). Chờ 300ms mới hỏi máy chủ: trên MySQL mỗi lượt tìm là một lượt giải mã cả bảng danh bạ.
+2. **Chọn file .xlsx/.csv** có cột *Mã học sinh* hoặc *Họ và tên*. File đọc ngay trong trình duyệt, chỉ bảng ô chữ được gửi lên; việc dò cột nằm trọn ở máy chủ (`docKhoaTuBang`) để hai nơi không dò ra hai kết quả. Mã khớp chính xác trước, rồi mới tới họ tên bỏ dấu; **tên trùng nhiều em thì không chọn hộ**, báo ra để người vận hành tự chọn.
+
+Quyền: `duyet-don` (quản trị trở lên) — cùng cap đang gác mọi thao tác tạo/đổi đơn. Giáo vụ không thấy nút này, và ô tìm học sinh **không** trả SĐT hay email phụ huynh. Xoá học sinh khỏi lớp thì vẫn không có: đường đúng vẫn là đổi trạng thái đơn.
+
 ## Xoá dữ liệu CLB để khai báo lại từ đầu
 
 `xoa-du-lieu-clb.mjs` xoá đơn đăng ký → ca học → CLB, giữ nguyên danh bạ học sinh, tài khoản phụ huynh (kèm mật khẩu đã đặt), đợt đăng ký, tài khoản nhà trường và nhật ký.

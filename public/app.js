@@ -2353,14 +2353,126 @@ function renderRosterPager(trang, soTrang, moiTrang, tong) {
   </div>`;
 }
 
+function themHsState() {
+  state.themHs = state.themHs || { moVoiLop: "", q: "", ketQua: [], chon: [], dangTim: false, baoCao: null, loi: "" };
+  return state.themHs;
+}
+
+/** Khối "Thêm học sinh vào lớp" trong thẻ Danh sách học sinh. */
+function themHocSinhMarkup(ca) {
+  // Tạo đơn là việc của người có quyền duyệt đơn. Giáo vụ chỉ xem danh sách để điểm
+  // danh, nên không vẽ nút ra — dựng một cái nút bấm vào nhận 403 là dựng sẵn ngõ cụt.
+  if (!hasCap("duyet-don") || ca.moCoi) return "";
+  const t = themHsState();
+  if (t.moVoiLop !== ca.id) {
+    return `<div class="them-hs-mo" data-no-print>
+      <button class="button button-secondary" data-them-hs-mo="${escapeHtml(ca.id)}">+ Thêm học sinh vào lớp</button>
+    </div>`;
+  }
+  const daChon = t.chon.map((em) => `<span class="them-hs-the">${escapeHtml(em.name)}
+    <button class="icon-button" data-them-hs-bo="${escapeHtml(em.id)}" aria-label="Bỏ chọn">×</button></span>`).join("");
+
+  const ketQua = t.dangTim
+    ? `<p class="field-hint">Đang tìm…</p>`
+    : t.q.trim().length < 2
+      ? `<p class="field-hint">Gõ ít nhất 2 ký tự: mã học sinh, họ tên, hoặc lớp hành chính.</p>`
+      : t.ketQua.length
+        ? `<ul class="them-hs-ds">${t.ketQua.map((em) => {
+            const daCo = t.chon.some((item) => item.id === em.id);
+            return `<li><button class="them-hs-dong-ds" data-them-hs-chon="${escapeHtml(em.id)}" ${daCo ? "disabled" : ""}>
+              <strong>${escapeHtml(em.name)}</strong>
+              <span class="roster-note">${escapeHtml([em.code, em.homeroom, em.grade ? `khối ${em.grade}` : ""].filter(Boolean).join(" · "))}</span>
+              <span class="them-hs-dau">${daCo ? "đã chọn" : "+"}</span></button></li>`;
+          }).join("")}</ul>`
+        : `<p class="field-hint">Không tìm thấy em nào khớp.</p>`;
+
+  return `<div class="them-hs" data-no-print>
+    <div class="them-hs-dau-khoi"><strong>Thêm học sinh vào lớp</strong>
+      <button class="text-button" data-them-hs-dong>Đóng</button></div>
+    <p class="field-hint">Em được thêm sẽ có một <b>đơn thật</b> ở trạng thái <b>Đã đóng phí</b> — vào ngay sĩ số chính thức, danh sách điểm danh và lịch học của phụ huynh.</p>
+    <label class="search-field">${icon("search")}<input id="them-hs-tim" placeholder="Mã học sinh, họ tên hoặc lớp…" value="${escapeHtml(t.q)}" autocomplete="off" /></label>
+    <label class="them-hs-file"><span class="roster-note">hoặc chọn file .xlsx / .csv có cột <b>Mã học sinh</b> hoặc <b>Họ và tên</b></span>
+      <input id="them-hs-file" type="file" accept=".xlsx,.csv" /></label>
+    ${ketQua}
+    ${t.chon.length ? `<div class="them-hs-dachon"><span class="roster-note">Đã chọn ${t.chon.length} em</span>${daChon}</div>` : ""}
+    ${t.loi ? `<div class="inline-alert">${escapeHtml(t.loi)}</div>` : ""}
+    ${t.baoCao ? themHocSinhBaoCao(t.baoCao) : ""}
+    <div class="them-hs-nut">
+      <label class="confirm-row"><input type="checkbox" id="them-hs-phi" checked /><span>Đã thu phí</span></label>
+      <button class="button button-primary" data-them-hs-ghi="${escapeHtml(ca.id)}" ${t.chon.length ? "" : "disabled"}>Thêm ${t.chon.length || ""} em vào lớp</button>
+    </div>
+  </div>`;
+}
+
+/** Kết quả một lượt thêm: em nào vào được, em nào không và vì sao. */
+function themHocSinhBaoCao(bc) {
+  const hong = (bc.ketQua || []).filter((item) => item.ketCuc !== "themDuoc");
+  const canhBao = [];
+  if (bc.haGhiDanhSan) canhBao.push(`Đã hạ "ghi danh sẵn ngoài hệ thống" đi ${bc.haGhiDanhSan} để sĩ số không đếm hai lần.`);
+  if (bc.thieuGhiDanhSan) canhBao.push("Số ghi danh sẵn không đủ để trừ, nên sĩ số của lớp tăng thật.");
+  if (bc.soKhongCoPhuHuynh) canhBao.push(`${bc.soKhongCoPhuHuynh} em chưa có tài khoản phụ huynh — gia đình các em đó sẽ không thấy đơn trong cổng.`);
+  if (bc.soNhieuPhuHuynh) canhBao.push(`${bc.soNhieuPhuHuynh} em có nhiều hơn một phụ huynh; đơn gắn vào một người, người kia không thấy.`);
+  return `<div class="them-hs-bc">
+    <p><b>Đã thêm ${bc.daTao} em.</b>${hong.length ? ` ${hong.length} em không thêm được:` : ""}</p>
+    ${hong.length ? `<ul>${hong.map((item) => `<li>${escapeHtml(item.thongBao || item.ketCuc)}</li>`).join("")}</ul>` : ""}
+    ${canhBao.length ? `<ul class="them-hs-luu-y">${canhBao.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+  </div>`;
+}
+
+async function timHocSinhThem() {
+  const t = themHsState();
+  const q = t.q.trim();
+  if (q.length < 2) { t.ketQua = []; t.dangTim = false; renderRosterDetail(); return; }
+  t.dangTim = true;
+  const luot = (t.luot = (t.luot || 0) + 1);
+  try {
+    const ketQua = await api(`/admin/tim-hoc-sinh?q=${encodeURIComponent(q)}`);
+    if (luot !== t.luot) return;
+    t.ketQua = ketQua.hocSinh;
+    t.loi = "";
+  } catch (error) {
+    if (luot !== t.luot) return;
+    t.ketQua = [];
+    t.loi = error.message;
+  }
+  t.dangTim = false;
+  renderRosterDetail();
+}
+
+async function ghiThemHocSinh(classId) {
+  const t = themHsState();
+  if (!t.chon.length) return;
+  const daThuPhi = $("#them-hs-phi")?.checked !== false;
+  await withBusyButton($("[data-them-hs-ghi]"), "Đang thêm…", async () => {
+    const { ketQua } = await api(`/admin/classes/${encodeURIComponent(classId)}/hoc-sinh`, {
+      method: "POST",
+      body: JSON.stringify({ studentIds: t.chon.map((em) => em.id), feePaid: daThuPhi }),
+    });
+    // Nạp lại đơn và danh mục: sĩ số, "ghi danh sẵn" và bảng học sinh đều vừa đổi.
+    const [donMoi, lopMoi] = await Promise.all([api("/registrations?status=all"), api("/clubs"), refreshCatalog()]);
+    adminApplications = donMoi.registrations;
+    clubs = lopMoi.clubs;
+    Object.assign(t, { baoCao: ketQua, chon: [], ketQua: [], q: "", loi: "" });
+    renderRosterDetail();
+    toast(ketQua.daTao ? `Đã thêm ${ketQua.daTao} em vào lớp.` : "Không em nào thêm được — xem lý do bên dưới.",
+      ketQua.daTao ? "success" : "error");
+  });
+}
+
 /**
- * Popup chi tiết một ca học. Hai thẻ, cả hai đều có dữ liệu thật.
+ * Popup chi tiết một lớp. Hai thẻ, cả hai đều có dữ liệu thật.
  *
- * KHÔNG có nút "Thêm học sinh vào lớp" / "Xóa học sinh khỏi lớp" như màn quản lý
- * học sinh của nhà trường: ở cổng này, một em vào ca học CHỈ qua đơn đăng ký và
- * rời đi bằng cách đổi trạng thái đơn. Thêm tay là đi vòng qua cả kiểm tra sĩ số
- * lẫn bước thu phí, và chỗ đó sẽ không có đơn nào để đối chiếu. Đường đúng là mở
- * đơn ở cột "Đơn".
+ * Trước 10/11/2026 màn này CỐ Ý không có nút "Thêm học sinh", vì thêm tay là đi vòng
+ * qua kiểm tra sĩ số lẫn bước thu phí, và chỗ đó không có đơn nào để đối chiếu. Nhà
+ * trường cần thêm bù những em đăng ký ngoài cổng, nên nút đã mở lại — nhưng đúng
+ * những lo ngại đó phải được trả lời, và chúng được trả lời thế này:
+ *   - Thêm một em là TẠO MỘT ĐƠN THẬT: có mã đơn, có nhật ký ADD_STUDENT_TO_CLASS,
+ *     hiện trong danh sách lớp, trong báo cáo và trong cổng của phụ huynh em đó.
+ *   - Đi qua CÙNG bộ luật của cổng phụ huynh (trùng lớp, trùng giờ, sai khối, hạn
+ *     mức CLB mỗi đợt) — xem them-hoc-sinh-vao-lop.mjs — cộng thêm CHẶN khi lớp đã
+ *     đủ sĩ số, chặt hơn cả cổng phụ huynh vốn chỉ đẩy sang danh sách chờ.
+ *   - Hạ "ghi danh sẵn ngoài hệ thống" trong cùng giao dịch, để sĩ số không đếm hai lần.
+ * Xoá học sinh khỏi lớp thì VẪN không có: đường đúng vẫn là đổi trạng thái đơn.
  */
 function renderRosterDetail() {
   const ca = danhSachCaHoc().find((item) => item.id === state.rosterDetailId);
@@ -2426,6 +2538,84 @@ function renderRosterDetail() {
     exportRosterCsv(el.dataset.rosterCsvCa, state.rosterOnlyPaid !== false ? "giu-cho" : "hieu-luc")));
   hop?.querySelector("[data-roster-print]")?.addEventListener("click", () => window.print());
   hop?.querySelectorAll("[data-detail-registration]").forEach((el) => el.addEventListener("click", () => openRegistrationDetail(el.dataset.detailRegistration)));
+  bindThemHocSinh(hop);
+}
+
+function bindThemHocSinh(hop) {
+  if (!hop) return;
+  const t = themHsState();
+  hop.querySelector("[data-them-hs-mo]")?.addEventListener("click", (event) => {
+    Object.assign(t, { moVoiLop: event.currentTarget.dataset.themHsMo, q: "", ketQua: [], chon: [], baoCao: null, loi: "" });
+    renderRosterDetail();
+  });
+  hop.querySelector("[data-them-hs-dong]")?.addEventListener("click", () => {
+    t.moVoiLop = "";
+    renderRosterDetail();
+  });
+  const o = hop.querySelector("#them-hs-tim");
+  if (o) {
+    let hen = null;
+    const timSau = () => {
+      clearTimeout(hen);
+      t.q = o.value;
+      // Chờ một nhịp rồi mới hỏi: trên MySQL mỗi lượt tìm là một lượt giải mã cả bảng
+      // danh bạ, gõ từng chữ mà hỏi từng chữ là tự làm nghẽn máy chủ.
+      hen = setTimeout(() => timHocSinhThem(), 300);
+    };
+    o.addEventListener("input", (event) => { if (!event.isComposing) timSau(); });
+    o.addEventListener("compositionend", timSau);
+    o.focus();
+    o.setSelectionRange(o.value.length, o.value.length);
+  }
+  hop.querySelectorAll("[data-them-hs-chon]").forEach((el) => el.addEventListener("click", () => {
+    const em = t.ketQua.find((item) => item.id === el.dataset.themHsChon);
+    if (em && !t.chon.some((item) => item.id === em.id)) t.chon.push(em);
+    renderRosterDetail();
+  }));
+  hop.querySelectorAll("[data-them-hs-bo]").forEach((el) => el.addEventListener("click", () => {
+    t.chon = t.chon.filter((item) => item.id !== el.dataset.themHsBo);
+    renderRosterDetail();
+  }));
+  hop.querySelector("[data-them-hs-ghi]")?.addEventListener("click", (event) =>
+    ghiThemHocSinh(event.currentTarget.dataset.themHsGhi));
+  hop.querySelector("#them-hs-file")?.addEventListener("change", (event) => docFileThemHocSinh(event.target.files?.[0]));
+}
+
+/**
+ * Đọc file danh sách em cần thêm NGAY TRONG TRÌNH DUYỆT, rồi gửi bảng ô chữ lên máy
+ * chủ để dò cột và khớp với danh bạ. Không tải tệp nhị phân, không có tệp tạm trên đĩa.
+ *
+ * Việc dò cột nằm trọn ở máy chủ (docKhoaTuBang): hai bản dò ở hai nơi là hai kết quả
+ * khác nhau trên cùng một file.
+ *
+ * Em khớp được đổ vào đúng danh sách "đã chọn" của ô tìm kiếm, nên cả hai đường cùng
+ * đi qua một nút Thêm và cùng bộ luật — file không phải một ngõ riêng.
+ */
+async function docFileThemHocSinh(file) {
+  if (!file) return;
+  const t = themHsState();
+  t.loi = "";
+  try {
+    const { sheets } = await window.NSHMSheet.readFile(file);
+    const rows = (sheets || []).filter((sheet) => !sheet.hidden).flatMap((sheet) => sheet.rows || []);
+    if (!rows.length) throw new Error("File không có dòng nào đọc được.");
+    const ketQua = await api("/admin/tim-hoc-sinh", { method: "POST", body: JSON.stringify({ rows }) });
+    for (const em of ketQua.hocSinh) if (!t.chon.some((item) => item.id === em.id)) t.chon.push(em);
+    const canhBao = [];
+    if (ketQua.khongKhop.length) {
+      canhBao.push(`${ketQua.khongKhop.length} dòng không có trong danh bạ: ${ketQua.khongKhop.slice(0, 5).join(", ")}${ketQua.khongKhop.length > 5 ? "…" : ""}`);
+    }
+    if (ketQua.nhieuNguoi.length) {
+      canhBao.push(`${ketQua.nhieuNguoi.length} dòng trùng tên nhiều em nên không chọn hộ, hãy tự chọn bằng ô tìm kiếm: ${ketQua.nhieuNguoi.map((item) => item.khoa).slice(0, 5).join(", ")}`);
+    }
+    t.loi = canhBao.join(" · ");
+    renderRosterDetail();
+    toast(`Đọc ${ketQua.soDong} dòng, khớp ${ketQua.hocSinh.length} em.`, ketQua.hocSinh.length ? "success" : "error");
+  } catch (error) {
+    t.loi = error.message;
+    renderRosterDetail();
+    toast(error.message, "error");
+  }
 }
 
 /** Bảng học sinh trong popup — đúng bộ cột màn danh sách lớp của nhà trường. */
@@ -2459,6 +2649,7 @@ function renderRosterStudents(ca, rows, chiGiuCho, ghiDanhSan) {
       </div>
       <span class="roster-note">${rows.length} em trong danh sách${ghiDanhSan ? ` · ${ghiDanhSan} em ghi danh sẵn ngoài hệ thống` : ""}</span>
     </div>
+    ${themHocSinhMarkup(ca)}
     ${rows.length
       ? `<div class="table-wrap"><table class="data-table roster-table">
           <thead><tr><th style="width:44px">#</th>${cot.map((item) => `<th>${item.title}</th>`).join("")}</tr></thead>

@@ -648,6 +648,22 @@ a.nav-link { text-decoration: none; }
 .kb-lop td{background:var(--surface-2,#f8f9fc);padding-top:6px;padding-bottom:6px}
 .kb-lop td:first-child{padding-left:28px}
 .kb-thut{color:var(--muted);margin-right:4px}
+/* Thêm học sinh vào lớp — khối trong popup chi tiết lớp. */
+.them-hs-mo{margin:10px 0 2px}
+.them-hs{margin:12px 0 4px;padding:14px 16px;border:1px solid var(--line,#e2e6ee);border-radius:12px;background:var(--surface-2,#f8f9fc)}
+.them-hs-dau-khoi{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
+.them-hs-ds{list-style:none;margin:8px 0 0;padding:0;max-height:220px;overflow:auto;border:1px solid var(--line,#e2e6ee);border-radius:10px;background:#fff}
+.them-hs-ds li+li{border-top:1px solid var(--line,#e2e6ee)}
+.them-hs-dong-ds{display:flex;align-items:baseline;gap:10px;width:100%;padding:8px 12px;border:0;background:none;text-align:left;cursor:pointer;font:inherit;color:inherit}
+.them-hs-dong-ds:hover:not(:disabled){background:var(--surface-2,#f4f6fb)}
+.them-hs-dong-ds:disabled{opacity:.55;cursor:default}
+.them-hs-dau{margin-left:auto;color:var(--muted);font-size:12px}
+.them-hs-dachon{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.them-hs-the{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 10px;border-radius:999px;background:#fff;border:1px solid var(--line,#e2e6ee);font-size:13px}
+.them-hs-nut{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap}
+.them-hs-bc{margin-top:10px;padding:10px 12px;border-radius:10px;background:#fff;border:1px solid var(--line,#e2e6ee);font-size:13px}
+.them-hs-bc ul{margin:6px 0 0;padding-left:18px}
+.them-hs-luu-y{color:var(--muted)}
 @media print {
   /* Thứ tự quan trọng: bung khung ứng dụng ra trước… */
   .app-shell, .main-area, .page-content {

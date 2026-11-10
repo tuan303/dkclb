@@ -1178,6 +1178,71 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
      * thật rồi — chặn ở đây là bắt hệ thống nói khác sự thật. Màn xem trước đã nói
      * trước sĩ số sẽ thành bao nhiêu để người vận hành quyết trước khi bấm.
      */
+    /**
+     * Nhà trường thêm học sinh vào MỘT lớp từ màn Danh sách lớp CLB.
+     *
+     * Tạo đơn và hạ "ghi danh sẵn" trong CÙNG một giao dịch, vì cùng một lý do như
+     * đường nhập hàng loạt: các em đó đang được đếm trong enrolled_base, tạo đơn mà
+     * không hạ là sĩ số phồng gấp đôi, còn hạ trước rồi mới tạo là mở toang chỗ trống
+     * thật trong khoảng giữa hai bước. Khoá dòng lớp trước, để không giành chỗ với
+     * phụ huynh đang đăng ký.
+     */
+    async themHocSinhVaoLop({
+      actorUserId, groupId, timestamp, classId, periodId, trangThai, daThuPhi,
+      feeSnapshot, scheduleSnapshot, rows, enrolledBaseMoi, haGhiDanhSan,
+    }) {
+      return withTransaction(async (connection) => {
+        const [lop] = await connection.query(
+          "SELECT id, enrolled_base FROM club_classes WHERE id = ? FOR UPDATE", [classId]);
+        if (!lop.length) throw createHttpError(404, "CLASS_NOT_FOUND", "Không tìm thấy lớp.");
+
+        const maConTrong = async (ma) => {
+          let thu = ma;
+          for (let lan = 0; lan < 8; lan += 1) {
+            const [co] = await connection.query("SELECT 1 FROM registrations WHERE id = ? LIMIT 1", [thu]);
+            if (!co.length) return thu;
+            thu = `${thu}${lan}`;
+          }
+          throw createHttpError(500, "REGISTRATION_ID_EXHAUSTED", "Không sinh được mã đơn mới. Vui lòng thử lại.");
+        };
+
+        let daTao = 0;
+        for (const row of rows) {
+          const registrationId = await maConTrong(row.maDon);
+          await connection.query(
+            `INSERT INTO registrations (id, group_id, student_id, parent_user_id, class_id, period_id, status,
+              fee_snapshot, fee_paid, schedule_snapshot, terms_accepted_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [registrationId, groupId, row.studentId, row.parentUserId || null, classId, periodId || null,
+              trangThai, toInt(feeSnapshot), daThuPhi ? 1 : 0, scheduleSnapshot || "", timestamp, timestamp, timestamp],
+          );
+          await insertAudit(connection, {
+            actorUserId, action: "ADD_STUDENT_TO_CLASS", entityType: "registration", entityId: registrationId,
+            after: { status: trangThai, feePaid: daThuPhi, classId, studentId: row.studentId, groupId },
+            reason: "Nhà trường thêm học sinh vào lớp từ màn Danh sách lớp CLB.", createdAt: timestamp,
+          });
+          daTao += 1;
+        }
+
+        let daHaBase = 0;
+        if (haGhiDanhSan) {
+          const baseHienTai = toInt(lop[0].enrolled_base);
+          const baseMoi = Math.max(0, Math.min(baseHienTai, toInt(enrolledBaseMoi)));
+          if (baseMoi !== baseHienTai) {
+            await connection.query("UPDATE club_classes SET enrolled_base = ? WHERE id = ?", [baseMoi, classId]);
+            await insertAudit(connection, {
+              actorUserId, action: "ADJUST_ENROLLED_BASE", entityType: "club_class", entityId: classId,
+              before: { enrolledBase: baseHienTai }, after: { enrolledBase: baseMoi },
+              reason: `Hạ theo ${baseHienTai - baseMoi} em vừa thêm thành đơn, để không đếm hai lần.`,
+              createdAt: timestamp,
+            });
+            daHaBase = baseHienTai - baseMoi;
+          }
+        }
+        return { daTao, daHaBase };
+      });
+    },
+
     async nhapDangKyHangLoat({ actorUserId, groupId, timestamp, trangThai, daThuPhi, haGhiDanhSan, periodId, rows, caAnhHuong }) {
       return withTransaction(async (connection) => {
         const classIds = [...new Set(rows.map((row) => row.classId))];

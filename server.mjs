@@ -33,6 +33,10 @@ import {
   clbLechChinhTa, clbTheoNhom, docYeuCauNhom, ghepDanhMucNhom, khoaNhom, kiemTrungKhiTao,
   lapKeHoachDoiTen, lapKeHoachXoa, nhomTuClubs,
 } from "./nhom-mon.mjs";
+import {
+  TOI_DA_MOI_LUOT, TOI_THIEU_TU_KHOA, chonPhuHuynh, docKhoaTuBang, khoiCuaLop, khopKhoaVoiDanhBa,
+  lapKeHoachThemNhieu, timHocSinh, tinhHaGhiDanhSan,
+} from "./them-hoc-sinh-vao-lop.mjs";
 import { taoBieuMau } from "./bieu-mau.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
 import {
@@ -2096,6 +2100,156 @@ async function saveClubRecord({ actorUserId, clubId, input }) {
   return { id: targetId, ...data };
 }
 
+// ─────────────── Nhà trường tự thêm học sinh vào lớp (10/11/2026) ───────────────
+
+function kiemNenHoTroThemHocSinh() {
+  for (const ten of ["listAllStudents", "listAllParentLinks"]) {
+    if (businessStore && typeof businessStore[ten] !== "function") {
+      throw httpError(501, "NEN_LUU_TRU_CHUA_HO_TRO",
+        "Nền lưu trữ đang dùng chưa hỗ trợ thêm học sinh vào lớp. Tính năng này làm cho MySQL.");
+    }
+  }
+}
+
+async function docDanhBaHocSinh() {
+  kiemNenHoTroThemHocSinh();
+  if (businessStore) return businessStore.listAllStudents();
+  return db.prepare("SELECT id, code, name, grade, homeroom, level, status FROM students").all();
+}
+
+async function docLienKetPhuHuynh() {
+  if (businessStore) return businessStore.listAllParentLinks();
+  return db.prepare("SELECT parent_user_id AS parentUserId, student_id AS studentId, relationship FROM parent_students").all();
+}
+
+/**
+ * Hàng học sinh trả về cho ô tìm kiếm.
+ *
+ * Mã học sinh chỉ gửi cho người có quyền duyệt đơn, đúng ranh giới mà
+ * /api/registrations đang giữ: giáo vụ xem danh sách lớp được, nhưng mã học sinh và
+ * ngày sinh thì nằm ngoài phạm vi của họ. KHÔNG bao giờ gửi SĐT hay email phụ huynh
+ * ở đường này — màn danh sách lớp không có việc gì với chúng.
+ */
+function hangTimHocSinh(em, { xemMa }) {
+  return {
+    id: em.id,
+    name: em.name,
+    grade: asInt(em.grade) || null,
+    homeroom: em.homeroom || "",
+    status: em.status || "active",
+    ...(xemMa ? { code: em.code || "" } : {}),
+  };
+}
+
+/**
+ * Thêm một hoặc nhiều học sinh vào một lớp, bằng cách tạo ĐƠN THẬT cho từng em.
+ *
+ * Đi qua cùng bộ luật mà cổng phụ huynh dùng (trùng lớp, trùng giờ, sai khối, hạn mức
+ * CLB mỗi đợt) cộng thêm chặn sĩ số — nhà trường chốt 10/11/2026 là CHẶN chứ không
+ * cho vượt. Và hạ "ghi danh sẵn ngoài hệ thống" trong CÙNG giao dịch: các em đó đang
+ * được đếm trong enrolled_base, thêm mà không hạ là sĩ số phồng lên gấp đôi.
+ */
+async function themHocSinhVaoLop({ actorUserId, classId, studentIds, trangThai, daThuPhi }) {
+  const [catalog, periods, danhBa, lienKet] = await Promise.all([
+    adminCatalogData(), listPeriodRows(), docDanhBaHocSinh(), docLienKetPhuHuynh(),
+  ]);
+  const lop = catalog.classes.find((row) => row.id === classId);
+  if (!lop) throw httpError(404, "CLASS_NOT_FOUND", "Không tìm thấy lớp.");
+  const clb = catalog.clubs.find((item) => item.id === lop.clubId) || {};
+  const dot = periods.find((item) => item.id === lop.periodId) || null;
+
+  const donMoiEm = new Map();
+  const daTungCoDon = new Set();
+  for (const don of await rawRegistrationRows({})) {
+    daTungCoDon.add(`${don.studentId}|${don.classId}`);
+    const ca = catalog.classes.find((row) => row.id === don.classId);
+    if (!donMoiEm.has(don.studentId)) donMoiEm.set(don.studentId, []);
+    donMoiEm.get(don.studentId).push({
+      classId: don.classId, clubId: ca?.clubId || null, status: don.status, periodId: don.periodId,
+      dayOfWeek: ca?.dayOfWeek, startTime: ca?.startTime, endTime: ca?.endTime,
+      scheduleLabel: ca?.scheduleLabel || "", clubName: catalog.clubs.find((item) => item.id === ca?.clubId)?.name || "",
+    });
+  }
+
+  const keHoach = lapKeHoachThemNhieu({
+    hocSinhIds: studentIds,
+    danhBa: new Map(danhBa.map((em) => [em.id, em])),
+    lop: { ...lop, grades: khoiCuaLop(lop, clb) },
+    clb,
+    donTheoHocSinh: donMoiEm,
+    maxClubsPerStudent: asInt(dot?.maxClubsPerStudent) || 3,
+    siSoDangDung: asInt(lop.enrolled),
+  });
+
+  const { theoHocSinh, soPhuHuynh } = chonPhuHuynh(lienKet);
+  const idThem = keHoach.themDuoc.map((item) => item.studentId);
+  const haBase = tinhHaGhiDanhSan({
+    trangThai, enrolledBaseHienTai: asInt(lop.enrolledBase), studentIds: idThem,
+    daTungCoDon: new Set(idThem.filter((studentId) => daTungCoDon.has(`${studentId}|${classId}`))),
+  });
+
+  if (!idThem.length) {
+    return { ...keHoach, daTao: 0, soKhongCoPhuHuynh: 0, soNhieuPhuHuynh: 0, haGhiDanhSan: 0 };
+  }
+
+  const timestamp = nowIso();
+  const groupId = maTheoNgay("TH");
+  const rows = idThem.map((studentId) => ({
+    studentId,
+    parentUserId: theoHocSinh.get(studentId) || null,
+    maDon: maTheoNgay("DK"),
+  }));
+
+  if (businessStore) {
+    await businessStore.themHocSinhVaoLop({
+      actorUserId, groupId, timestamp, classId, periodId: lop.periodId, trangThai, daThuPhi,
+      feeSnapshot: asInt(lop.fee) + asInt(lop.hocLieu), scheduleSnapshot: lop.scheduleLabel || "",
+      rows, enrolledBaseMoi: haBase.enrolledBaseMoi, haGhiDanhSan: haBase.soHa > 0,
+    });
+  } else {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const insert = db.prepare(`INSERT INTO registrations
+        (id, group_id, student_id, parent_user_id, class_id, period_id, status, fee_snapshot, fee_paid,
+         schedule_snapshot, terms_accepted_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const row of rows) {
+        const registrationId = maDonConTrong(row.maDon, () => maTheoNgay("DK"));
+        insert.run(registrationId, groupId, row.studentId, row.parentUserId, classId, lop.periodId,
+          trangThai, asInt(lop.fee) + asInt(lop.hocLieu), daThuPhi ? 1 : 0, lop.scheduleLabel || "",
+          timestamp, timestamp, timestamp);
+        db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, after_json, reason, created_at)
+          VALUES (?, ?, 'ADD_STUDENT_TO_CLASS', 'registration', ?, ?, ?, ?)`)
+          .run(id("audit"), actorUserId, registrationId,
+            JSON.stringify({ status: trangThai, feePaid: daThuPhi, classId, studentId: row.studentId, groupId }),
+            "Nhà trường thêm học sinh vào lớp từ màn Danh sách lớp CLB.", timestamp);
+      }
+      if (haBase.soHa > 0) {
+        db.prepare("UPDATE club_classes SET enrolled_base = ? WHERE id = ?").run(haBase.enrolledBaseMoi, classId);
+        db.prepare(`INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, before_json, after_json, reason, created_at)
+          VALUES (?, ?, 'ADJUST_ENROLLED_BASE', 'club_class', ?, ?, ?, ?, ?)`)
+          .run(id("audit"), actorUserId, classId,
+            JSON.stringify({ enrolledBase: asInt(lop.enrolledBase) }), JSON.stringify({ enrolledBase: haBase.enrolledBaseMoi }),
+            `Hạ theo ${haBase.soHa} em vừa thêm thành đơn, để không đếm hai lần.`, timestamp);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  return {
+    ...keHoach,
+    groupId,
+    daTao: rows.length,
+    haGhiDanhSan: haBase.soHa,
+    thieuGhiDanhSan: haBase.thieuGhiDanhSan,
+    soKhongCoPhuHuynh: rows.filter((row) => !row.parentUserId).length,
+    soNhieuPhuHuynh: rows.filter((row) => (soPhuHuynh.get(row.studentId) || 0) > 1).length,
+  };
+}
+
 async function saveClassRecord({ actorUserId, classId, input }) {
   const [catalog, periods] = await Promise.all([adminCatalogData(), listPeriodRows()]);
   const existing = classId ? catalog.classes.find((row) => row.id === classId) : null;
@@ -3446,6 +3600,62 @@ const groupId = maTheoNgay("GR");
         result: { ...ketQua, groupId, trangThai, daThuPhi, haGhiDanhSan, dem: phanTich.dem },
       });
     });
+  }
+
+  if (method === "GET" && url.pathname === "/api/admin/tim-hoc-sinh") {
+    const user = await requireSchoolUser(req, CAP.duyetDon);
+    const tuKhoa = url.searchParams.get("q") || "";
+    const danhSach = timHocSinh(await docDanhBaHocSinh(), tuKhoa);
+    return sendJson(res, 200, {
+      // effectiveRole, không phải user.role: tài khoản nằm trong SUPERADMIN_ACCOUNTS
+      // được nâng quyền ngoài cơ sở dữ liệu, so theo vai trò lưu trong bảng là sai.
+      hocSinh: danhSach.map((em) => hangTimHocSinh(em, { xemMa: can(user.effectiveRole, CAP.duyetDon) })),
+      toiThieu: TOI_THIEU_TU_KHOA,
+    });
+  }
+
+  // Khớp bảng ô chữ đọc từ file Excel (trình duyệt đọc, chỉ gửi bảng lên) với danh
+  // bạ học sinh. Chỉ TRA, không ghi gì — việc ghi vẫn đi qua đúng route thêm học sinh,
+  // nên file không phải một ngõ riêng lách qua các lá chắn.
+  if (method === "POST" && url.pathname === "/api/admin/tim-hoc-sinh") {
+    const user = await requireSchoolUser(req, CAP.duyetDon);
+    const body = await readJson(req, 4_000_000);
+    const rows = Array.isArray(body.rows) ? body.rows : [];
+    if (!rows.length) throw httpError(422, "THIEU_DU_LIEU", "File không có dòng nào đọc được.");
+    const { khoa, coTieuDe } = docKhoaTuBang(rows);
+    if (!khoa.length) {
+      throw httpError(422, "THIEU_COT",
+        "Không tìm thấy cột mã học sinh hay họ tên trong file. Hãy đặt tiêu đề cột là \"Mã học sinh\" hoặc \"Họ và tên\".");
+    }
+    if (khoa.length > TOI_DA_MOI_LUOT) {
+      throw httpError(422, "QUA_NHIEU_HOC_SINH",
+        `File có ${khoa.length} dòng, mỗi lượt thêm tối đa ${TOI_DA_MOI_LUOT} em. Hãy tách file nhỏ hơn.`);
+    }
+    const ketQua = khopKhoaVoiDanhBa(khoa, await docDanhBaHocSinh());
+    return sendJson(res, 200, {
+      hocSinh: ketQua.khop.map((em) => hangTimHocSinh(em, { xemMa: can(user.effectiveRole, CAP.duyetDon) })),
+      khongKhop: ketQua.khongKhop, nhieuNguoi: ketQua.nhieuNguoi, soDong: khoa.length, coTieuDe,
+    });
+  }
+
+  const themHsMatch = url.pathname.match(/^\/api\/admin\/classes\/([^/]+)\/hoc-sinh$/);
+  if (method === "POST" && themHsMatch) {
+    const user = await requireSchoolUser(req, CAP.duyetDon);
+    const body = await readJson(req);
+    const studentIds = Array.isArray(body.studentIds) ? body.studentIds.map(String).filter(Boolean) : [];
+    if (!studentIds.length) throw httpError(422, "THIEU_HOC_SINH", "Hãy chọn ít nhất một học sinh.");
+    if (studentIds.length > TOI_DA_MOI_LUOT) {
+      throw httpError(422, "QUA_NHIEU_HOC_SINH",
+        `Mỗi lượt thêm tối đa ${TOI_DA_MOI_LUOT} em. Nhiều hơn thì dùng màn Nhập đăng ký hàng loạt.`);
+    }
+    // Trạng thái và việc đã thu phí là HAI chuyện: nhà trường có thể ghi em vào lớp
+    // trước rồi thu tiền sau. Không suy cái này từ cái kia.
+    const trangThai = ASSIGNABLE_STATUSES.includes(body.status) ? body.status : STATUS.daDongPhi;
+    const daThuPhi = body.feePaid !== false;
+    const ketQua = await ghiLienHeTuanTu(() => themHocSinhVaoLop({
+      actorUserId: user.id, classId: decodeURIComponent(themHsMatch[1]), studentIds, trangThai, daThuPhi,
+    }));
+    return sendJson(res, 200, { ketQua });
   }
 
   if (method === "GET" && url.pathname === "/api/admin/export/collections") {

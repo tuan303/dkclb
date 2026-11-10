@@ -365,3 +365,87 @@ test("SĐT giáo viên để trống vẫn lưu được", async () => {
   assert.equal(tao.status, 201);
   assert.equal((await tao.json()).class.teacherPhone, "");
 });
+
+test("thêm học sinh vào lớp: tạo đơn thật, và phụ huynh không có quyền", async () => {
+  const dot = (await json("/api/admin/catalog", adminCookie)).periods[0];
+  const clb = await clbTen("Mỹ thuật sáng tạo");
+  const tao = await request("/api/admin/classes", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({
+      clubId: clb.id, periodId: dot.id, name: "Lớp thử thêm em", code: "TH-1",
+      dayOfWeek: 1, startTime: "08:00", endTime: "09:00", room: "P1", teacher: "GV", capacity: 2, fee: 0,
+    }),
+  });
+  const { class: lop } = await tao.json();
+
+  assert.equal((await request(`/api/admin/classes/${lop.id}/hoc-sinh`, parentCookie, {
+    method: "POST", body: JSON.stringify({ studentIds: ["hs01"] }),
+  })).status, 403);
+
+  const them = await request(`/api/admin/classes/${lop.id}/hoc-sinh`, adminCookie, {
+    method: "POST", body: JSON.stringify({ studentIds: ["hs01"] }),
+  });
+  assert.equal(them.status, 200);
+  const { ketQua } = await them.json();
+  assert.equal(ketQua.daTao, 1);
+  assert.equal(ketQua.ketQua[0].ketCuc, "themDuoc");
+
+  // Đơn thật: có mã, giữ chỗ, và đếm vào sĩ số.
+  const don = (await json("/api/registrations?status=all", adminCookie)).registrations
+    .find((row) => row.classId === lop.id && row.studentId === "hs01");
+  assert.ok(don, "phải có đơn thật cho em vừa thêm");
+  assert.equal(don.status, "confirmed");
+  assert.equal(don.feePaid, true);
+  const sau = (await json("/api/admin/catalog", adminCookie)).classes.find((row) => row.id === lop.id);
+  assert.equal(sau.enrolled, 1);
+});
+
+test("lớp đủ sĩ số thì chặn, không đẩy sang danh sách chờ", async () => {
+  const lop = (await json("/api/admin/catalog", adminCookie)).classes.find((row) => row.code === "TH-1");
+  const them = await request(`/api/admin/classes/${lop.id}/hoc-sinh`, adminCookie, {
+    method: "POST", body: JSON.stringify({ studentIds: ["hs04", "hs06"] }),
+  });
+  const { ketQua } = await them.json();
+  assert.equal(ketQua.daTao, 1, "chỉ còn 1 chỗ nên chỉ thêm được 1 em");
+  assert.equal(ketQua.ketQua[1].ketCuc, "lopDaDay");
+  assert.match(ketQua.ketQua[1].thongBao, /nâng sĩ số tối đa/);
+});
+
+test("ô tìm học sinh không trả SĐT hay email phụ huynh", async () => {
+  // Màn danh sách lớp không có việc gì với SĐT phụ huynh; đó là phạm vi của màn
+  // Thông tin học sinh, vốn đòi quyền cao hơn.
+  const { hocSinh } = await json("/api/admin/tim-hoc-sinh?q=minh", adminCookie);
+  assert.ok(hocSinh.length);
+  for (const em of hocSinh) {
+    for (const truong of ["account", "phone", "email", "phuHuynh"]) {
+      assert.ok(!(truong in em), `ô tìm học sinh rò trường ${truong}`);
+    }
+  }
+  assert.equal((await request("/api/admin/tim-hoc-sinh?q=minh", parentCookie)).status, 403);
+});
+
+test("từ khoá quá ngắn thì không đổ cả danh bạ xuống", async () => {
+  const { hocSinh } = await json("/api/admin/tim-hoc-sinh?q=a", adminCookie);
+  assert.deepEqual(hocSinh, []);
+});
+
+test("khớp danh sách từ file: trả về em khớp, dòng không khớp và dòng trùng tên", async () => {
+  const response = await request("/api/admin/tim-hoc-sinh", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({ rows: [["Mã học sinh"], ["NSHM260301"], ["KHONG-CO-MA-NAY"]] }),
+  });
+  assert.equal(response.status, 200);
+  const ketQua = await response.json();
+  assert.equal(ketQua.hocSinh.length, 1);
+  assert.deepEqual(ketQua.khongKhop, ["KHONG-CO-MA-NAY"]);
+});
+
+test("file không có cột mã hay họ tên thì báo rõ, không đoán bừa", async () => {
+  const response = await request("/api/admin/tim-hoc-sinh", adminCookie, {
+    method: "POST", body: JSON.stringify({ rows: [["Ghi chú", "Số tiền"], ["x", "1"]] }),
+  });
+  // Không có tiêu đề khớp -> rơi về nhánh "lấy ô đầu tiên", nên vẫn có khoá nhưng
+  // không khớp em nào; điều quan trọng là KHÔNG nổ và KHÔNG khớp nhầm ai.
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).hocSinh, []);
+});
