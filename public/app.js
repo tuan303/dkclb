@@ -1,5 +1,8 @@
 const state = {
   me: null,
+  // Thứ tự nhóm môn nhà trường khai báo, dùng để xếp hàng nút lọc ở cổng phụ huynh.
+  nhomMonSapXep: [],
+  khaiBao: null,
   role: "parent",
   page: "home",
   studentId: null,
@@ -81,6 +84,7 @@ const adminNav = [
   { section: "Vận hành" },
   { id: "dashboard", label: "Dashboard", icon: "home", cap: "bao-cao" },
   { id: "campaigns", label: "Đợt đăng ký", icon: "calendar", cap: "danh-muc" },
+  { id: "khaiBao", label: "Khai báo danh mục", icon: "file", cap: "danh-muc" },
   { id: "classes", label: "CLB & lịch học", icon: "grid", cap: "danh-muc" },
   { id: "applications", label: "Đơn đăng ký", icon: "clipboard", badge: 12, cap: "duyet-don" },
   { id: "rosters", label: "Danh sách lớp CLB", icon: "users", cap: "danh-sach-van-hanh" },
@@ -104,6 +108,7 @@ const pageMeta = {
   settings: ["Cấu hình & phân quyền", "Quản trị hệ thống"],
   accounts: ["Tài khoản nhà trường", "Chỉ quản trị cao nhất truy cập được"],
   hocSinh: ["Thông tin học sinh", "Sửa SĐT và email phụ huynh"],
+  khaiBao: ["Khai báo danh mục", "Nhóm môn và tên CLB"],
 };
 
 // Bản sao của registration-status.mjs cho phía trình duyệt: app.js được nạp bằng
@@ -280,6 +285,7 @@ function hoiDoiLop(target, { doiThu, daDangKy }) {
       ]);
       state.registrations = registrationPayload.registrations;
       clubs = clubPayload.clubs;
+      state.nhomMonSapXep = clubPayload.nhomMon || state.nhomMonSapXep;
       closeModal();
       renderApp();
       toast(vaoCho ? `Đã đổi sang lớp ${tenMoi} — con đang ở danh sách chờ.` : `Đã đổi sang lớp ${tenMoi}.`, "success");
@@ -324,6 +330,7 @@ async function hydrateRole() {
       api("/registrations"),
     ]);
     clubs = clubPayload.clubs;
+    state.nhomMonSapXep = clubPayload.nhomMon || [];
     state.period = clubPayload.period || null;
     state.registrations = registrationPayload.registrations;
     state.dashboard = null;
@@ -524,6 +531,10 @@ function pageContext(page, fallback) {
   const periodLabel = period ? `${period.term} · ${period.schoolYear}` : "Chưa có đợt đăng ký đang mở";
   if (["home", "clubs", "registrations", "schedule", "dashboard", "campaigns"].includes(page)) return periodLabel;
   if (page === "classes") return `${state.catalog?.clubs.length || 0} CLB · ${state.catalog?.classes.length || 0} lớp`;
+  if (page === "khaiBao") {
+    const kb = state.khaiBao;
+    return kb ? `${kb.nhomMon.length} nhóm môn · ${kb.clubs.length} CLB` : "Đang tải danh mục…";
+  }
   if (page === "applications") return `${adminApplications.length} đơn trong hệ thống`;
   if (page === "rosters") return state.period ? `${clubs.length} ca học trong đợt` : `${clubs.length} ca học · chưa có đợt nào đang mở`;
   return fallback;
@@ -550,6 +561,7 @@ function renderPage() {
     nhapDangKy: renderNhapDangKy,
     accounts: renderSchoolAccounts,
     hocSinh: renderHocSinh,
+    khaiBao: renderKhaiBao,
   };
   $("#page-content").innerHTML = (pages[state.page] || renderParentHome)();
   bindPageEvents();
@@ -609,8 +621,17 @@ function nhomClbCuaEm() {
   const dem = new Map();
   for (const club of eligibleClubs()) dem.set(club.category, (dem.get(club.category) || 0) + 1);
   return [...dem.entries()]
-    .map(([ten, so]) => ({ ten, so }))
-    .sort((a, b) => String(a.ten).localeCompare(String(b.ten), "vi"));
+    .map(([ten, so]) => ({ ten, so, thuTu: thuTuNhomMon(ten) }))
+    // Nhóm đã khai báo đứng trước theo đúng thứ tự nhà trường đặt ở màn Khai báo;
+    // nhóm chưa khai báo (CLB nhập từ Excel chẳng hạn) rơi xuống cuối, xếp theo abc.
+    .sort((a, b) => a.thuTu - b.thuTu || String(a.ten).localeCompare(String(b.ten), "vi"));
+}
+
+/** Thứ tự đã khai báo của một nhóm môn; chưa khai báo thì đứng sau tất cả. */
+function thuTuNhomMon(ten) {
+  const khoa = boDau(ten);
+  const nhom = (state.nhomMonSapXep || []).find((item) => boDau(item.name) === khoa);
+  return nhom ? Number(nhom.sortOrder) || 0 : Number.MAX_SAFE_INTEGER;
 }
 
 /** Nhóm đang lọc. Đổi sang em khác mà nhóm đó không có trong danh mục của em thì coi như Tất cả. */
@@ -1357,8 +1378,10 @@ function clubFormMarkup(club) {
     <div class="modal-body"><form id="club-form" class="form-grid">
       <label class="form-field form-span-2"><span>Tên CLB</span><input name="name" value="${escapeHtml(value.name)}" required /></label>
       <label class="form-field"><span>Mã CLB</span><input name="code" value="${escapeHtml(value.code)}" placeholder="Bỏ trống để hệ thống tự sinh" /></label>
-      <label class="form-field"><span>Nhóm môn</span><input name="category" list="category-list" value="${escapeHtml(value.category)}" required />
-        <datalist id="category-list">${CATEGORY_SUGGESTIONS.map((item) => `<option value="${item}"></option>`).join("")}</datalist></label>
+      <label class="form-field"><span>Nhóm môn</span>
+        <input name="category" list="category-list" value="${escapeHtml(value.category)}" required />
+        <datalist id="category-list">${oNhomMonGoiY(value.category)}</datalist>
+        <small class="field-hint">Gõ để chọn trong danh mục đã khai báo, hoặc nhập tên mới.</small></label>
       <label class="form-field"><span>Biểu tượng</span><input name="emoji" value="${escapeHtml(value.emoji)}" maxlength="4" /></label>
       <label class="form-field"><span>Thứ tự hiển thị</span><input type="number" name="sortOrder" min="0" max="9999" value="${value.sortOrder}" /></label>
       <label class="form-field form-span-2"><span>Mô tả cho phụ huynh</span><input name="description" value="${escapeHtml(value.description)}" /></label>
@@ -3044,6 +3067,228 @@ function bindSuaLienHe(hocSinh) {
   });
 }
 
+// ─────────────────────────── Khai báo danh mục ───────────────────────────
+//
+// Màn này khai báo hai danh mục nền: NHÓM MÔN và TÊN CLB. Nó không dựng thêm bảng
+// dữ liệu song song — "Tên CLB" sửa thẳng trên chính các bản ghi CLB mà màn
+// "CLB & lịch học" đang dùng, nên hai màn không bao giờ lệch nhau.
+//
+// Phân vai: màn này trả lời "trường có những CLB nào, thuộc nhóm nào"; màn
+// "CLB & lịch học" trả lời "mỗi CLB mở những ca nào, ai dạy, phòng nào, bao nhiêu chỗ".
+
+function khaiBaoState() {
+  state.khaiBao = state.khaiBao || null;
+  return state.khaiBao;
+}
+
+/**
+ * Gợi ý cho ô "Nhóm môn" trong form CLB.
+ *
+ * Luôn kèm giá trị ĐANG CÓ của chính CLB đó, kể cả khi nó chưa nằm trong danh mục:
+ * giáo vụ mở form chỉ để sửa một chữ trong mô tả mà ô nhóm môn trống trơn thì rất
+ * dễ lưu đè mất nhóm cũ. Đây cũng là lý do ô này vẫn là input chứ không phải select.
+ */
+function oNhomMonGoiY(hienTai = "") {
+  const ten = (state.catalog?.nhomMon || []).map((nhom) => nhom.name);
+  if (!ten.length) ten.push(...CATEGORY_SUGGESTIONS);
+  const co = ten.some((item) => boDau(item) === boDau(hienTai));
+  const danhSach = hienTai && !co ? [hienTai, ...ten] : ten;
+  return danhSach.map((item) => `<option value="${escapeHtml(item)}"></option>`).join("");
+}
+
+function renderKhaiBao() {
+  return `<section class="section" style="margin-top:0">
+      <div class="section-head"><div><span class="eyebrow">Quản trị danh mục</span><h2>Khai báo danh mục</h2>
+      <p>Khai báo <b>nhóm môn</b> và <b>tên CLB</b> của trường. Lịch học, phòng, giáo viên, sĩ số và học phí của từng ca khai ở màn <b>CLB &amp; lịch học</b>.</p></div></div>
+    </section>
+    <section class="section panel" id="kb-nhom">${renderKhaiBaoNhom()}</section>
+    <section class="section panel" id="kb-clb">${renderKhaiBaoClb()}</section>`;
+}
+
+function renderKhaiBaoNhom() {
+  const kb = khaiBaoState();
+  if (!kb) return `<div class="panel-body"><p class="field-hint">Đang tải danh mục nhóm môn…</p></div>`;
+  if (kb.loi) return `<div class="panel-body"><div class="inline-alert">${icon("clock")}<span>${escapeHtml(kb.loi)}</span></div></div>`;
+  const { nhomMon } = kb;
+  const chuaKhai = nhomMon.filter((nhom) => !nhom.daKhaiBao);
+  const than = nhomMon.length
+    ? nhomMon.map((nhom, i) => `<tr>
+        <td>${i + 1}</td>
+        <td><strong>${escapeHtml(nhom.name)}</strong>
+          ${nhom.daKhaiBao ? "" : ` <span class="badge badge-gold">Chưa khai báo</span>`}
+          ${nhom.daKhaiBao && !nhom.active ? ` <span class="badge badge-red">Đang ẩn</span>` : ""}</td>
+        <td>${nhom.soClb ? `${nhom.soClb} CLB${nhom.soClbHien < nhom.soClb ? ` · ${nhom.soClb - nhom.soClbHien} đang ẩn` : ""}` : "<span class=\"roster-note\">chưa có CLB nào</span>"}</td>
+        <td>${nhom.daKhaiBao ? nhom.sortOrder : "—"}</td>
+        <td>
+          <button class="table-action" data-kb-sua-nhom="${escapeHtml(nhom.id || "")}" data-kb-ten="${escapeHtml(nhom.name)}">${nhom.daKhaiBao ? "Sửa" : "Khai báo"}</button>
+          ${nhom.daKhaiBao && !nhom.soClb ? ` <button class="table-action" data-kb-xoa-nhom="${escapeHtml(nhom.id)}" data-kb-ten="${escapeHtml(nhom.name)}">Xoá</button>` : ""}
+        </td>
+      </tr>`).join("")
+    : `<tr><td colspan="5" class="empty-cell">Chưa khai báo nhóm môn nào.</td></tr>`;
+
+  return `<div class="panel-head"><div><h3>Nhóm môn</h3>
+      <p>Nhóm môn là hàng nút lọc mà phụ huynh thấy khi chọn CLB. Thứ tự ở đây cũng là thứ tự hiển thị bên đó.</p></div>
+      <button class="button button-primary" data-kb-them-nhom>+ Thêm nhóm môn</button></div>
+    ${chuaKhai.length ? `<div class="info-note"><strong>${chuaKhai.length} nhóm chưa khai báo:</strong> ${chuaKhai.map((nhom) => escapeHtml(nhom.name)).join(", ")}. Đây là nhóm môn đang nằm trong dữ liệu CLB nhưng chưa có trong danh mục — bấm <b>Khai báo</b> để nhận vào, hoặc sửa tên cho đúng.</div>` : ""}
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th style="width:48px">#</th><th>Tên nhóm môn</th><th style="width:180px">Đang dùng</th><th style="width:110px">Thứ tự</th><th style="width:150px">Thao tác</th></tr></thead>
+      <tbody>${than}</tbody></table></div>`;
+}
+
+function renderKhaiBaoClb() {
+  const kb = khaiBaoState();
+  if (!kb || kb.loi) return `<div class="panel-body"><p class="field-hint">Đang tải danh sách CLB…</p></div>`;
+  const { clubs, nhomMon } = kb;
+  const theoNhom = new Map();
+  for (const club of clubs) {
+    const khoa = boDau(club.category || "");
+    if (!theoNhom.has(khoa)) theoNhom.set(khoa, []);
+    theoNhom.get(khoa).push(club);
+  }
+  const thuTuNhom = nhomMon.map((nhom) => [boDau(nhom.name), nhom.name]);
+  for (const [khoa] of theoNhom) if (!thuTuNhom.some(([k]) => k === khoa)) thuTuNhom.push([khoa, khoa || "Chưa có nhóm môn"]);
+
+  const khoi = thuTuNhom.map(([khoa, ten]) => {
+    const ds = (theoNhom.get(khoa) || []).slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "vi"));
+    if (!ds.length) return "";
+    return `<tbody><tr class="kb-nhom-hang"><th colspan="4">${escapeHtml(ten)} · ${ds.length} CLB</th></tr>
+      ${ds.map((club) => {
+        const soCa = soCaCuaClb(club.id);
+        return `<tr>
+          <td><strong>${escapeHtml(club.name)}</strong>${club.active === false ? ` <span class="badge badge-red">Đang ẩn</span>` : ""}
+            <br><span class="roster-note">${escapeHtml(club.code || club.id)}${club.grades?.length ? ` · khối ${club.grades.join(", ")}` : " · chưa khai khối"}</span></td>
+          <td>${soCa ? `${soCa} ca học` : "<span class=\"roster-note\">chưa có ca học</span>"}</td>
+          <td>${escapeHtml(club.category || "—")}</td>
+          <td><button class="table-action" data-kb-sua-clb="${escapeHtml(club.id)}">Sửa</button>
+            ${soCa ? "" : ` <button class="table-action" data-kb-xoa-clb="${escapeHtml(club.id)}" data-kb-ten="${escapeHtml(club.name)}">Xoá</button>`}</td>
+        </tr>`;
+      }).join("")}</tbody>`;
+  }).join("");
+
+  return `<div class="panel-head"><div><h3>Tên CLB</h3>
+      <p>Mỗi CLB là <b>một</b> bản ghi, bên dưới có thể mở nhiều ca học khác giờ. Đây cũng chính là danh sách ở màn "CLB &amp; lịch học" — sửa bên nào cũng như nhau.</p></div>
+      <button class="button button-primary" data-kb-them-clb>+ Thêm CLB</button></div>
+    ${renderCanhBaoClbTrungTen()}
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Tên CLB</th><th style="width:150px">Ca học</th><th style="width:200px">Nhóm môn</th><th style="width:150px">Thao tác</th></tr></thead>
+      ${khoi || `<tbody><tr><td colspan="4" class="empty-cell">Chưa khai báo CLB nào. Bấm <b>+ Thêm CLB</b> để bắt đầu.</td></tr></tbody>`}
+    </table></div>
+    <p class="field-hint" style="padding:0 20px 16px">CLB đã có ca học thì không xoá được — đơn đăng ký của phụ huynh treo vào ca chứ không vào CLB. Muốn bỏ thì xoá hết ca ở màn "CLB &amp; lịch học", hoặc bỏ tích hiển thị để ẩn CLB đi.</p>`;
+}
+
+/** Số ca học của một CLB, ĐẾM CẢ ca đã ẩn — vì đó mới là điều kiện xoá được. */
+function soCaCuaClb(clubId) {
+  return (state.catalog?.classes || []).filter((row) => row.clubId === clubId).length;
+}
+
+// Chặn gọi chồng: bindKhaiBao chạy lại sau mỗi lượt vẽ, và lượt tải nào cũng vẽ lại.
+let dangTaiKhaiBao = false;
+
+async function taiKhaiBao() {
+  if (dangTaiKhaiBao) return;
+  dangTaiKhaiBao = true;
+  try {
+    const [duLieu] = await Promise.all([api("/admin/nhom-mon"), refreshCatalog()]);
+    state.khaiBao = { nhomMon: duLieu.nhomMon, clubs: duLieu.clubs };
+  } catch (error) {
+    state.khaiBao = { nhomMon: [], clubs: [], loi: error.message };
+    toast(error.message, "error");
+  } finally {
+    dangTaiKhaiBao = false;
+  }
+  if (state.page !== "khaiBao" || !$("#kb-nhom")) return;
+  $("#kb-nhom").innerHTML = renderKhaiBaoNhom();
+  $("#kb-clb").innerHTML = renderKhaiBaoClb();
+  // Phụ đề thanh tiêu đề đếm số nhóm và số CLB nên phải vẽ lại theo.
+  renderHeader();
+  bindKhaiBaoNoiDung();
+}
+
+function bindKhaiBao() {
+  if (state.page !== "khaiBao") return;
+  bindKhaiBaoNoiDung();
+  // Mỗi lần vào màn là tải lại: người khác có thể vừa thêm hoặc đổi tên nhóm, và
+  // bảng cũ mời người dùng sửa một bản ghi không còn như họ thấy.
+  taiKhaiBao();
+}
+
+function bindKhaiBaoNoiDung() {
+  $("[data-kb-them-nhom]")?.addEventListener("click", () => moFormNhomMon(null, ""));
+  $$("[data-kb-sua-nhom]").forEach((el) => el.addEventListener("click", () => moFormNhomMon(el.dataset.kbSuaNhom || null, el.dataset.kbTen)));
+  $$("[data-kb-xoa-nhom]").forEach((el) => el.addEventListener("click", () => xoaNhomMon(el.dataset.kbXoaNhom, el.dataset.kbTen)));
+  $("[data-kb-them-clb]")?.addEventListener("click", () => openClubForm(null));
+  $$("[data-kb-sua-clb]").forEach((el) => el.addEventListener("click", () => openClubForm(el.dataset.kbSuaClb)));
+  $$("[data-kb-xoa-clb]").forEach((el) => el.addEventListener("click", () => xoaClbKhaiBao(el.dataset.kbXoaClb, el.dataset.kbTen)));
+}
+
+function moFormNhomMon(nhomId, tenGoiY = "") {
+  const kb = khaiBaoState();
+  const nhom = nhomId ? kb.nhomMon.find((item) => item.id === nhomId) : null;
+  // Nhóm "chưa khai báo" không có id: khai báo nó là TẠO MỚI với tên đang có sẵn,
+  // nên mọi CLB đang mang tên đó tự khớp vào, không phải sửa gì thêm.
+  const value = nhom || { name: tenGoiY, emoji: "", sortOrder: kb.nhomMon.length, active: true };
+  const dangDung = nhom?.soClb || kb.nhomMon.find((item) => boDau(item.name) === boDau(value.name))?.soClb || 0;
+  showModal(`<div class="modal-head"><div><span class="eyebrow">${nhom ? "Chỉnh sửa" : "Khai báo mới"}</span><h2>Nhóm môn</h2></div>
+    <button class="icon-button" data-close-modal>${icon("x")}</button></div>
+    <div class="modal-body"><form id="nhom-form" class="form-grid">
+      <label class="form-field form-span-2"><span>Tên nhóm môn</span><input name="name" value="${escapeHtml(value.name)}" required autofocus /></label>
+      <label class="form-field"><span>Biểu tượng (tuỳ chọn)</span><input name="emoji" value="${escapeHtml(value.emoji || "")}" maxlength="4" /></label>
+      <label class="form-field"><span>Thứ tự hiển thị</span><input type="number" name="sortOrder" min="0" max="9999" value="${value.sortOrder}" /></label>
+      <label class="confirm-row form-span-2"><input type="checkbox" name="active" ${value.active !== false ? "checked" : ""} /><span>Dùng nhóm này khi khai báo CLB</span></label>
+    </form>
+    ${dangDung ? `<div class="info-note">Đang có <b>${dangDung} CLB</b> thuộc nhóm này. Đổi tên nhóm sẽ đổi luôn nhóm môn ghi trên ${dangDung} CLB đó, và hàng nút lọc của phụ huynh đổi theo.</div>` : ""}
+    <div id="form-error" class="form-error" role="alert"></div></div>
+    <div class="modal-foot"><button class="button button-secondary" data-close-modal>Hủy</button>
+    <button class="button button-primary" data-submit-nhom="${escapeHtml(nhomId || "")}">${nhom ? "Lưu thay đổi" : "Khai báo"}</button></div>`);
+
+  const gui = (gopNhom = false) => {
+    const button = $("[data-submit-nhom]");
+    const form = readForm("nhom-form");
+    const targetId = button.dataset.submitNhom;
+    return withBusyButton(button, "Đang lưu…", async () => {
+      const { nhom: daLuu } = await api(targetId ? `/admin/nhom-mon/${encodeURIComponent(targetId)}` : "/admin/nhom-mon", {
+        method: targetId ? "PATCH" : "POST",
+        body: JSON.stringify({ ...form, sortOrder: Number(form.sortOrder || 0), gopNhom }),
+      });
+      closeModal();
+      await taiKhaiBao();
+      const them = daLuu.soClbDaDoi ? ` ${daLuu.soClbDaDoi} CLB đã đổi theo.` : "";
+      toast(daLuu.kieu === "gop" ? `Đã gộp vào nhóm "${daLuu.name}".${them}` : `Đã lưu nhóm "${daLuu.name}".${them}`, "success");
+    });
+  };
+
+  $("[data-submit-nhom]").addEventListener("click", async () => {
+    try {
+      await gui(false);
+    } catch (error) {
+      // Trùng tên với một nhóm khác là chuyện GỘP, không tự làm thay người dùng.
+      if (error.code !== "NHOM_CAN_XAC_NHAN_GOP") throw error;
+      if (confirm(`${error.message}\n\nTiếp tục gộp?`)) await gui(true);
+    }
+  });
+  $("#nhom-form").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); $("[data-submit-nhom]").click(); }
+  });
+}
+
+async function xoaNhomMon(nhomId, ten) {
+  if (!confirm(`Xoá nhóm môn "${ten}" khỏi danh mục?\n\nChỉ xoá được khi không còn CLB nào thuộc nhóm này.`)) return;
+  try {
+    await api(`/admin/nhom-mon/${encodeURIComponent(nhomId)}`, { method: "DELETE" });
+    await taiKhaiBao();
+    toast(`Đã xoá nhóm "${ten}".`, "success");
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function xoaClbKhaiBao(clubId, ten) {
+  if (!confirm(`Xoá hẳn CLB "${ten}"?\n\nChỉ xoá được khi CLB chưa có ca học nào. Không hoàn lại được.`)) return;
+  try {
+    await api(`/admin/clubs/${encodeURIComponent(clubId)}`, { method: "DELETE" });
+    await taiKhaiBao();
+    toast(`Đã xoá CLB "${ten}".`, "success");
+  } catch (error) { toast(error.message, "error"); }
+}
+
 function renderReports() {
   const reports = [
     ["Tổng quan đợt đăng ký","KPI, tỷ lệ lấp đầy, lớp đầy/thiếu sĩ số"],["Danh sách theo CLB/lớp","Học sinh, lớp hành chính, lịch, phí, ghi chú"],["Danh sách chờ & gọi lại","Thứ tự chờ, lý do, phương án thay thế, người phụ trách"],["Tài chính & công nợ","Phải thu, đã thu, chờ thu, hoàn/chuyển phí"],["Vận hành lớp","Phòng, giáo viên, min/max, lớp cần mở/gộp/hủy"],["Lịch sử thay đổi","Đổi lớp, hủy, chuyển lịch, người xử lý và lý do"],
@@ -3783,6 +4028,7 @@ async function submitRegistration() {
     ]);
     state.registrations = registrationPayload.registrations;
     clubs = clubPayload.clubs;
+    state.nhomMonSapXep = clubPayload.nhomMon || state.nhomMonSapXep;
     closeCart();
     renderApp();
     showModal(`<div class="modal-body" style="padding-top:28px"><div class="success-mark">${icon("check")}</div><div class="success-copy"><h2>Đã gửi đăng ký thành công</h2><p>Hệ thống đã tiếp nhận ${count} lựa chọn cho ${student().name}. Dữ liệu đã được lưu vào hệ thống.</p></div><div class="code-box"><span>Mã nhóm đăng ký</span><strong>${result.groupId}</strong></div><div class="info-note"><strong>Bước tiếp theo:</strong> Theo dõi trạng thái “Chờ thanh toán” hoặc “Danh sách chờ” tại mục Đăng ký của tôi.</div></div><div class="modal-foot"><button class="button button-secondary" data-close-modal>Đóng</button><button class="button button-primary" data-view-registrations>Xem trạng thái</button></div>`);
@@ -3930,7 +4176,9 @@ function bindPageEvents() {
     state.studentId = el.dataset.student;
     state.cart = [];
     try {
-      clubs = (await api(`/clubs?studentId=${encodeURIComponent(state.studentId)}`)).clubs;
+      const doiEm = await api(`/clubs?studentId=${encodeURIComponent(state.studentId)}`);
+      clubs = doiEm.clubs;
+      state.nhomMonSapXep = doiEm.nhomMon || state.nhomMonSapXep;
       renderApp();
       toast(`Đã chọn ${student().name}.`);
     } catch (error) { toast(error.message, "error"); }
@@ -4070,6 +4318,7 @@ function bindPageEvents() {
   $("[data-roster-csv-all]")?.addEventListener("click", () => exportRosterCsv("", "hieu-luc"));
   bindRosterResults();
   bindHocSinh();
+  bindKhaiBao();
   // Ô tìm kiếm nằm NGOÀI khối kết quả và không bao giờ được dựng lại: bộ gõ tiếng
   // Việt soạn chữ ngay trong phần tử đó, hủy nó giữa chừng là bộ gõ chèn lại cả cụm
   // vào cuối giá trị cũ. Đã đo bằng Chrome thật: gõ "mỹ thuật" ra

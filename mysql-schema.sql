@@ -96,6 +96,28 @@ CREATE TABLE IF NOT EXISTS clubs (
   UNIQUE KEY uk_clubs_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Danh mục khai báo "Nhóm môn": Thể thao, Nghệ thuật, Kỹ năng & Công nghệ, Học thuật.
+--
+-- Bảng này nằm TRÊN dữ liệu chữ sẵn có chứ không thay thế nó: clubs.category vẫn là
+-- chữ, vì cổng phụ huynh lọc theo chữ, Dashboard gom theo chữ, và file Excel nhập vào
+-- cũng mang chữ. Đổi tên nhóm ở đây sẽ ghi chữ mới xuống từng dòng clubs.
+--
+-- UNIQUE đặt trên name_key (tên đã bỏ dấu, chỉ còn a-z0-9 và dấu cách) chứ KHÔNG đặt
+-- trên name: mọi bảng ở đây dùng COLLATE utf8mb4_unicode_ci, vốn không phân biệt dấu
+-- lẫn hoa thường, nên UNIQUE trên name tiếng Việt sẽ chặn nhầm cả những tên khác nhau
+-- thật sự. name_key chỉ có ASCII nên so trên nó cho cùng kết quả ở MySQL và SQLite.
+CREATE TABLE IF NOT EXISTS club_categories (
+  id         VARCHAR(64)  NOT NULL,
+  name       VARCHAR(190) NOT NULL,
+  name_key   VARCHAR(190) NOT NULL,
+  emoji      VARCHAR(16)      NULL,
+  sort_order INT          NOT NULL DEFAULT 0,
+  active     TINYINT(1)   NOT NULL DEFAULT 1,
+  updated_at VARCHAR(32)  NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_club_categories_name_key (name_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS club_classes (
   id              VARCHAR(64)  NOT NULL,
   club_id         VARCHAR(64)  NOT NULL,

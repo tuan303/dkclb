@@ -638,6 +638,11 @@ a.nav-link { text-decoration: none; }
    ở đây chỉ thắng .panel nếu nó đứng sau — đặt ở giữa tệp thì nửa khối là mã chết
    (đã đo bằng Chrome ở media=print: bóng đổ vẫn nguyên).
 --------------------------------------------------------------------------- */
+
+/* Khai báo danh mục: hàng tiêu đề gom CLB theo nhóm môn. */
+.kb-nhom-hang th{background:var(--surface-2,#f4f6fb);color:var(--muted);font-size:12px;letter-spacing:.04em;
+  text-transform:uppercase;padding:10px 16px;text-align:left;border-top:1px solid var(--line,#e2e6ee)}
+
 @media print {
   /* Thứ tự quan trọng: bung khung ứng dụng ra trước… */
   .app-shell, .main-area, .page-content {
@@ -684,3 +689,4 @@ a.nav-link { text-decoration: none; }
   .table-wrap { overflow: visible !important; }
   .data-table tbody tr:hover { background: none; }
 }
+

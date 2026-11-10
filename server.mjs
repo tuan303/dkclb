@@ -29,6 +29,10 @@ import {
   khoaTenClb, timNhomClb,
 } from "./xep-lop-import.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
+import {
+  clbTheoNhom, docYeuCauNhom, ghepDanhMucNhom, khoaNhom, kiemTrungKhiTao,
+  lapKeHoachDoiTen, lapKeHoachXoa, nhomTuClubs,
+} from "./nhom-mon.mjs";
 import { taoBieuMau } from "./bieu-mau.mjs";
 import { decideSchoolLogin } from "./school-login.mjs";
 import {
@@ -357,6 +361,15 @@ function initializeDatabase() {
       grades_json TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS club_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      name_key TEXT UNIQUE NOT NULL,
+      emoji TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS club_classes (
       id TEXT PRIMARY KEY,
@@ -1858,6 +1871,159 @@ function kemTrangThaiLop(row) {
   };
 }
 
+// ───────────────────────────── Danh mục khai báo: Nhóm môn ─────────────────────────────
+
+/**
+ * Nền Firestore (bản kế thừa, không trường nào đang chạy) chưa có danh mục nhóm môn.
+ * Báo 501 rõ ràng chứ không để vỡ ở một dòng gọi hàm không tồn tại — xem khoản nợ
+ * đã liệt kê trong tests/lech-mysql-sqlite.test.mjs.
+ */
+function kiemNenHoTroNhomMon(ten) {
+  if (businessStore && typeof businessStore[ten] !== "function") {
+    throw httpError(501, "NEN_LUU_TRU_CHUA_HO_TRO",
+      "Nền lưu trữ đang dùng chưa hỗ trợ màn Khai báo danh mục. Tính năng này làm cho MySQL.");
+  }
+}
+
+async function listNhomMonRows() {
+  if (businessStore) {
+    kiemNenHoTroNhomMon("listClubCategories");
+    return businessStore.listClubCategories();
+  }
+  return db.prepare(`SELECT id, name, name_key AS nameKey, emoji, sort_order AS sortOrder, active, updated_at AS updatedAt
+    FROM club_categories ORDER BY sort_order, name`).all()
+    .map((row) => ({ ...row, sortOrder: asInt(row.sortOrder), active: row.active === 1 }));
+}
+
+/**
+ * Nạp danh mục lần đầu từ chính các nhóm môn đang có trong bảng clubs.
+ *
+ * Danh mục này ra đời SAU dữ liệu: trên máy chủ thật đã có sẵn CLB mang nhóm gõ tay
+ * hoặc nhập từ Excel. Không nạp thì màn Khai báo mở ra trống trơn trong khi cổng phụ
+ * huynh đang lọc theo bốn nhóm — người dùng sẽ tưởng mất dữ liệu. Chỉ chạy khi danh
+ * mục còn RỖNG, nên gọi lại bao nhiêu lần cũng không ghi đè tên người dùng đã sửa.
+ */
+async function napNhomMonLanDau({ actorUserId = null } = {}) {
+  const dangCo = await listNhomMonRows();
+  if (dangCo.length) return { daNap: 0, dangCo: dangCo.length };
+  const { clubs } = await adminCatalogData();
+  const ten = nhomTuClubs(clubs);
+  if (!ten.length) return { daNap: 0, dangCo: 0 };
+  const timestamp = nowIso();
+  for (const [thuTu, name] of ten.entries()) {
+    await ghiNhomMonVaoKho({ id: id("nhom"), name, nameKey: khoaNhom(name), emoji: "", sortOrder: thuTu, active: true, clubIds: [], updatedAt: timestamp });
+  }
+  await writeAudit({
+    actorUserId, action: "SEED_CLUB_CATEGORIES", entityType: "clubCategory", entityId: "all",
+    before: null, after: { ten }, reason: "Nạp lần đầu từ nhóm môn đang có trong danh mục CLB",
+  });
+  return { daNap: ten.length, dangCo: 0 };
+}
+
+async function ghiNhomMonVaoKho({ id: nhomId, name, nameKey, emoji, sortOrder, active, clubIds, xoaId = null, updatedAt }) {
+  if (businessStore) {
+    kiemNenHoTroNhomMon("luuNhomMon");
+    return businessStore.luuNhomMon({ id: nhomId, name, nameKey, emoji, sortOrder, active, clubIds, xoaId, updatedAt });
+  }
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare(`INSERT INTO club_categories (id, name, name_key, emoji, sort_order, active, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, name_key = excluded.name_key, emoji = excluded.emoji,
+        sort_order = excluded.sort_order, active = excluded.active, updated_at = excluded.updated_at`)
+      .run(nhomId, name, nameKey, emoji || "", asInt(sortOrder), active === false ? 0 : 1, updatedAt);
+    if (xoaId && xoaId !== nhomId) db.prepare("DELETE FROM club_categories WHERE id = ?").run(xoaId);
+    // Cập nhật theo id, không theo `WHERE category = tên cũ`: xem chú thích ở
+    // mysql-store.luuNhomMon — hai nền so chuỗi khác nhau.
+    const doiMot = db.prepare("UPDATE clubs SET category = ? WHERE id = ?");
+    for (const clubId of clubIds || []) doiMot.run(name, clubId);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return { id: nhomId, name, nameKey, emoji, sortOrder: asInt(sortOrder), active: active !== false, updatedAt };
+}
+
+/** Danh mục kèm số CLB đang dùng, và cả nhóm có trong clubs mà chưa được khai báo. */
+async function danhMucNhomMon() {
+  const [danhSach, catalog] = await Promise.all([listNhomMonRows(), adminCatalogData()]);
+  return { nhomMon: ghepDanhMucNhom(danhSach, catalog.clubs), clubs: catalog.clubs, danhSach };
+}
+
+async function luuNhomMonRecord({ actorUserId, nhomId, input }) {
+  const { danhSach, clubs } = await danhMucNhomMon();
+  const existing = nhomId ? danhSach.find((item) => item.id === nhomId) : null;
+  if (nhomId && !existing) throw httpError(404, "NHOM_NOT_FOUND", "Không tìm thấy nhóm môn.");
+  const data = docYeuCauNhom(input, { existing });
+  const timestamp = nowIso();
+
+  if (!existing) {
+    kiemTrungKhiTao(data.name, danhSach);
+    const taoMoi = await ghiNhomMonVaoKho({
+      id: id("nhom"), name: data.name, nameKey: khoaNhom(data.name), emoji: data.emoji,
+      sortOrder: data.sortOrder, active: data.active, clubIds: [], updatedAt: timestamp,
+    });
+    await writeAudit({ actorUserId, action: "CREATE_CLUB_CATEGORY", entityType: "clubCategory", entityId: taoMoi.id, before: null, after: taoMoi });
+    return taoMoi;
+  }
+
+  const keHoach = lapKeHoachDoiTen({
+    nhom: existing, tenMoi: data.name, clubs, danhSach, choPhepGop: input.gopNhom === true,
+  });
+  const dich = keHoach.kieu === "gop" ? danhSach.find((item) => item.id === keHoach.gopVaoId) : existing;
+  const daGhi = await ghiNhomMonVaoKho({
+    id: dich.id,
+    name: keHoach.tenMoi,
+    nameKey: khoaNhom(keHoach.tenMoi),
+    emoji: data.emoji || dich.emoji || "",
+    sortOrder: keHoach.kieu === "gop" ? asInt(dich.sortOrder) : data.sortOrder,
+    active: keHoach.kieu === "gop" ? dich.active !== false : data.active,
+    clubIds: keHoach.clubIds,
+    xoaId: keHoach.kieu === "gop" ? existing.id : null,
+    updatedAt: timestamp,
+  });
+  await writeAudit({
+    actorUserId, action: keHoach.kieu === "gop" ? "MERGE_CLUB_CATEGORY" : "UPDATE_CLUB_CATEGORY",
+    entityType: "clubCategory", entityId: daGhi.id, before: existing, after: { ...daGhi, soClbDaDoi: keHoach.clubIds.length },
+  });
+  return { ...daGhi, kieu: keHoach.kieu, soClbDaDoi: keHoach.clubIds.length };
+}
+
+async function xoaNhomMonRecord({ actorUserId, nhomId }) {
+  const { danhSach, clubs } = await danhMucNhomMon();
+  const nhom = danhSach.find((item) => item.id === nhomId);
+  if (!nhom) throw httpError(404, "NHOM_NOT_FOUND", "Không tìm thấy nhóm môn.");
+  const keHoach = lapKeHoachXoa({ nhom, clubs });
+  if (businessStore) { kiemNenHoTroNhomMon("xoaNhomMon"); await businessStore.xoaNhomMon(nhomId); }
+  else db.prepare("DELETE FROM club_categories WHERE id = ?").run(nhomId);
+  await writeAudit({ actorUserId, action: "DELETE_CLUB_CATEGORY", entityType: "clubCategory", entityId: nhomId, before: nhom, after: null });
+  return keHoach;
+}
+
+/**
+ * Xoá hẳn một CLB khỏi danh mục khai báo.
+ *
+ * Chỉ cho xoá khi CLB không còn BẤT KỲ ca học nào — kể cả ca đã ẩn và ca ở đợt khác.
+ * Đếm theo ca đang hiện là sai: một ca đã ẩn vẫn là một dòng trong club_classes, khoá
+ * ngoại sẽ chặn và người dùng nhận lỗi 500 khó hiểu thay vì câu giải thích. CLB đã có
+ * ca thì "bớt" đúng cách là ẩn đi, vì đơn của phụ huynh treo vào ca chứ không vào CLB.
+ */
+async function xoaClbRecord({ actorUserId, clubId }) {
+  const catalog = await adminCatalogData();
+  const club = catalog.clubs.find((item) => item.id === clubId);
+  if (!club) throw httpError(404, "CLUB_NOT_FOUND", "Không tìm thấy CLB.");
+  const ca = catalog.classes.filter((row) => row.clubId === clubId);
+  if (ca.length) {
+    throw httpError(409, "CLUB_HAS_CLASSES",
+      `CLB "${club.name}" đang có ${ca.length} ca học (kể cả ca đã ẩn) nên không xoá được. Hãy xoá hết ca ở màn "CLB & lịch học" trước, hoặc bỏ tích hiển thị để ẩn CLB này đi.`);
+  }
+  if (businessStore) { kiemNenHoTroNhomMon("xoaClb"); await businessStore.xoaClb(clubId); }
+  else db.prepare("DELETE FROM clubs WHERE id = ?").run(clubId);
+  await writeAudit({ actorUserId, action: "DELETE_CLUB", entityType: "club", entityId: clubId, before: club, after: null });
+  return { id: clubId, name: club.name };
+}
+
 async function saveClubRecord({ actorUserId, clubId, input }) {
   const catalog = await adminCatalogData();
   const existing = clubId ? catalog.clubs.find((club) => club.id === clubId) : null;
@@ -2418,7 +2584,7 @@ async function themPhuHuynh({ actorUserId, studentId, body }) {
 // gộp cả nghìn học sinh, đơn đăng ký và audit log vào một phản hồi là chạm trần.
 const BACKUP_SCHEMA_VERSION = 1;
 const BACKUP_COLLECTIONS = [
-  "users", "students", "parentStudents", "registrationPeriods", "clubs",
+  "users", "students", "parentStudents", "registrationPeriods", "clubCategories", "clubs",
   "clubClasses", "registrations", "supportRequests", "auditLogs", "classCounters",
 ];
 const BACKUP_PAGE_SIZE = 500;
@@ -2458,6 +2624,11 @@ function sqliteBackupData() {
         id: row.id, name: row.name, schoolYear: row.school_year, term: row.term,
         openAt: row.open_at, closeAt: row.close_at, status: row.status,
         maxClubsPerStudent: asInt(row.max_clubs_per_student) || 3, note: row.note || "", updatedAt: row.updated_at || null,
+      })),
+    clubCategories: all("SELECT id, name, name_key, emoji, sort_order, active, updated_at FROM club_categories")
+      .map((row) => ({
+        id: row.id, name: row.name, nameKey: row.name_key, emoji: row.emoji || "",
+        sortOrder: asInt(row.sort_order), active: asBool(row.active), updatedAt: row.updated_at,
       })),
     clubs: all("SELECT id, code, name, category, description, emoji, visual, grades_json, sort_order, active FROM clubs")
       .map((row) => ({
@@ -2826,9 +2997,18 @@ async function handleApi(req, res, url) {
     const active = await getActivePeriod();
     // Phụ huynh chỉ thấy lớp thuộc đợt đang mở; quản trị có thể xem theo đợt bất kỳ.
     const periodId = user.role !== "parent" ? url.searchParams.get("periodId") || active?.id || null : active?.id || null;
-    if (user.role === "parent" && !periodId) return sendJson(res, 200, { clubs: [], period: null });
-    const danhSach = await clubRows(studentId, periodId);
-    return sendJson(res, 200, { clubs: user.role === "parent" ? danhSach.map(choPhuHuynhXem) : danhSach, period: publicPeriod(active) });
+    if (user.role === "parent" && !periodId) return sendJson(res, 200, { clubs: [], period: null, nhomMon: [] });
+    const [danhSach, danhSachNhom] = await Promise.all([
+      clubRows(studentId, periodId),
+      listNhomMonRows().catch(() => []),
+    ]);
+    // Thứ tự nhóm môn đã khai báo đi kèm luôn, để hàng nút lọc ở cổng phụ huynh xếp
+    // theo đúng thứ tự nhà trường đặt chứ không phải theo bảng chữ cái.
+    const nhomMon = danhSachNhom.map((nhom) => ({ name: nhom.name, sortOrder: nhom.sortOrder }));
+    return sendJson(res, 200, {
+      clubs: user.role === "parent" ? danhSach.map(choPhuHuynhXem) : danhSach,
+      period: publicPeriod(active), nhomMon,
+    });
   }
 
   if (method === "GET" && url.pathname === "/api/period") {
@@ -3490,8 +3670,41 @@ const groupId = maTheoNgay("GR");
 
   if (method === "GET" && url.pathname === "/api/admin/catalog") {
     await requireSchoolUser(req, CAP.danhMuc);
-    const [catalog, periods, active] = await Promise.all([adminCatalogData(), listPeriodRows(), getActivePeriod()]);
-    return sendJson(res, 200, { ...catalog, periods, activePeriodId: active?.id || null });
+    const [catalog, periods, active, danhSachNhom] = await Promise.all([
+      adminCatalogData(), listPeriodRows(), getActivePeriod(), listNhomMonRows(),
+    ]);
+    // Form tạo/sửa CLB cần danh mục nhóm môn ngay trong lượt tải này, nếu không ô
+    // "Nhóm môn" sẽ rỗng cho tới khi người dùng ghé qua màn Khai báo.
+    const nhomMon = ghepDanhMucNhom(danhSachNhom, catalog.clubs);
+    return sendJson(res, 200, { ...catalog, periods, activePeriodId: active?.id || null, nhomMon });
+  }
+
+  if (method === "GET" && url.pathname === "/api/admin/nhom-mon") {
+    const user = await requireSchoolUser(req, CAP.danhMuc);
+    // Nạp lần đầu ngay trong lượt xem: màn Khai báo mở ra phải thấy đúng các nhóm
+    // mà cổng phụ huynh đang lọc, chứ không phải một danh mục trống.
+    await napNhomMonLanDau({ actorUserId: user.id });
+    const { nhomMon, clubs } = await danhMucNhomMon();
+    return sendJson(res, 200, { nhomMon, clubs });
+  }
+
+  if (method === "POST" && url.pathname === "/api/admin/nhom-mon") {
+    const user = await requireSchoolUser(req, CAP.danhMuc);
+    const nhom = await luuNhomMonRecord({ actorUserId: user.id, nhomId: null, input: await readJson(req) });
+    return sendJson(res, 201, { nhom });
+  }
+
+  const nhomMatch = url.pathname.match(/^\/api\/admin\/nhom-mon\/([^/]+)$/);
+  if (method === "PATCH" && nhomMatch) {
+    const user = await requireSchoolUser(req, CAP.danhMuc);
+    const nhom = await luuNhomMonRecord({ actorUserId: user.id, nhomId: decodeURIComponent(nhomMatch[1]), input: await readJson(req) });
+    return sendJson(res, 200, { nhom });
+  }
+
+  if (method === "DELETE" && nhomMatch) {
+    const user = await requireSchoolUser(req, CAP.danhMuc);
+    const daXoa = await xoaNhomMonRecord({ actorUserId: user.id, nhomId: decodeURIComponent(nhomMatch[1]) });
+    return sendJson(res, 200, { daXoa });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/clubs") {
@@ -3505,6 +3718,12 @@ const groupId = maTheoNgay("GR");
     const user = await requireSchoolUser(req, CAP.danhMuc);
     const club = await saveClubRecord({ actorUserId: user.id, clubId: decodeURIComponent(clubMatch[1]), input: await readJson(req) });
     return sendJson(res, 200, { club });
+  }
+
+  if (method === "DELETE" && clubMatch) {
+    const user = await requireSchoolUser(req, CAP.danhMuc);
+    const daXoa = await xoaClbRecord({ actorUserId: user.id, clubId: decodeURIComponent(clubMatch[1]) });
+    return sendJson(res, 200, { daXoa });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/classes") {

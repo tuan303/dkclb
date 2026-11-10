@@ -1,5 +1,6 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { startTestServer } from "./helpers/test-server.mjs";
 
 let server;
@@ -63,15 +64,30 @@ test("nhóm dữ liệu không tồn tại bị từ chối", async () => {
   assert.equal((await response.json()).error.code, "UNKNOWN_COLLECTION");
 });
 
-test("xuất đủ mười nhóm dữ liệu của hệ thống", async () => {
+test("xuất đủ mọi nhóm dữ liệu của hệ thống", async () => {
   const response = await request("/api/admin/export/collections", adminCookie);
   assert.equal(response.status, 200);
   const { collections, schemaVersion } = await response.json();
   assert.equal(schemaVersion, 1);
   assert.deepEqual(collections, [
-    "users", "students", "parentStudents", "registrationPeriods", "clubs",
+    "users", "students", "parentStudents", "registrationPeriods", "clubCategories", "clubs",
     "clubClasses", "registrations", "supportRequests", "auditLogs", "classCounters",
   ]);
+});
+
+test("mọi bảng nghiệp vụ của MySQL đều có mặt trong bản sao lưu", async () => {
+  // Thêm bảng mà quên khai vào phần xuất thì bản sao lưu thiếu im lặng, và chỉ phát
+  // hiện ra đúng lúc đang cần khôi phục. Danh sách bảng lấy thẳng từ mysql-store.
+  const store = await readFile(new URL("../mysql-store.mjs", import.meta.url), "utf8");
+  const khoi = store.match(/const expected = \[([\s\S]*?)\];/);
+  assert.ok(khoi, "mysql-store.mjs không còn mảng expected của applySchema");
+  const bang = [...khoi[1].matchAll(/"([a-z_]+)"/g)].map((item) => item[1]);
+  // Bảng hạ tầng, không mang dữ liệu nghiệp vụ nên không sao lưu.
+  const khongSaoLuu = new Set(["sessions", "oauth_states"]);
+  const camelHoa = (ten) => ten.replace(/_([a-z])/g, (_, chu) => chu.toUpperCase());
+  const { collections } = await (await request("/api/admin/export/collections", adminCookie)).json();
+  const thieu = bang.filter((ten) => !khongSaoLuu.has(ten) && !collections.includes(camelHoa(ten)));
+  assert.deepEqual(thieu, [], `bảng chưa được đưa vào sao lưu: ${thieu.join(", ")}`);
 });
 
 test("dữ liệu xuất ra đúng hình dạng dùng chung cho mọi nền lưu trữ", async () => {

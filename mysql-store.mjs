@@ -133,6 +133,13 @@ const EXPORT_QUERIES = {
       note: row.note || "", updatedAt: row.updated_at || null,
     }),
   },
+  clubCategories: {
+    sql: "SELECT id, name, name_key, emoji, sort_order, active, updated_at FROM club_categories",
+    map: (row) => ({
+      id: row.id, name: row.name, nameKey: row.name_key, emoji: row.emoji || "",
+      sortOrder: toInt(row.sort_order), active: toBool(row.active), updatedAt: row.updated_at,
+    }),
+  },
   clubs: {
     sql: "SELECT id, code, name, category, description, emoji, visual, grades, sort_order, active FROM clubs",
     map: (row) => ({
@@ -243,7 +250,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
 
     // Kiểm lại: thiếu bảng nào thì dừng ngay thay vì để lỗi lộ ra ở một truy vấn ngẫu nhiên sau này.
     const expected = ["users", "students", "parent_students", "registration_periods", "clubs",
-      "club_classes", "registrations", "support_requests", "sessions", "oauth_states", "audit_logs"];
+      "club_categories", "club_classes", "registrations", "support_requests", "sessions", "oauth_states", "audit_logs"];
     const [tables] = await pool.query("SHOW TABLES");
     const present = new Set(tables.map((row) => String(Object.values(row)[0])));
     const missing = expected.filter((table) => !present.has(table));
@@ -970,6 +977,65 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
           JSON.stringify(data.grades || []), toInt(data.sortOrder), data.active === false ? 0 : 1],
       );
       return { id: clubId, ...data };
+    },
+
+    async listClubCategories() {
+      const rows = await query(`SELECT id, name, name_key AS nameKey, emoji, sort_order AS sortOrder, active, updated_at AS updatedAt
+        FROM club_categories ORDER BY sort_order, name`);
+      return rows.map((row) => ({
+        id: row.id, name: row.name, nameKey: row.nameKey, emoji: row.emoji || "",
+        sortOrder: toInt(row.sortOrder), active: toBool(row.active), updatedAt: row.updatedAt,
+      }));
+    },
+
+    /**
+     * Ghi một nhóm môn, và trong CÙNG giao dịch đẩy tên mới xuống các CLB đang dùng.
+     *
+     * Vì sao một giao dịch: đổi tên nhóm rồi mới sửa clubs ở lượt ghi thứ hai, lỡ
+     * đứt giữa chừng là nửa số CLB mang tên mới nửa mang tên cũ — đúng hiện tượng
+     * cổng phụ huynh mọc ra hai nút lọc gần giống nhau.
+     *
+     * Và vì sao cập nhật theo clubIds chứ không phải WHERE category = tên cũ: mọi
+     * bảng ở đây COLLATE utf8mb4_unicode_ci nên `= 'Thể thao'` trên MySQL ăn luôn
+     * 'THE THAO', 'Thế thao', còn SQLite của bộ kiểm thử thì so từng byte. Cùng một
+     * câu lệnh cho hai kết quả khác nhau là loại lỗi chỉ lộ ra trên máy chủ thật.
+     */
+    async luuNhomMon({ id, name, nameKey, emoji = "", sortOrder = 0, active = true, clubIds = [], xoaId = null, updatedAt }) {
+      return withTransaction(async (connection) => {
+        await connection.query(
+          `INSERT INTO club_categories (id, name, name_key, emoji, sort_order, active, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE name = VALUES(name), name_key = VALUES(name_key), emoji = VALUES(emoji),
+            sort_order = VALUES(sort_order), active = VALUES(active), updated_at = VALUES(updated_at)`,
+          [id, name, nameKey, emoji, toInt(sortOrder), active === false ? 0 : 1, updatedAt],
+        );
+        // Gộp: bỏ dòng nhóm nguồn SAU khi đã chuyển hết CLB sang tên đích.
+        if (xoaId && xoaId !== id) await connection.query("DELETE FROM club_categories WHERE id = ?", [xoaId]);
+        if (clubIds.length) {
+          const [ketQua] = await connection.query("UPDATE clubs SET category = ? WHERE id IN (?)", [name, clubIds]);
+          // Số dòng đổi ít hơn số đã hứa với người dùng nghĩa là có CLB vừa bị xoá
+          // hoặc đổi nhóm ở một phiên khác. Dừng hẳn còn hơn báo "đã đổi 8 CLB" khi
+          // mới đổi 6.
+          if (toInt(ketQua.affectedRows) !== clubIds.length) {
+            throw createHttpError(409, "NHOM_DOI_TEN_LECH",
+              `Chỉ cập nhật được ${toInt(ketQua.affectedRows)}/${clubIds.length} CLB — danh mục vừa bị sửa ở nơi khác. Hãy tải lại trang rồi làm lại.`);
+          }
+        }
+        return { id, name, nameKey, emoji, sortOrder: toInt(sortOrder), active: active !== false, updatedAt };
+      });
+    },
+
+    async xoaNhomMon(id) {
+      await query("DELETE FROM club_categories WHERE id = ?", [id]);
+    },
+
+    /**
+     * Xoá hẳn một CLB. Chỉ gọi sau khi tầng nghiệp vụ đã xác nhận CLB không còn ca
+     * học nào — kể cả ca đã ẩn. Khoá ngoại fk_club_classes_club không khai ON DELETE
+     * nên MySQL vẫn chặn nếu còn sót, đây là lớp chặn thứ hai chứ không phải lớp đầu.
+     */
+    async xoaClb(clubId) {
+      await query("DELETE FROM clubs WHERE id = ?", [clubId]);
     },
 
     async saveClass(classId, data, connection = null) {

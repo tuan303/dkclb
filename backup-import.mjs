@@ -31,8 +31,17 @@ const DERIVED_COLLECTIONS = new Set(["classCounters"]);
 
 const TRUNCATE_ORDER = [
   "audit_logs", "support_requests", "registrations", "parent_students",
-  "sessions", "oauth_states", "club_classes", "clubs", "students", "users", "registration_periods",
+  "sessions", "oauth_states", "club_classes", "clubs", "club_categories", "students", "users", "registration_periods",
 ];
+
+// Danh mục nhóm môn ra đời sau, nên nó là TUỲ CHỌN khi nạp: tệp sao lưu nhà trường
+// đã cất trước đó không có khoá này, và đưa nó vào IMPORT_ORDER sẽ làm validateBackup
+// từ chối chính những tệp cũ mà người ta cần khôi phục nhất.
+const OPTIONAL_COLLECTIONS = ["clubCategories"];
+
+// Thứ tự nạp thật: danh mục nhóm môn đi trước clubs cho dễ đọc nhật ký, nó không có
+// khoá ngoại nên đặt ở đâu cũng chạy.
+const LOAD_ORDER = [...OPTIONAL_COLLECTIONS, ...IMPORT_ORDER];
 
 const text = (value, max) => {
   if (value === null || value === undefined) return null;
@@ -101,6 +110,13 @@ const INSERTS = {
     values: (row) => [row.id, text(row.name, 190), text(row.schoolYear, 32) || "", text(row.term, 64) || "",
       row.openAt, row.closeAt, row.status || "draft", int(row.maxClubsPerStudent) || 3,
       text(row.note, 500), text(row.updatedAt, 32)],
+  },
+  clubCategories: {
+    sql: `INSERT INTO club_categories (id, name, name_key, emoji, sort_order, active, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    values: (row) => [row.id, text(row.name, 190), text(row.nameKey, 190) || text(row.name, 190),
+      text(row.emoji, 16) || "", int(row.sortOrder), row.active === false ? 0 : 1,
+      text(row.updatedAt, 32) || new Date().toISOString()],
   },
   clubs: {
     sql: `INSERT INTO clubs (id, code, name, category, description, emoji, visual, grades, sort_order, active)
@@ -184,11 +200,11 @@ export async function importBackup({ url, backup, replace = false, encryptionKey
       log("Đã xóa sạch dữ liệu cũ trong cơ sở dữ liệu đích.");
     }
 
-    const known = Object.fromEntries(IMPORT_ORDER.map((name) => [name, new Set()]));
+    const known = Object.fromEntries(LOAD_ORDER.map((name) => [name, new Set()]));
     const counters = {};
     const skipped = [];
 
-    for (const name of IMPORT_ORDER) {
+    for (const name of LOAD_ORDER) {
       const definition = INSERTS[name];
       const rows = backup.data[name] || [];
       let inserted = 0;

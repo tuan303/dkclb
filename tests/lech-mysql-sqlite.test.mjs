@@ -55,6 +55,10 @@ const THIEU_O_FIRESTORE_DA_BIET = [
   "doiLopPhuHuynh",
   // Màn Thông tin học sinh (15/09/2026): cùng lý do; server.mjs trả 501 qua kiemNenHoTroLienHe.
   "listStudentContacts", "lienHeCuaHocSinh", "locSoDaDoi", "capNhatLienHePhuHuynh", "themPhuHuynhChoHocSinh",
+  // Màn Khai báo danh mục (10/11/2026): nhóm môn là bảng mới, Firestore không có.
+  // server.mjs trả 501 qua kiemNenHoTroNhomMon, và /api/clubs vẫn chạy bình thường
+  // (chỉ mất thứ tự nhóm) để cổng đăng ký của phụ huynh không bị chặn theo.
+  "listClubCategories", "luuNhomMon", "xoaNhomMon", "xoaClb",
 ].sort();
 
 test("khoảng lệch giữa hai kho dữ liệu không được rộng thêm", () => {

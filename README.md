@@ -23,6 +23,7 @@ MVP full-stack cho quy trình đăng ký câu lạc bộ ngoại khóa của Tr�
 - Giao diện đăng nhập Microsoft 365 bằng Authorization Code Flow + PKCE, giới hạn đúng tenant và tên miền `@hoangmaistarschool.edu.vn`.
 - Dashboard lấy dữ liệu trực tiếp từ cơ sở dữ liệu.
 - **Quản trị đợt đăng ký:** tạo/sửa đợt, đặt thời gian mở–đóng theo giờ Việt Nam, giới hạn số CLB mỗi học sinh, mở/đóng đăng ký. Hệ thống tự ngừng nhận đơn khi hết hạn và chỉ cho phép một đợt mở tại một thời điểm.
+- **Khai báo danh mục:** khai báo nhóm môn (Thể thao, Nghệ thuật…) và tên CLB ở một màn riêng, tách khỏi việc xếp lịch. Đổi tên một nhóm môn sẽ đổi luôn nhóm ghi trên mọi CLB đang dùng, trong một giao dịch.
 - **Quản trị CLB và lớp:** tạo/sửa CLB, thêm nhiều ca học cho một CLB (mỗi ca có lịch, phòng, giáo viên, sĩ số, học phí và khối áp dụng riêng), ngừng mở hoặc mở lại từng ca.
 - **Nhập danh mục hàng loạt từ Excel/CSV** với bước rà soát trước khi ghi.
 - Chốt an toàn khi sửa danh mục: không hạ sĩ số xuống dưới số chỗ đã dùng, không ngừng mở lớp đang có đơn hiệu lực, không xếp hai lớp trùng phòng cùng khung giờ trong một đợt.
@@ -110,8 +111,9 @@ Rules hiện chặn toàn bộ truy cập client; backend Admin SDK được ki�
 Trong cổng Nhà trường:
 
 1. **Đợt đăng ký → + Tạo đợt đăng ký.** Đặt tên, năm học, học kỳ, thời gian mở–đóng (giờ Việt Nam) và số CLB tối đa mỗi học sinh. Đợt ở trạng thái `Bản nháp` chưa hiển thị với phụ huynh.
-2. **CLB & lịch học → + Tạo CLB**, sau đó thêm từng ca học. Một CLB có thể có nhiều ca khác thứ, khác phòng, khác khối áp dụng.
-3. **CLB & lịch học → Nhập từ Excel** để khai hàng loạt.
+2. **Khai báo danh mục** — khai nhóm môn và tên CLB (xem mục dưới).
+3. **CLB & lịch học → + Tạo CLB**, sau đó thêm từng ca học. Một CLB có thể có nhiều ca khác thứ, khác phòng, khác khối áp dụng.
+4. **CLB & lịch học → Nhập từ Excel** để khai hàng loạt.
 
 File nhập có **mỗi dòng là một ca học**; các dòng cùng mã hoặc cùng tên CLB được gộp thành một CLB nhiều ca. Cột bắt buộc:
 
@@ -129,6 +131,34 @@ File nhập có **mỗi dòng là một ca học**; các dòng cùng mã hoặc 
 Cột tùy chọn: `Mã CLB`, `Nhóm môn`, `Tên lớp`, `Mô tả`, `Biểu tượng`, `Sĩ số tối thiểu`.
 
 File `.xlsx` được đọc ngay trong trình duyệt (không tải file lên máy chủ). Máy chủ chỉ nhận bảng dữ liệu đã đọc, tự nhận diện cột, kiểm tra từng dòng rồi trả về bản rà soát: số dòng hợp lệ, dòng lỗi kèm lý do, cảnh báo trùng phòng và trùng ca. Chỉ khi không còn dòng lỗi mới xuất hiện nút ghi vào hệ thống. Thao tác ghi **chỉ thêm hoặc cập nhật** theo mã CLB và khung lịch, không xóa CLB hay lớp đang có, và được ghi vào audit log.
+
+### Khai báo danh mục: nhóm môn và tên CLB (10/11/2026)
+
+Menu **Khai báo danh mục** (quyền `danh-muc`, giáo vụ trở lên) trả lời câu "trường có những CLB nào, thuộc nhóm nào". Còn "mỗi CLB mở ca nào, ai dạy, phòng nào, bao nhiêu chỗ" vẫn ở màn **CLB & lịch học** — hai màn dùng CHUNG một bảng `clubs`, không có danh sách song song nào để lệch nhau.
+
+**Nhóm môn** là bảng riêng `club_categories`, nhưng `clubs.category` **vẫn là chữ** chứ không đổi sang khoá ngoại: cổng phụ huynh lọc theo chữ, Dashboard gom theo chữ, file Excel nhập vào cũng mang chữ. Danh mục là lớp khai báo nằm trên dữ liệu chữ sẵn có.
+
+- **Nạp lần đầu tự động.** Lượt mở màn đầu tiên nhận hết nhóm môn đang có trong dữ liệu CLB vào danh mục, nên không phải gõ lại. Nhóm xuất hiện sau đó (ví dụ từ một file Excel) hiện ở hàng **"chưa khai báo"** để nhận vào hoặc sửa tên.
+- **Đổi tên là sửa dữ liệu hàng loạt.** Đổi tên một nhóm sẽ ghi tên mới xuống mọi CLB đang dùng, trong MỘT giao dịch. Cập nhật theo `id` của từng CLB chứ không bằng `WHERE category = tên cũ`: MySQL chạy `utf8mb4_unicode_ci` nên `=` không phân biệt dấu lẫn hoa thường, còn SQLite của bộ kiểm thử so từng byte — cùng một câu lệnh sẽ cho hai kết quả khác nhau.
+- **Sửa chính tả cũng cascade.** Đổi "Nghệ Thuật" thành "Nghệ thuật" vẫn đẩy chữ mới xuống CLB; không đẩy thì phụ huynh thấy hai nút lọc gần giống hệt nhau.
+- **Đổi sang tên của nhóm khác là GỘP**, phải xác nhận riêng vì không tự hoàn lại được.
+- **Xoá nhóm** chỉ khi không còn CLB nào dùng (đếm cả CLB đang ẩn). Còn CLB thì chặn và kể tên.
+- **Xoá CLB** chỉ khi CLB chưa có BẤT KỲ ca học nào, kể cả ca đã ẩn. CLB đã có ca thì "bớt" đúng cách là **ẩn**, vì đơn đăng ký của phụ huynh treo vào ca chứ không vào CLB.
+- **Thứ tự** khai ở đây chính là thứ tự hàng nút lọc bên cổng phụ huynh; nhóm chưa khai báo xếp cuối.
+- Ô "Nhóm môn" trong form CLB gợi ý từ danh mục nhưng **vẫn nhập tự do được**, và luôn giữ giá trị đang có của CLB kể cả khi nó chưa nằm trong danh mục.
+
+Nền Firestore (bản kế thừa) không có bảng này; máy chủ trả 501 với thông báo rõ thay vì vỡ. Danh mục nằm trong bản sao lưu (`clubCategories`); tệp sao lưu cũ không có khoá này vẫn khôi phục được bình thường.
+
+## Xoá dữ liệu CLB để khai báo lại từ đầu
+
+`xoa-du-lieu-clb.mjs` xoá đơn đăng ký → ca học → CLB, giữ nguyên danh bạ học sinh, tài khoản phụ huynh (kèm mật khẩu đã đặt), đợt đăng ký, tài khoản nhà trường và nhật ký.
+
+```bash
+node xoa-du-lieu-clb.mjs              # chỉ đếm và ghi tệp sao lưu, KHÔNG xoá
+node xoa-du-lieu-clb.mjs --xoa-that   # xoá thật
+```
+
+Luôn ghi `data/sao-luu-truoc-khi-xoa-clb-<thời-gian>.json` trước khi xoá, chạy trong một giao dịch, và ghi nhật ký `WIPE_CATALOG`. Thư mục `data/` nằm trong `.gitignore`.
 
 ## Kết nối Google Sheets
 

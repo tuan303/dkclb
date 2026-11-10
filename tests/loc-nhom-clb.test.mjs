@@ -30,13 +30,14 @@ const DANH_MUC = [
   lop("piano", "Âm nhạc", [4, 5], "con-nhan", "Piano"),
 ];
 
-function nap({ khoi = 2, filters = {} } = {}) {
+function nap({ khoi = 2, filters = {}, nhomMonSapXep = [] } = {}) {
   const nguon = [
     catDong("const escapeHtml = "),
-    ...["eligibleClubs", "nhomClbCuaEm", "nhomDangLoc", "clubsTruocLocNhom", "filteredClubs", "renderLocNhomClb"].map(catHam),
+    catDong("const boDau = "),
+    ...["eligibleClubs", "nhomClbCuaEm", "thuTuNhomMon", "nhomDangLoc", "clubsTruocLocNhom", "filteredClubs", "renderLocNhomClb"].map(catHam),
     "return { eligibleClubs, nhomClbCuaEm, nhomDangLoc, filteredClubs, renderLocNhomClb, clubsTruocLocNhom };",
   ].join("\n");
-  const state = { filters: { search: "", category: "all", availability: "all", ...filters } };
+  const state = { nhomMonSapXep, filters: { search: "", category: "all", availability: "all", ...filters } };
   const ham = new Function("state", "clubs", "gradeNumber", nguon)(state, DANH_MUC, () => khoi);
   const nut = (html) => [...html.matchAll(/data-loc-nhom="([^"]*)"[^>]*>([^<]*)<b>(\d+)<\/b>/g)]
     .map((m) => ({ nhom: m[1], so: Number(m[3]), active: /filter-chip active/.test(html.slice(html.lastIndexOf("<button", m.index), m.index)) }));
@@ -88,11 +89,38 @@ test("ở Khám phá CLB, số trên nút nhóm đếm sau tìm kiếm và lọc
 test("tên nhóm được thoát HTML trong nút lọc", () => {
   const nguon = [
     catDong("const escapeHtml = "),
-    ...["eligibleClubs", "nhomClbCuaEm", "nhomDangLoc", "renderLocNhomClb"].map(catHam),
+    catDong("const boDau = "),
+    ...["eligibleClubs", "nhomClbCuaEm", "thuTuNhomMon", "nhomDangLoc", "renderLocNhomClb"].map(catHam),
     "return renderLocNhomClb;",
   ].join("\n");
   const html = new Function("state", "clubs", "gradeNumber", nguon)(
-    { filters: { search: "", category: "all", availability: "all" } },
+    { nhomMonSapXep: [], filters: { search: "", category: "all", availability: "all" } },
     [lop("x", `"><img src=x onerror=alert(1)>`, [2])], () => 2)();
   assert.doesNotMatch(html, /<img/);
+});
+
+test("hàng nút nhóm xếp theo thứ tự nhà trường khai báo, không theo bảng chữ cái", () => {
+  // Ô "Thứ tự" ở màn Khai báo phải có tác dụng thật. Không nối thì quản trị sắp xong,
+  // mở cổng phụ huynh vẫn thấy nhóm xếp abc — một cái nút chết.
+  const { renderLocNhomClb, nut } = nap({
+    khoi: 2,
+    nhomMonSapXep: [{ name: "Thể thao", sortOrder: 0 }, { name: "Nghệ thuật", sortOrder: 1 }],
+  });
+  assert.deepEqual(nut(renderLocNhomClb()).map((item) => item.nhom), ["all", "Thể thao", "Nghệ thuật"]);
+});
+
+test("nhóm chưa khai báo rơi xuống cuối hàng nút, không chen lên đầu", () => {
+  const { renderLocNhomClb, nut } = nap({
+    khoi: 2,
+    nhomMonSapXep: [{ name: "Nghệ thuật", sortOrder: 5 }],
+  });
+  assert.deepEqual(nut(renderLocNhomClb()).map((item) => item.nhom), ["all", "Nghệ thuật", "Thể thao"]);
+});
+
+test("thứ tự khai báo khớp theo tên đã bỏ dấu, không lệ thuộc cách gõ hoa thường", () => {
+  const { renderLocNhomClb, nut } = nap({
+    khoi: 2,
+    nhomMonSapXep: [{ name: "THE THAO", sortOrder: 0 }, { name: "nghe thuat", sortOrder: 1 }],
+  });
+  assert.deepEqual(nut(renderLocNhomClb()).map((item) => item.nhom), ["all", "Thể thao", "Nghệ thuật"]);
 });
