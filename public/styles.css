@@ -643,6 +643,11 @@ a.nav-link { text-decoration: none; }
 .kb-nhom-hang th{background:var(--surface-2,#f4f6fb);color:var(--muted);font-size:12px;letter-spacing:.04em;
   text-transform:uppercase;padding:10px 16px;text-align:left;border-top:1px solid var(--line,#e2e6ee)}
 
+/* Khai báo danh mục: dòng lớp thụt vào dưới CLB của nó. */
+.kb-clb td{border-top:1px solid var(--line,#e2e6ee)}
+.kb-lop td{background:var(--surface-2,#f8f9fc);padding-top:6px;padding-bottom:6px}
+.kb-lop td:first-child{padding-left:28px}
+.kb-thut{color:var(--muted);margin-right:4px}
 @media print {
   /* Thứ tự quan trọng: bung khung ứng dụng ra trước… */
   .app-shell, .main-area, .page-content {

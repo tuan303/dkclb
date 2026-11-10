@@ -533,7 +533,8 @@ function pageContext(page, fallback) {
   if (page === "classes") return `${state.catalog?.clubs.length || 0} CLB · ${state.catalog?.classes.length || 0} lớp`;
   if (page === "khaiBao") {
     const kb = state.khaiBao;
-    return kb ? `${kb.nhomMon.length} nhóm môn · ${kb.clubs.length} CLB` : "Đang tải danh mục…";
+    if (!kb) return "Đang tải danh mục…";
+    return `${kb.nhomMon.length} nhóm môn · ${kb.clubs.length} CLB · ${state.catalog?.classes.length || 0} lớp`;
   }
   if (page === "applications") return `${adminApplications.length} đơn trong hệ thống`;
   if (page === "rosters") return state.period ? `${clubs.length} ca học trong đợt` : `${clubs.length} ca học · chưa có đợt nào đang mở`;
@@ -3119,7 +3120,7 @@ function oNhomMonGoiY(hienTai = "") {
 function renderKhaiBao() {
   return `<section class="section" style="margin-top:0">
       <div class="section-head"><div><span class="eyebrow">Quản trị danh mục</span><h2>Khai báo danh mục</h2>
-      <p>Khai báo <b>nhóm môn</b> và <b>tên CLB</b> của trường. Lịch học, phòng, giáo viên, sĩ số và học phí của từng ca khai ở màn <b>CLB &amp; lịch học</b>.</p></div></div>
+      <p>Danh mục của trường theo ba tầng: <b>Nhóm môn</b> → <b>Tên CLB</b> → <b>Tên lớp</b>. Một CLB có nhiều lớp khác giờ, khác phòng, khác giáo viên.</p></div></div>
     </section>
     <section class="section panel" id="kb-nhom">${renderKhaiBaoNhom()}</section>
     <section class="section panel" id="kb-clb">${renderKhaiBaoClb()}</section>`;
@@ -3179,32 +3180,49 @@ function renderKhaiBaoClb() {
     if (!ds.length) return "";
     return `<tbody><tr class="kb-nhom-hang"><th colspan="4">${escapeHtml(ten)} · ${ds.length} CLB</th></tr>
       ${ds.map((club) => {
-        const soCa = soCaCuaClb(club.id);
-        return `<tr>
+        const lop = lopCuaClb(club.id);
+        return `<tr class="kb-clb">
           <td><strong>${escapeHtml(club.name)}</strong>${club.active === false ? ` <span class="badge badge-red">Đang ẩn</span>` : ""}
             <br><span class="roster-note">${escapeHtml(club.code || club.id)}${club.grades?.length ? ` · khối ${club.grades.join(", ")}` : " · chưa khai khối"}</span></td>
-          <td>${soCa ? `${soCa} ca học` : "<span class=\"roster-note\">chưa có ca học</span>"}</td>
+          <td>${lop.length ? `${lop.length} lớp` : "<span class=\"roster-note\">chưa có lớp</span>"}</td>
           <td>${escapeHtml(club.category || "—")}</td>
-          <td><button class="table-action" data-kb-sua-clb="${escapeHtml(club.id)}">Sửa</button>
-            ${soCa ? "" : ` <button class="table-action" data-kb-xoa-clb="${escapeHtml(club.id)}" data-kb-ten="${escapeHtml(club.name)}">Xoá</button>`}</td>
-        </tr>`;
+          <td><button class="table-action" data-kb-sua-clb="${escapeHtml(club.id)}">Sửa CLB</button>
+            <button class="table-action" data-kb-them-lop="${escapeHtml(club.id)}">+ Lớp</button>
+            ${lop.length ? "" : ` <button class="table-action" data-kb-xoa-clb="${escapeHtml(club.id)}" data-kb-ten="${escapeHtml(club.name)}">Xoá</button>`}</td>
+        </tr>${lop.map(renderKhaiBaoLop).join("")}`;
       }).join("")}</tbody>`;
   }).join("");
 
-  return `<div class="panel-head"><div><h3>Tên CLB</h3>
-      <p>Mỗi CLB là <b>một</b> bản ghi, bên dưới có thể mở nhiều ca học khác giờ. Đây cũng chính là danh sách ở màn "CLB &amp; lịch học" — sửa bên nào cũng như nhau.</p></div>
+  return `<div class="panel-head"><div><h3>Tên CLB và tên lớp</h3>
+      <p>Mỗi CLB là <b>một</b> bản ghi; các lớp của nó nằm thụt vào bên dưới. Đây cũng chính là dữ liệu ở màn "CLB &amp; lịch học" — sửa bên nào cũng như nhau.</p></div>
       <button class="button button-primary" data-kb-them-clb>+ Thêm CLB</button></div>
     ${renderCanhBaoClbTrungTen()}
     <div class="table-wrap"><table class="data-table">
-      <thead><tr><th>Tên CLB</th><th style="width:150px">Ca học</th><th style="width:200px">Nhóm môn</th><th style="width:150px">Thao tác</th></tr></thead>
+      <thead><tr><th>Tên CLB / tên lớp</th><th style="width:190px">Lịch học</th><th style="width:210px">Đợt · phòng · giáo viên</th><th style="width:190px">Thao tác</th></tr></thead>
       ${khoi || `<tbody><tr><td colspan="4" class="empty-cell">Chưa khai báo CLB nào. Bấm <b>+ Thêm CLB</b> để bắt đầu.</td></tr></tbody>`}
     </table></div>
-    <p class="field-hint" style="padding:0 20px 16px">CLB đã có ca học thì không xoá được — đơn đăng ký của phụ huynh treo vào ca chứ không vào CLB. Muốn bỏ thì xoá hết ca ở màn "CLB &amp; lịch học", hoặc bỏ tích hiển thị để ẩn CLB đi.</p>`;
+    <p class="field-hint" style="padding:0 20px 16px">CLB đã có lớp thì không xoá được — đơn đăng ký của phụ huynh treo vào <b>lớp</b> chứ không vào CLB. Muốn bỏ thì xoá hết lớp trước, hoặc bỏ tích hiển thị để ẩn CLB đi.</p>`;
 }
 
-/** Số ca học của một CLB, ĐẾM CẢ ca đã ẩn — vì đó mới là điều kiện xoá được. */
-function soCaCuaClb(clubId) {
-  return (state.catalog?.classes || []).filter((row) => row.clubId === clubId).length;
+/** Các lớp của một CLB, mọi đợt, kể cả lớp đã ẩn — đúng tập mà phép xoá CLB xét. */
+function lopCuaClb(clubId) {
+  return (state.catalog?.classes || [])
+    .filter((row) => row.clubId === clubId)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.dayOfWeek - b.dayOfWeek || String(a.startTime).localeCompare(String(b.startTime)));
+}
+
+function tenDot(periodId) {
+  return (state.catalog?.periods || []).find((item) => item.id === periodId)?.name || "—";
+}
+
+/** Một dòng lớp, thụt vào dưới CLB của nó. */
+function renderKhaiBaoLop(lop) {
+  return `<tr class="kb-lop">
+    <td><span class="kb-thut">↳</span> <strong>${escapeHtml(lop.name || "Ca chính")}</strong>${lop.active === false ? ` <span class="badge badge-red">Ngừng mở</span>` : ""}</td>
+    <td>${escapeHtml(lop.scheduleLabel || "—")}</td>
+    <td><span class="roster-note">${escapeHtml(tenDot(lop.periodId))}${lop.room ? ` · ${escapeHtml(lop.room)}` : ""}${lop.teacher ? ` · ${escapeHtml(lop.teacher)}` : ""}</span></td>
+    <td><button class="table-action" data-kb-sua-lop="${escapeHtml(lop.id)}">Sửa lớp</button></td>
+  </tr>`;
 }
 
 // Chặn gọi chồng: bindKhaiBao chạy lại sau mỗi lượt vẽ, và lượt tải nào cũng vẽ lại.
@@ -3246,6 +3264,11 @@ function bindKhaiBaoNoiDung() {
   $("[data-kb-them-clb]")?.addEventListener("click", () => openClubForm(null));
   $$("[data-kb-sua-clb]").forEach((el) => el.addEventListener("click", () => openClubForm(el.dataset.kbSuaClb)));
   $$("[data-kb-xoa-clb]").forEach((el) => el.addEventListener("click", () => xoaClbKhaiBao(el.dataset.kbXoaClb, el.dataset.kbTen)));
+  // Dùng lại đúng form lớp của màn "CLB & lịch học": một form duy nhất cho cả hai
+  // màn, nên mọi lá chắn (không hạ sĩ số dưới số chỗ đã dùng, không trùng phòng
+  // cùng khung giờ, không ngừng mở lớp đang có đơn) vẫn còn nguyên.
+  $$("[data-kb-them-lop]").forEach((el) => el.addEventListener("click", () => openClassForm(null, el.dataset.kbThemLop)));
+  $$("[data-kb-sua-lop]").forEach((el) => el.addEventListener("click", () => openClassForm(el.dataset.kbSuaLop)));
 }
 
 function moFormNhomMon(nhomId, tenGoiY = "") {

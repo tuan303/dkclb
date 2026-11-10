@@ -227,3 +227,26 @@ test("bản sao khoá nhóm môn trong app.js khớp từng ký tự với khoaN
     assert.equal(banTrinhDuyet(mau), khoaNhom(mau), `lệch ở "${mau}"`);
   }
 });
+
+test("màn Khai báo hiện đủ ba tầng Nhóm môn → CLB → Lớp", async () => {
+  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const khoi = app.slice(app.indexOf("function renderKhaiBaoClb("), app.indexOf("async function taiKhaiBao("));
+  assert.match(khoi, /lopCuaClb\(club\.id\)/, "dòng CLB phải liệt kê lớp của nó");
+  assert.match(khoi, /renderKhaiBaoLop/, "thiếu tầng lớp");
+  assert.match(khoi, /data-kb-them-lop/, "thiếu nút thêm lớp");
+  assert.match(khoi, /data-kb-sua-lop/, "thiếu nút sửa lớp");
+  // Lớp đếm theo MỌI đợt và kể cả lớp đã ẩn — đúng tập mà phép xoá CLB xét, nếu
+  // khác đi thì nút Xoá hiện ra rồi máy chủ mới chặn.
+  assert.match(khoi, /filter\(\(row\) => row\.clubId === clubId\)/);
+  assert.doesNotMatch(khoi, /row\.active !== false/, "không được lọc lớp đã ẩn khi đếm");
+});
+
+test("tầng Lớp dùng lại form của màn CLB & lịch học, không dựng form thứ hai", async () => {
+  // Form đó mang sẵn các lá chắn: không hạ sĩ số dưới số chỗ đã dùng, không trùng
+  // phòng cùng khung giờ, không ngừng mở lớp đang có đơn. Dựng form riêng là mất hết.
+  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const bind = app.slice(app.indexOf("function bindKhaiBaoNoiDung("), app.indexOf("function moFormNhomMon("));
+  assert.match(bind, /data-kb-them-lop[\s\S]*openClassForm\(null, el\.dataset\.kbThemLop\)/);
+  assert.match(bind, /data-kb-sua-lop[\s\S]*openClassForm\(el\.dataset\.kbSuaLop\)/);
+  assert.equal(app.split("id=\"class-form\"").length - 1, 1, "chỉ được có MỘT form lớp trong toàn bộ app.js");
+});

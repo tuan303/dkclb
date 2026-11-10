@@ -134,7 +134,11 @@ File `.xlsx` được đọc ngay trong trình duyệt (không tải file lên m
 
 ### Khai báo danh mục: nhóm môn và tên CLB (10/11/2026)
 
-Menu **Khai báo danh mục** (quyền `danh-muc`, giáo vụ trở lên) trả lời câu "trường có những CLB nào, thuộc nhóm nào". Còn "mỗi CLB mở ca nào, ai dạy, phòng nào, bao nhiêu chỗ" vẫn ở màn **CLB & lịch học** — hai màn dùng CHUNG một bảng `clubs`, không có danh sách song song nào để lệch nhau.
+Danh mục của trường có ba tầng: **Nhóm môn → Tên CLB → Tên lớp**. Một CLB có nhiều lớp khác giờ, khác phòng, khác giáo viên; đơn đăng ký của phụ huynh treo vào **lớp** chứ không vào CLB.
+
+Menu **Khai báo danh mục** (quyền `danh-muc`, giáo vụ trở lên) hiện đủ ba tầng và là nơi khai cấu trúc. Màn **CLB & lịch học** vẫn là nơi xếp lịch theo từng đợt. Hai màn dùng CHUNG bảng `clubs` và `club_classes`; tầng Lớp ở màn Khai báo gọi lại ĐÚNG form lớp của màn kia, nên mọi lá chắn (không hạ sĩ số dưới số chỗ đã dùng, không trùng phòng cùng khung giờ, không ngừng mở lớp đang có đơn) vẫn còn nguyên.
+
+Lớp **không** có mã tự sinh — nhà trường tự đặt tên lớp (ví dụ `BD2A1.1`, `BD3A1CS`). Mã CLB thì vẫn tự sinh từ tên khi để trống.
 
 **Nhóm môn** là bảng riêng `club_categories`, nhưng `clubs.category` **vẫn là chữ** chứ không đổi sang khoá ngoại: cổng phụ huynh lọc theo chữ, Dashboard gom theo chữ, file Excel nhập vào cũng mang chữ. Danh mục là lớp khai báo nằm trên dữ liệu chữ sẵn có.
 
