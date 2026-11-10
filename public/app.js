@@ -537,7 +537,7 @@ function pageContext(page, fallback) {
     return `${kb.nhomMon.length} nhóm môn · ${kb.clubs.length} CLB · ${state.catalog?.classes.length || 0} lớp`;
   }
   if (page === "applications") return `${adminApplications.length} đơn trong hệ thống`;
-  if (page === "rosters") return state.period ? `${clubs.length} ca học trong đợt` : `${clubs.length} ca học · chưa có đợt nào đang mở`;
+  if (page === "rosters") return state.period ? `${clubs.length} lớp CLB trong đợt` : `${clubs.length} lớp CLB · chưa có đợt nào đang mở`;
   return fallback;
 }
 
@@ -1264,7 +1264,7 @@ function renderClasses() {
 
   return `<div class="kpi-strip">
       <div class="kpi-item"><span>CLB trong đợt</span><strong>${clubIds.size}</strong></div>
-      <div class="kpi-item"><span>Lớp / ca học</span><strong>${rows.length}</strong></div>
+      <div class="kpi-item"><span>Lớp CLB</span><strong>${rows.length}</strong></div>
       <div class="kpi-item"><span>Đã đầy</span><strong>${full}</strong></div>
       <div class="kpi-item"><span>Dưới sĩ số tối thiểu</span><strong>${belowMin}</strong></div>
       <div class="kpi-item"><span>Đang ẩn</span><strong>${hidden}</strong></div>
@@ -1280,12 +1280,12 @@ function renderClasses() {
       ${state.importDraft ? renderCatalogImport() : ""}
       ${renderCanhBaoClbTrungTen()}
       ${period ? "" : '<div class="inline-alert">Hãy tạo một đợt đăng ký trước khi khai báo CLB và lớp.</div>'}
-      ${clubBlocks || (period ? '<div class="empty-state"><h3>Đợt này chưa có lớp nào</h3><p>Tạo CLB rồi thêm ca học, hoặc nhập hàng loạt từ file Excel.</p></div>' : "")}
+      ${clubBlocks || (period ? '<div class="empty-state"><h3>Đợt này chưa có lớp nào</h3><p>Tạo CLB rồi thêm lớp, hoặc nhập hàng loạt từ file Excel.</p></div>' : "")}
       ${orphanClubs.length ? `<div class="info-note"><strong>${orphanClubs.length} CLB chưa có lớp trong đợt này:</strong> ${orphanClubs.map((club) => {
         // Danh sách này là "chưa có ca TRONG ĐỢT ĐANG XEM". CLB còn ca ở đợt khác thì
         // không mời ẩn: ẩn là giấu luôn các ca đang nhận đơn ở đợt kia.
         const caDotKhac = soCaDangMo(club.id);
-        return `<span class="orphan-club">${escapeHtml(club.name)} <span style="color:var(--muted)">(${escapeHtml(club.code || club.id)}${club.active === false ? " · đang ẩn" : ""}${caDotKhac ? ` · còn ${caDotKhac} ca ở đợt khác` : ""})</span> <span class="orphan-actions"><button class="text-button" data-add-class-for="${escapeHtml(club.id)}">+ ca</button>${caDotKhac ? "" : ` <button class="text-button" data-edit-club="${escapeHtml(club.id)}">Sửa / ẩn</button>`}</span></span>`;
+        return `<span class="orphan-club">${escapeHtml(club.name)} <span style="color:var(--muted)">(${escapeHtml(club.code || club.id)}${club.active === false ? " · đang ẩn" : ""}${caDotKhac ? ` · còn ${caDotKhac} lớp ở đợt khác` : ""})</span> <span class="orphan-actions"><button class="text-button" data-add-class-for="${escapeHtml(club.id)}">+ lớp</button>${caDotKhac ? "" : ` <button class="text-button" data-edit-club="${escapeHtml(club.id)}">Sửa / ẩn</button>`}</span></span>`;
       }).join(" · ")}</div>` : ""}
     </section>`;
 }
@@ -1339,7 +1339,7 @@ function renderCatalogClubBlock(club, classes) {
         : [row.trangThaiLop?.nhan || "", mauTrangThai[row.trangThaiLop?.ma] || "blue"];
       const grades = row.grades?.length ? row.grades : club.grades;
       return `<tr>
-        <td><strong>${escapeHtml(row.name || "Ca chính")}</strong><br><span style="color:var(--muted)">Khối ${grades.join(", ")}</span></td>
+        <td><strong>${escapeHtml(row.name || "Lớp chính")}</strong><br><span style="color:var(--muted)">Khối ${grades.join(", ")}</span></td>
         <td>${escapeHtml(row.scheduleLabel)}</td>
         <td>${escapeHtml(row.room)}<br><span style="color:var(--muted)">${escapeHtml(row.teacher)}</span></td>
         <td>${row.enrolled}/${row.capacity}${row.pendingRegistrations ? `<br><span style="color:var(--muted)">+${row.pendingRegistrations} đơn chưa giữ chỗ</span>` : ""}${row.minCapacity ? `<br><span style="color:var(--muted)">tối thiểu ${row.minCapacity}</span>` : ""}</td>
@@ -1362,7 +1362,7 @@ function renderCatalogClubBlock(club, classes) {
         <button class="button button-secondary" data-add-class-for="${escapeHtml(club.id)}">+ Thêm ca</button>
       </div></div>
       <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Ca học</th><th>Lịch</th><th>Phòng · Giáo viên</th><th>Sĩ số</th><th>Học phí</th><th>Tình trạng</th><th>Thao tác</th></tr></thead>
+        <thead><tr><th>Lớp</th><th>Lịch</th><th>Phòng · Giáo viên</th><th>Sĩ số</th><th>Học phí</th><th>Tình trạng</th><th>Thao tác</th></tr></thead>
         <tbody>${rows}</tbody></table></div></div>`;
 }
 
@@ -1408,7 +1408,7 @@ function openClubForm(clubId) {
       await refreshCatalog();
       closeModal();
       renderApp();
-      toast(targetId ? "Đã lưu CLB." : `Đã tạo CLB ${saved.name}. Hãy thêm ca học cho CLB này.`, "success");
+      toast(targetId ? "Đã lưu CLB." : `Đã tạo CLB ${saved.name}. Hãy thêm lớp cho CLB này.`, "success");
       if (!targetId) openClassForm(null, saved.id);
     });
   });
@@ -1418,7 +1418,7 @@ function classFormMarkup(clubClass, clubId) {
   const isNew = !clubClass;
   const club = state.catalog.clubs.find((item) => item.id === (clubClass?.clubId || clubId));
   const value = {
-    name: "", dayOfWeek: 2, startTime: "16:15", endTime: "17:30", room: "", teacher: "",
+    name: "", code: "", dayOfWeek: 2, startTime: "16:15", endTime: "17:30", room: "", teacher: "",
     capacity: 20, minCapacity: 0, enrolledBase: 0, fee: 0, hocLieu: 0, soBuoi: 0, nguongSapDu: 3, dangTuyen: true,
     grades: [], waitlistEnabled: true, sortOrder: 0, active: true,
     ...(clubClass || {}),
@@ -1427,12 +1427,14 @@ function classFormMarkup(clubClass, clubId) {
     .map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === (clubClass?.clubId || clubId) ? "selected" : ""}>${escapeHtml(nhanClbDayDu(item, clubClass?.periodId || state.catalogPeriodId))}${item.active === false ? " · đang ẩn" : ""}</option>`).join("");
   const periodOptions = state.catalog.periods
     .map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === (clubClass?.periodId || state.catalogPeriodId) ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
-  return `<div class="modal-head"><div><span class="eyebrow">${isNew ? "Thêm ca học" : "Chỉnh sửa ca học"}</span><h2>${escapeHtml(club?.name || "Lớp CLB")}</h2></div>
+  return `<div class="modal-head"><div><span class="eyebrow">${isNew ? "Thêm lớp" : "Chỉnh sửa lớp"}</span><h2>${escapeHtml(club?.name || "Lớp CLB")}</h2></div>
     <button class="icon-button" data-close-modal>${icon("x")}</button></div>
     <div class="modal-body"><form id="class-form" class="form-grid">
       <label class="form-field"><span>Thuộc CLB</span><select class="select-field" name="clubId">${clubOptions}</select></label>
       <label class="form-field"><span>Đợt đăng ký</span><select class="select-field" name="periodId">${periodOptions}</select></label>
-      <label class="form-field"><span>Tên ca</span><input name="name" value="${escapeHtml(value.name)}" placeholder="Ca 1" /></label>
+      <label class="form-field"><span>Tên lớp</span><input name="name" value="${escapeHtml(value.name)}" placeholder="Bóng đá cơ bản" /></label>
+      <label class="form-field"><span>Mã lớp</span><input name="code" value="${escapeHtml(value.code || "")}" placeholder="BD2A1.1" maxlength="40" />
+        <small class="field-hint">Nhà trường tự đặt. Để trống cũng được, nhưng đã đặt thì không được trùng với lớp khác.</small></label>
       <label class="form-field"><span>Thứ</span><select class="select-field" name="dayOfWeek">
         ${DAY_LABELS.map((label, index) => `<option value="${index}" ${Number(value.dayOfWeek) === index ? "selected" : ""}>${label}</option>`).join("")}
       </select></label>
@@ -1447,13 +1449,13 @@ function classFormMarkup(clubClass, clubId) {
       <label class="form-field"><span>Số buổi học</span><input type="number" name="soBuoi" min="0" max="500" value="${value.soBuoi}" /></label>
       <label class="form-field"><span>Báo "Sắp đủ" khi còn</span><input type="number" name="nguongSapDu" min="0" max="500" value="${value.nguongSapDu}" /><small class="field-hint">chỗ trở xuống. Phụ huynh chỉ thấy trạng thái, không thấy số chỗ.</small></label>
       <label class="form-field"><span>Ghi danh sẵn ngoài hệ thống</span><input type="number" name="enrolledBase" min="0" max="500" value="${value.enrolledBase}" /></label>
-      <div class="form-field form-span-2"><span>Khối riêng cho ca này (bỏ trống = theo CLB: khối ${club?.grades.join(", ") || "—"})</span>${gradeChips(value.grades)}</div>
+      <div class="form-field form-span-2"><span>Khối riêng cho lớp này (bỏ trống = theo CLB: khối ${club?.grades.join(", ") || "—"})</span>${gradeChips(value.grades)}</div>
       <label class="confirm-row form-span-2"><input type="checkbox" name="dangTuyen" ${value.dangTuyen !== false ? "checked" : ""} /><span>Đang tuyển sinh — bỏ tích thì phụ huynh vẫn thấy lớp với nhãn "Dừng tuyển" nhưng không đăng ký được</span></label>
       <label class="confirm-row form-span-2"><input type="checkbox" name="waitlistEnabled" ${value.waitlistEnabled ? "checked" : ""} /><span>Nhận danh sách chờ khi hết chỗ</span></label>
-      <label class="confirm-row form-span-2"><input type="checkbox" name="active" ${value.active ? "checked" : ""} /><span>Mở ca này cho phụ huynh đăng ký</span></label>
+      <label class="confirm-row form-span-2"><input type="checkbox" name="active" ${value.active ? "checked" : ""} /><span>Mở lớp này cho phụ huynh đăng ký</span></label>
     </form><div id="form-error" class="form-error" role="alert"></div></div>
     <div class="modal-foot"><button class="button button-secondary" data-close-modal>Hủy</button>
-    <button class="button button-primary" data-submit-class="${escapeHtml(clubClass?.id || "")}">${isNew ? "Thêm ca học" : "Lưu thay đổi"}</button></div>`;
+    <button class="button button-primary" data-submit-class="${escapeHtml(clubClass?.id || "")}">${isNew ? "Thêm lớp" : "Lưu thay đổi"}</button></div>`;
 }
 
 function openClassForm(classId, clubId = null) {
@@ -1481,7 +1483,7 @@ function openClassForm(classId, clubId = null) {
       await refreshCatalog();
       closeModal();
       renderApp();
-      toast(targetId ? "Đã lưu ca học." : "Đã thêm ca học.", "success");
+      toast(targetId ? "Đã lưu lớp." : "Đã thêm lớp.", "success");
     });
   });
 }
@@ -1490,12 +1492,12 @@ async function toggleClassActive(classId) {
   const clubClass = state.catalog?.classes.find((item) => item.id === classId);
   if (!clubClass) return;
   const turningOff = clubClass.active;
-  if (turningOff && !window.confirm(`Ngừng mở ca "${clubClass.name || clubClass.scheduleLabel}"? Phụ huynh sẽ không thấy ca này nữa.`)) return;
+  if (turningOff && !window.confirm(`Ngừng mở lớp "${clubClass.name || clubClass.scheduleLabel}"? Phụ huynh sẽ không thấy lớp này nữa.`)) return;
   try {
     await api(`/admin/classes/${encodeURIComponent(classId)}`, { method: "PATCH", body: JSON.stringify({ active: !turningOff }) });
     await refreshCatalog();
     renderApp();
-    toast(turningOff ? "Đã ngừng mở ca học." : "Đã mở lại ca học.", "success");
+    toast(turningOff ? "Đã ngừng mở lớp." : "Đã mở lại lớp.", "success");
   } catch (error) {
     toast(error.message, "error");
   }
@@ -1505,7 +1507,7 @@ async function toggleClassActive(classId) {
 
 const IMPORT_FIELD_LABELS = {
   clubCode: "Mã CLB", clubName: "Tên CLB", category: "Nhóm môn", description: "Mô tả", emoji: "Biểu tượng",
-  grades: "Khối", className: "Tên lớp/ca", day: "Thứ", timeRange: "Khung giờ", startTime: "Giờ bắt đầu",
+  grades: "Khối", className: "Tên lớp", classCode: "Mã lớp", day: "Thứ", timeRange: "Khung giờ", startTime: "Giờ bắt đầu",
   endTime: "Giờ kết thúc", room: "Phòng", teacher: "Giáo viên", capacity: "Sĩ số tối đa",
   minCapacity: "Sĩ số tối thiểu", fee: "Học phí",
 };
@@ -1514,12 +1516,12 @@ function renderCatalogImport() {
   const draft = state.importDraft;
   const preview = draft.preview;
   const head = `<div class="panel-head"><div><span class="eyebrow">Nhập hàng loạt</span><h3>Danh mục CLB từ file</h3>
-    <p>${draft.fileName ? `${escapeHtml(draft.fileName)}${draft.sheetName ? ` · sheet ${escapeHtml(draft.sheetName)}` : ""}` : "Chọn file .xlsx hoặc .csv — mỗi dòng là một ca học."}</p></div>
+    <p>${draft.fileName ? `${escapeHtml(draft.fileName)}${draft.sheetName ? ` · sheet ${escapeHtml(draft.sheetName)}` : ""}` : "Chọn file .xlsx hoặc .csv — mỗi dòng là một lớp."}</p></div>
     <button class="button button-secondary" data-cancel-import>Đóng</button></div>`;
 
   if (!preview) {
     return `<div class="panel" style="margin-bottom:16px">${head}<div class="panel-body">
-      <div class="info-note"><strong>Cách khai file:</strong> mỗi dòng là một ca học. Các dòng cùng tên/mã CLB sẽ được gộp thành một CLB nhiều ca.
+      <div class="info-note"><strong>Cách khai file:</strong> mỗi dòng là một lớp. Các dòng cùng tên/mã CLB sẽ được gộp thành một CLB nhiều lớp.
       Cột bắt buộc: <b>Tên CLB, Khối, Thứ, Khung giờ, Phòng, Giáo viên, Sĩ số tối đa</b>. Nên có thêm Mã CLB và Học phí (thiếu cột Học phí thì học phí ghi thành 0).
       ${linkBieuMau("danh-muc-clb")}</div>
       <label class="form-field"><span>Chọn file danh mục</span><input type="file" id="catalog-file" accept=".xlsx,.csv,.txt" /></label>
@@ -1553,7 +1555,7 @@ function renderCatalogImport() {
       <div class="kpi-item"><span>Dòng hợp lệ</span><strong>${preview.counters.validRows}</strong></div>
       <div class="kpi-item"><span>Dòng lỗi</span><strong>${preview.counters.invalidRows}</strong></div>
       <div class="kpi-item"><span>CLB</span><strong>${preview.counters.clubs}</strong></div>
-      <div class="kpi-item"><span>Ca học</span><strong>${preview.counters.classes}</strong></div>
+      <div class="kpi-item"><span>Lớp</span><strong>${preview.counters.classes}</strong></div>
     </div>` : ""}
     ${issuesHtml}
     ${sampleRows ? `<div class="table-wrap"><table class="data-table">
@@ -1582,7 +1584,7 @@ async function handleCatalogFile(file) {
     });
     state.importDraft = { fileName: file.name, sheetName: sheet.name, headers, rows, preview };
     renderPage();
-    toast(preview.readyToImport ? `Đọc được ${preview.counters.classes} ca học. Hãy rà soát trước khi ghi.` : "Đã đọc file; cần xử lý lỗi trước khi ghi.", preview.readyToImport ? "success" : "");
+    toast(preview.readyToImport ? `Đọc được ${preview.counters.classes} lớp. Hãy rà soát trước khi ghi.` : "Đã đọc file; cần xử lý lỗi trước khi ghi.", preview.readyToImport ? "success" : "");
   } catch (error) {
     toast(error.message, "error");
   }
@@ -1591,7 +1593,7 @@ async function handleCatalogFile(file) {
 async function commitCatalogImport(button) {
   const draft = state.importDraft;
   if (!draft?.preview?.readyToImport) return;
-  if (!window.confirm(`Ghi ${draft.preview.counters.clubs} CLB và ${draft.preview.counters.classes} ca học vào đợt "${currentCatalogPeriod()?.name}"?`)) return;
+  if (!window.confirm(`Ghi ${draft.preview.counters.clubs} CLB và ${draft.preview.counters.classes} lớp vào đợt "${currentCatalogPeriod()?.name}"?`)) return;
   button.disabled = true;
   button.textContent = "Đang ghi dữ liệu…";
   try {
@@ -1760,7 +1762,7 @@ function bindAccountSupportEvents() {
 
 const BACKUP_COLLECTION_LABELS = {
   users: "Tài khoản", students: "Học sinh", parentStudents: "Liên kết phụ huynh–học sinh",
-  registrationPeriods: "Đợt đăng ký", clubs: "Câu lạc bộ", clubClasses: "Lớp / ca học",
+  registrationPeriods: "Đợt đăng ký", clubs: "Câu lạc bộ", clubClasses: "Lớp CLB",
   registrations: "Đơn đăng ký", supportRequests: "Yêu cầu hỗ trợ", auditLogs: "Nhật ký thao tác",
   classCounters: "Bộ đếm chỗ",
 };
@@ -2004,7 +2006,7 @@ function renderDetailStudentTab({ registration, student }) {
     ${detailField("Lớp con đang học", student?.homeroom)}
     ${detailField("Cấp học", student?.level)}
     ${detailField("Câu lạc bộ", registration.clubName)}
-    ${detailField("Ca học", registration.classLabel)}
+    ${detailField("Lớp", registration.classLabel)}
     ${detailField("Lịch học", registration.scheduleSnapshot)}
     ${detailField("Phòng", registration.room)}
     ${detailField("Giáo viên", registration.teacher)}
@@ -2230,7 +2232,7 @@ function renderRosters() {
   const nhanDot = dot ? `${dot.name} · đang mở nhận đăng ký` : "Chưa có đợt nào đang mở · đang hiện ca của mọi đợt";
 
   return `<section class="grid grid-4" data-no-print>
-    ${renderStat("grid", "blue", String(tatCa.length), dot ? "Ca học đang hiển thị" : "Ca học đang hiển thị", nhanDot)}
+    ${renderStat("grid", "blue", String(tatCa.length), dot ? "Lớp đang hiển thị" : "Lớp đang hiển thị", nhanDot)}
     ${renderStat("users", "aqua", String(new Set(donGiuCho.map((row) => row.studentId)).size), "Học sinh đang giữ chỗ", `${donGiuCho.length} lượt đăng ký`)}
     ${renderStat("clock", "gold", String(soCho), "Đơn chưa giữ chỗ", "Chờ đóng phí hoặc đang xếp chờ")}
     ${renderStat("spark", thieuSiSo ? "red" : "aqua", String(thieuSiSo), "Ca dưới sĩ số tối thiểu", thieuSiSo ? "Cần xem lại" : "Không có")}
@@ -2241,7 +2243,7 @@ function renderRosters() {
     <p>${escapeHtml(nhanDot)}. Bấm <strong>Chi tiết</strong> ở từng ca để xem và in danh sách học sinh.</p></div>
     <button class="button button-secondary" data-no-print data-roster-csv-all>${icon("download")} Xuất toàn bộ đơn còn hiệu lực (CSV)</button></div>
     <div class="filters" data-no-print>
-      <label class="search-field">${icon("search")}<input id="roster-search" placeholder="Tìm CLB, ca học, phòng, giáo viên, tên học sinh..." value="${escapeHtml(state.rosterSearch || "")}" /></label>
+      <label class="search-field">${icon("search")}<input id="roster-search" placeholder="Tìm CLB, lớp, phòng, giáo viên, tên học sinh..." value="${escapeHtml(state.rosterSearch || "")}" /></label>
     </div>
   </section>
 
@@ -2286,7 +2288,7 @@ function renderRosterResults() {
 
   const cot = [
     { title: "CLB", cell: (ca) => `<strong>${escapeHtml(ca.name)}</strong>` },
-    { title: "Ca học", cell: (ca) => escapeHtml(ca.className || "Ca chính") },
+    { title: "Lớp", cell: (ca) => escapeHtml(ca.className || "Lớp chính") },
     { title: "Lịch học", cell: (ca) => escapeHtml(ca.schedule || "—") },
     { title: "Trạng thái", cell: (ca) => { const [nhan, mau] = trangThaiCa(ca); return `<span class="badge badge-${mau}">${escapeHtml(nhan)}</span>`; } },
     { title: "Nhóm môn", cell: (ca) => escapeHtml(ca.category || "—") },
@@ -2307,19 +2309,19 @@ function renderRosterResults() {
         ${cot.map((item) => `<td>${item.cell(ca)}</td>`).join("")}
       </tr>`).join("")
     : `<tr><td colspan="${cot.length + 2}" class="empty-cell">${tim
-        ? "Không có ca học nào khớp từ khóa."
-        : "Đợt đăng ký hiện tại chưa mở ca học nào, hoặc tất cả đang tắt."}</td></tr>`;
+        ? "Không có lớp nào khớp từ khóa."
+        : "Đợt đăng ký hiện tại chưa mở lớp nào, hoặc tất cả đang tắt."}</td></tr>`;
 
   const soMoCoi = dsCa.filter((ca) => ca.moCoi).length;
   return `<div class="panel-head">
-      <div><h3>Kết quả tra cứu: ${dsCa.length} ca học${tim ? ` / ${tatCa.length}` : ""}</h3>
+      <div><h3>Kết quả tra cứu: ${dsCa.length} lớp${tim ? ` / ${tatCa.length}` : ""}</h3>
       <p>Sĩ số tính theo số em đang giữ chỗ (đã đóng phí trở đi).</p></div>
       <div style="text-align:right">
         <strong>Số lượng học sinh: ${soHocSinh} học sinh</strong>
         ${ghiDanhSanTong ? `<br><span class="roster-note">chưa kể ${ghiDanhSanTong} em ghi danh sẵn ngoài hệ thống</span>` : ""}
       </div>
     </div>
-    ${soMoCoi ? `<div class="roster-canh-bao">${icon("clock")} ${soMoCoi} ca học không thuộc đợt đang mở (lớp đã tắt hoặc thuộc đợt khác) nhưng vẫn còn học sinh có đơn — vẫn liệt kê ở đây để không sót ai.</div>` : ""}
+    ${soMoCoi ? `<div class="roster-canh-bao">${icon("clock")} ${soMoCoi} lớp không thuộc đợt đang mở (lớp đã tắt hoặc thuộc đợt khác) nhưng vẫn còn học sinh có đơn — vẫn liệt kê ở đây để không sót ai.</div>` : ""}
     <div class="table-wrap"><table class="data-table roster-index">
       <thead><tr><th style="width:44px">#</th><th style="width:80px">Chi tiết</th>${cot.map((item) => `<th>${item.title}</th>`).join("")}</tr></thead>
       <tbody>${than}</tbody>
@@ -2336,7 +2338,7 @@ function renderRosterPager(trang, soTrang, moiTrang, tong) {
     else if (so[so.length - 1] !== "…") so.push("…");
   }
   return `<div class="roster-pager" data-no-print>
-    <span class="roster-note">Hiển thị ${Math.min(tong, (trang - 1) * moiTrang + 1)}–${Math.min(tong, trang * moiTrang)} trên ${tong} ca học</span>
+    <span class="roster-note">Hiển thị ${Math.min(tong, (trang - 1) * moiTrang + 1)}–${Math.min(tong, trang * moiTrang)} trên ${tong} lớp</span>
     <div class="roster-pager-nav">
       <button class="table-action" data-roster-page="${trang - 1}" ${trang <= 1 ? "disabled" : ""}>‹</button>
       ${so.map((i) => (i === "…"
@@ -2370,12 +2372,12 @@ function renderRosterDetail() {
   const ghiDanhSan = ca.moCoi ? 0 : Math.max(0, conSo(ca.enrolled) - soGiuCho);
   const [nhanCa, mauCa] = trangThaiCa(ca);
   const tab = state.rosterTab === "thong-tin" ? "thong-tin" : "hoc-sinh";
-  const dongLich = [ca.className || "Ca chính", ca.schedule, ca.room, ca.teacher].filter(Boolean).join(" · ");
+  const dongLich = [ca.className || "Lớp chính", ca.schedule, ca.room, ca.teacher].filter(Boolean).join(" · ");
 
   const than = tab === "thong-tin"
     ? `<div class="detail-grid">
         ${detailField("Câu lạc bộ", ca.name)}
-        ${detailField("Ca học", ca.className || "Ca chính")}
+        ${detailField("Lớp", ca.className || "Lớp chính")}
         ${detailField("Nhóm môn", ca.category)}
         ${detailField("Lịch học", ca.schedule)}
         ${detailField("Phòng học", ca.room)}
@@ -2390,7 +2392,7 @@ function renderRosterDetail() {
       ${ca.moCoi ? `<p class="roster-canh-bao">Ca này không còn trong đợt đang mở — lớp đã tắt hoặc thuộc đợt khác. Thông tin lấy từ chính các đơn của học sinh, nên không có sĩ số và học phí.</p>` : ""}`
     : renderRosterStudents(ca, rows, chiGiuCho, ghiDanhSan);
 
-  showModal(`<div class="modal-head"><div><span class="eyebrow">Chi tiết ca học</span>
+  showModal(`<div class="modal-head"><div><span class="eyebrow">Chi tiết lớp</span>
       <h2>${escapeHtml(ca.name)}</h2>
       <p class="roster-note">${escapeHtml(dongLich)}</p></div>
       <span class="badge badge-${mauCa}">${escapeHtml(nhanCa)}</span>
@@ -2468,7 +2470,7 @@ function renderRosterStudents(ca, rows, chiGiuCho, ghiDanhSan) {
 const KET_CUC_XEP_LOP = {
   xepDuoc: ["Xếp được", "green"],
   daCoDon: ["Đã có đơn — bỏ qua", "blue"],
-  chuaGhepCa: ["Chưa ghép ca học", "gold"],
+  chuaGhepCa: ["Chưa ghép lớp", "gold"],
   khongTimThayHocSinh: ["Không có mã học sinh", "red"],
   hocSinhNghiHoc: ["Học sinh đã nghỉ", "red"],
   trungGio: ["Trùng giờ với đơn cũ", "gold"],
@@ -2536,11 +2538,11 @@ function renderNhapDangKyPreview(preview, draft) {
   const nhanCa = (ca) => `${ca.nhan}${ca.lich ? ` · ${ca.lich}` : ""}${ca.khoi?.length ? ` · khối ${ca.khoi.join(", ")}` : ""}`;
   const xepDuoc = dem.xepDuoc || 0;
 
-  return `<section class="section panel"><div class="panel-head"><div><h3>2. Ghép ô chọn của Form với ca học</h3>
+  return `<section class="section panel"><div class="panel-head"><div><h3>2. Ghép ô chọn của Form với lớp</h3>
     <p>Google Form chỉ có ${preview.oChon.length} giá trị khác nhau cho ${preview.tongDong} dòng. Ghép một lần ở đây. CLB có nhiều ca thì chọn <b>theo khối của từng em</b>: em nào chỉ có một ca hợp khối thì vào ca đó, còn lại hai ca trở lên thì máy không chọn hộ mà báo ở bước 3.</p></div>
     ${chuaGhep ? `<span class="badge badge-gold">${chuaGhep} ô chưa ghép</span>` : `<span class="badge badge-green">Đã ghép đủ</span>`}</div>
     <div class="table-wrap"><table class="data-table">
-      <thead><tr><th>Ô chọn trong file</th><th style="width:90px">Số dòng</th><th>Ca học trong hệ thống</th></tr></thead>
+      <thead><tr><th>Ô chọn trong file</th><th style="width:90px">Số dòng</th><th>Lớp trong hệ thống</th></tr></thead>
       <tbody>${preview.oChon.map((item) => `<tr>
         <td><strong>${escapeHtml(item.mau)}</strong>${item.tuChon || !item.dich ? "" : `<br><span style="color:var(--muted)">${item.theoKhoi ? "máy chọn ca theo khối của từng em" : "máy ghép tự động"}</span>`}</td>
         <td>${item.soDong}</td>
@@ -2586,7 +2588,7 @@ function renderNhapDangKyPreview(preview, draft) {
       ? "Các em trong file đang được đếm ở ô <b>ghi danh sẵn ngoài hệ thống</b>. Nhập thành đơn mà không hạ con số đó xuống là <b>đếm hai lần</b>."
       : `Trạng thái <b>${escapeHtml(statusBadge(preview.trangThai)[0])}</b> KHÔNG giữ chỗ, nên lần nhập này không đụng tới sĩ số và không hạ ô ghi danh sẵn.`}</p></div></div>
     <div class="table-wrap"><table class="data-table">
-      <thead><tr><th>Ca học</th><th style="width:90px">Nhập vào</th><th>Ghi danh sẵn</th><th>Sĩ số nếu HẠ</th><th>Sĩ số nếu KHÔNG hạ</th></tr></thead>
+      <thead><tr><th>Lớp</th><th style="width:90px">Nhập vào</th><th>Ghi danh sẵn</th><th>Sĩ số nếu HẠ</th><th>Sĩ số nếu KHÔNG hạ</th></tr></thead>
       <tbody>${preview.caAnhHuong.map((ca) => `<tr>
         <td><strong>${escapeHtml(ca.nhan)}</strong></td>
         <td>${ca.soEmNhapVao} em</td>
@@ -2613,7 +2615,7 @@ function renderNhapDangKyPreview(preview, draft) {
       <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:13px">
         <button class="button button-primary" id="nhap-ghi" ${preview.sanSang ? "" : "disabled"}>Ghi ${xepDuoc} đơn vào hệ thống</button>
       </div>
-      ${preview.sanSang ? "" : `<p class="field-hint">${preview.filesHong ? "Còn file không đọc được." : "Chưa có dòng nào xếp được — hãy ghép ô chọn với ca học ở bước 2."}</p>`}
+      ${preview.sanSang ? "" : `<p class="field-hint">${preview.filesHong ? "Còn file không đọc được." : "Chưa có dòng nào xếp được — hãy ghép ô chọn với lớp học ở bước 2."}</p>`}
       <div id="nhap-error-2" class="form-error" role="alert"></div>
     </div>
   </section>`;
@@ -2711,7 +2713,7 @@ function bindNhapDangKy() {
       clubs = lopMoi.clubs;
       state.nhapDangKy = null;
       goTo("applications");
-      toast(`Đã tạo ${result.daTao} đơn và hạ ghi danh sẵn ở ${result.daHaBase} ca học.`, "success");
+      toast(`Đã tạo ${result.daTao} đơn và hạ ghi danh sẵn ở ${result.daHaBase} lớp.`, "success");
     } catch (error) { loi(error.message); button.disabled = false; }
   });
 }
@@ -3218,7 +3220,8 @@ function tenDot(periodId) {
 /** Một dòng lớp, thụt vào dưới CLB của nó. */
 function renderKhaiBaoLop(lop) {
   return `<tr class="kb-lop">
-    <td><span class="kb-thut">↳</span> <strong>${escapeHtml(lop.name || "Ca chính")}</strong>${lop.active === false ? ` <span class="badge badge-red">Ngừng mở</span>` : ""}</td>
+    <td><span class="kb-thut">↳</span> <strong>${escapeHtml(lop.name || "Lớp chính")}</strong>${lop.active === false ? ` <span class="badge badge-red">Ngừng mở</span>` : ""}
+      ${lop.code ? `<br><span class="kb-thut">&nbsp;&nbsp;</span><span class="roster-note">${escapeHtml(lop.code)}</span>` : ""}</td>
     <td>${escapeHtml(lop.scheduleLabel || "—")}</td>
     <td><span class="roster-note">${escapeHtml(tenDot(lop.periodId))}${lop.room ? ` · ${escapeHtml(lop.room)}` : ""}${lop.teacher ? ` · ${escapeHtml(lop.teacher)}` : ""}</span></td>
     <td><button class="table-action" data-kb-sua-lop="${escapeHtml(lop.id)}">Sửa lớp</button></td>
@@ -3333,7 +3336,7 @@ async function xoaNhomMon(nhomId, ten) {
 }
 
 async function xoaClbKhaiBao(clubId, ten) {
-  if (!confirm(`Xoá hẳn CLB "${ten}"?\n\nChỉ xoá được khi CLB chưa có ca học nào. Không hoàn lại được.`)) return;
+  if (!confirm(`Xoá hẳn CLB "${ten}"?\n\nChỉ xoá được khi CLB chưa có lớp nào. Không hoàn lại được.`)) return;
   try {
     await api(`/admin/clubs/${encodeURIComponent(clubId)}`, { method: "DELETE" });
     await taiKhaiBao();

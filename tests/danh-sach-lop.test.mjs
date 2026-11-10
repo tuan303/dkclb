@@ -359,11 +359,11 @@ test("tìm kiếm bỏ dấu được và tìm được cả tên học sinh", (
     clubs: CA_MAU, adminApplications: DON_MAU, state: { rosterSearch: tu },
   }).renderRosterResults();
 
-  assert.match(goTim("my thuat"), /Kết quả tra cứu: 1 ca học/, "gõ không dấu phải ra đúng ca");
+  assert.match(goTim("my thuat"), /Kết quả tra cứu: 1 lớp/, "gõ không dấu phải ra đúng ca");
   assert.match(goTim("my thuat"), /Mỹ thuật sáng tạo/);
-  assert.match(goTim("nguyen minh an"), /Kết quả tra cứu: 1 ca học/, "tìm theo tên học sinh");
+  assert.match(goTim("nguyen minh an"), /Kết quả tra cứu: 1 lớp/, "tìm theo tên học sinh");
   assert.match(goTim("nguyen minh an"), /Piano nhập môn/, "phải ra đúng ca của em ấy");
-  assert.match(goTim("khong-co-gi-khop"), /Kết quả tra cứu: 0 ca học/);
+  assert.match(goTim("khong-co-gi-khop"), /Kết quả tra cứu: 0 lớp/);
 });
 
 test("con số học sinh đi theo bảng đang hiện, không phải con số toàn hệ thống", () => {

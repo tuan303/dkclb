@@ -149,11 +149,11 @@ const EXPORT_QUERIES = {
     }),
   },
   clubClasses: {
-    sql: `SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label, grades, room,
+    sql: `SELECT id, club_id, period_id, name, code, day_of_week, start_time, end_time, schedule_label, grades, room,
       teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
       waitlist_enabled, sort_order, active FROM club_classes`,
     map: (row) => ({
-      id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "",
+      id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "", code: row.code || "",
       dayOfWeek: toInt(row.day_of_week), startTime: row.start_time, endTime: row.end_time,
       scheduleLabel: row.schedule_label, grades: jsonArray(row.grades), room: row.room, teacher: row.teacher,
       capacity: toInt(row.capacity), minCapacity: toInt(row.min_capacity), enrolledBase: toInt(row.enrolled_base),
@@ -284,6 +284,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
       ["club_classes", "so_buoi", "INT NOT NULL DEFAULT 0"],
       ["club_classes", "dang_tuyen", "TINYINT(1) NOT NULL DEFAULT 1"],
       ["club_classes", "nguong_sap_du", "INT NOT NULL DEFAULT 3"],
+      ["club_classes", "code", "VARCHAR(64) NOT NULL DEFAULT ''"],
     ];
     for (const [table, column, definition] of wanted) {
       const [rows] = await pool.query(
@@ -933,7 +934,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
     async adminCatalog() {
       const [clubRows, classRows, countRows] = await Promise.all([
         query("SELECT id, code, name, category, description, emoji, visual, grades, sort_order, active FROM clubs ORDER BY sort_order, category, name"),
-        query(`SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label, grades, room,
+        query(`SELECT id, club_id, period_id, name, code, day_of_week, start_time, end_time, schedule_label, grades, room,
           teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
           waitlist_enabled, sort_order, active
           FROM club_classes ORDER BY sort_order, day_of_week, start_time`),
@@ -952,7 +953,7 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
           sortOrder: toInt(row.sort_order), active: toBool(row.active),
         })),
         classes: classRows.map((row) => ({
-          id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "",
+          id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "", code: row.code || "",
           dayOfWeek: toInt(row.day_of_week), startTime: row.start_time, endTime: row.end_time,
           scheduleLabel: row.schedule_label, grades: jsonArray(row.grades), room: row.room, teacher: row.teacher,
           capacity: toInt(row.capacity), minCapacity: toInt(row.min_capacity), enrolledBase: toInt(row.enrolled_base),
@@ -1043,18 +1044,18 @@ export async function createMysqlStore({ url, seed = null, encryptionKey, schema
 
     async saveClass(classId, data, connection = null) {
       await (connection || pool).query(
-        `INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
+        `INSERT INTO club_classes (id, club_id, period_id, name, code, day_of_week, start_time, end_time, schedule_label,
           grades, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
           waitlist_enabled, sort_order, active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE club_id = VALUES(club_id), period_id = VALUES(period_id), name = VALUES(name),
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE club_id = VALUES(club_id), period_id = VALUES(period_id), name = VALUES(name), code = VALUES(code),
           day_of_week = VALUES(day_of_week), start_time = VALUES(start_time), end_time = VALUES(end_time),
           schedule_label = VALUES(schedule_label), grades = VALUES(grades), room = VALUES(room),
           teacher = VALUES(teacher), capacity = VALUES(capacity), min_capacity = VALUES(min_capacity),
           enrolled_base = VALUES(enrolled_base), fee = VALUES(fee), hoc_lieu = VALUES(hoc_lieu), so_buoi = VALUES(so_buoi),
           dang_tuyen = VALUES(dang_tuyen), nguong_sap_du = VALUES(nguong_sap_du), waitlist_enabled = VALUES(waitlist_enabled),
           sort_order = VALUES(sort_order), active = VALUES(active)`,
-        [classId, data.clubId, data.periodId, data.name || "", data.dayOfWeek, data.startTime, data.endTime,
+        [classId, data.clubId, data.periodId, data.name || "", data.code || "", data.dayOfWeek, data.startTime, data.endTime,
           data.scheduleLabel, JSON.stringify(data.grades || []), data.room, data.teacher, toInt(data.capacity),
           toInt(data.minCapacity), toInt(data.enrolledBase), toInt(data.fee), toInt(data.hocLieu), toInt(data.soBuoi),
           data.dangTuyen === false ? 0 : 1, data.nguongSapDu === undefined ? 3 : toInt(data.nguongSapDu),

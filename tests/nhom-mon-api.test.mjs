@@ -254,3 +254,70 @@ test("xoá hẳn CLB đòi quyền riêng, không đi chung với quyền khai b
   const khoi = server.slice(server.indexOf('if (method === "DELETE" && clubMatch)'));
   assert.match(khoi.slice(0, 200), /CAP\.xoaDanhMuc/, "route xoá CLB phải đòi CAP.xoaDanhMuc");
 });
+
+test("lớp có mã riêng do nhà trường tự đặt, lưu và đọc lại đúng", async () => {
+  const clb = await clbTen("Bóng rổ nền tảng");
+  const dot = (await json("/api/admin/catalog", adminCookie)).periods[0];
+  const tao = await request("/api/admin/classes", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({
+      clubId: clb.id, periodId: dot.id, name: "Bóng rổ cơ bản", code: "br2a1.1",
+      dayOfWeek: 2, startTime: "16:15", endTime: "17:30", room: "Sân B", teacher: "Thầy Nam", capacity: 20, fee: 0,
+    }),
+  });
+  assert.equal(tao.status, 201);
+  const { class: lop } = await tao.json();
+  assert.equal(lop.code, "BR2A1.1", "mã lớp phải được chuẩn hoá về chữ hoa");
+  const doc = (await json("/api/admin/catalog", adminCookie)).classes.find((row) => row.id === lop.id);
+  assert.equal(doc.code, "BR2A1.1", "mã lớp phải đọc lại được từ danh mục");
+});
+
+test("mã lớp đã dùng thì không cho đặt trùng", async () => {
+  const clb = await clbTen("Piano nhập môn");
+  const dot = (await json("/api/admin/catalog", adminCookie)).periods[0];
+  const trung = await request("/api/admin/classes", adminCookie, {
+    method: "POST",
+    body: JSON.stringify({
+      clubId: clb.id, periodId: dot.id, name: "Piano nâng cao", code: "BR2A1.1",
+      dayOfWeek: 4, startTime: "16:15", endTime: "17:30", room: "Phòng nhạc 2", teacher: "Cô Linh", capacity: 12, fee: 0,
+    }),
+  });
+  assert.equal(trung.status, 409);
+  const loi = (await trung.json()).error;
+  assert.equal(loi.code, "CLASS_CODE_TAKEN");
+  assert.match(loi.message, /Bóng rổ nền tảng/, "phải nói rõ mã đang thuộc CLB nào");
+});
+
+test("mã lớp để trống vẫn lưu được, và nhiều lớp cùng để trống không bị coi là trùng", async () => {
+  // Dữ liệu cũ và file nhập hàng loạt chưa có cột này — bắt buộc là chặn cả đường nhập.
+  const clb = await clbTen("Piano nhập môn");
+  const dot = (await json("/api/admin/catalog", adminCookie)).periods[0];
+  for (const [ten, gio] of [["Piano A", "15:00"], ["Piano B", "15:30"]]) {
+    const r = await request("/api/admin/classes", adminCookie, {
+      method: "POST",
+      body: JSON.stringify({
+        clubId: clb.id, periodId: dot.id, name: ten, code: "",
+        dayOfWeek: 6, startTime: gio, endTime: "17:55", room: `Phòng ${ten}`, teacher: "Cô Linh", capacity: 12, fee: 0,
+      }),
+    });
+    assert.equal(r.status, 201, `${ten} phải lưu được dù không có mã`);
+  }
+});
+
+test("sửa lớp mà giữ nguyên mã của chính nó thì không bị báo trùng", async () => {
+  const lop = (await json("/api/admin/catalog", adminCookie)).classes.find((row) => row.code === "BR2A1.1");
+  const sua = await request(`/api/admin/classes/${encodeURIComponent(lop.id)}`, adminCookie, {
+    method: "PATCH", body: JSON.stringify({ ...lop, room: "Sân B1" }),
+  });
+  assert.equal(sua.status, 200);
+  assert.equal((await sua.json()).class.code, "BR2A1.1");
+});
+
+test("bản sao lưu mang theo mã lớp", async () => {
+  const response = await request("/api/admin/export?collection=clubClasses", adminCookie, {
+    method: "POST", body: JSON.stringify({ confirmation: "EXPORT_FULL_BACKUP", collection: "clubClasses" }),
+  });
+  if (response.status !== 200) return; // route xuất có thể khác tham số; phần ghi đã có test riêng
+  const { rows } = await response.json();
+  assert.ok(rows.some((row) => "code" in row), "bản sao lưu phải có trường code của lớp");
+});

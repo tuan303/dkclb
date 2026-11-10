@@ -236,6 +236,10 @@ export function normalizeClassInput(input = {}, { existing = null, knownPeriodId
     clubId: requireText(input.clubId ?? existing?.clubId, "clubId", "CLB", { max: 80 }),
     periodId,
     name: optionalText(input.name ?? existing?.name ?? "", "name", "tên lớp", { max: 120 }),
+    // Mã lớp do nhà trường tự đặt (BD2A1.1, BD3A1CS...), KHÔNG tự sinh — họ đang
+    // mã hoá sẵn khối và ca vào đó theo quy ước riêng, máy đoán là đoán sai.
+    // Để trống được: dữ liệu nhập từ file cũ chưa có cột này.
+    code: optionalText(input.code ?? existing?.code ?? "", "code", "mã lớp", { max: 40 }).toUpperCase(),
     dayOfWeek,
     startTime,
     endTime,
@@ -269,6 +273,7 @@ const CATALOG_FIELD_ALIASES = {
   emoji: ["bieu tuong", "icon", "emoji"],
   grades: ["khoi", "khoi ap dung", "khoi lop", "doi tuong", "grade", "grades"],
   className: ["ten lop", "lop", "ca", "ca hoc", "nhom lop", "class", "class name"],
+  classCode: ["ma lop", "ma ca", "ma ca hoc", "class code", "ma lop clb"],
   day: ["thu", "ngay hoc", "thu trong tuan", "day", "weekday"],
   timeRange: ["khung gio", "gio hoc", "thoi gian", "time", "gio"],
   startTime: ["gio bat dau", "bat dau", "start", "start time", "tu"],
@@ -379,6 +384,7 @@ export function analyzeCatalogImport(rows = [], mapping = {}, { periodId = "", d
       clubKey: key,
       periodId,
       name: text(cellOf(row, mapping.className)),
+      code: text(cellOf(row, mapping.classCode)).toUpperCase(),
       grades,
       dayOfWeek: day,
       startTime,

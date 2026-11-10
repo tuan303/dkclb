@@ -138,7 +138,9 @@ Danh mục của trường có ba tầng: **Nhóm môn → Tên CLB → Tên l�
 
 Menu **Khai báo danh mục** (quyền `danh-muc`, giáo vụ trở lên) hiện đủ ba tầng và là nơi khai cấu trúc. Màn **CLB & lịch học** vẫn là nơi xếp lịch theo từng đợt. Hai màn dùng CHUNG bảng `clubs` và `club_classes`; tầng Lớp ở màn Khai báo gọi lại ĐÚNG form lớp của màn kia, nên mọi lá chắn (không hạ sĩ số dưới số chỗ đã dùng, không trùng phòng cùng khung giờ, không ngừng mở lớp đang có đơn) vẫn còn nguyên.
 
-Lớp **không** có mã tự sinh — nhà trường tự đặt tên lớp (ví dụ `BD2A1.1`, `BD3A1CS`). Mã CLB thì vẫn tự sinh từ tên khi để trống.
+Mỗi lớp có **Tên lớp** và **Mã lớp**, cả hai do nhà trường tự đặt — mã **không** tự sinh, vì họ đang mã hoá sẵn khối và ca vào đó theo quy ước riêng (`BD2A1.1`, `BD3A1CS`), máy đoán là đoán sai. Mã để trống được (dữ liệu cũ và file nhập hàng loạt chưa có cột này), nhưng đã đặt thì **không được trùng** với lớp nào khác; máy chủ trả 409 `CLASS_CODE_TAKEN` và nói rõ mã đang thuộc lớp nào của CLB nào. Riêng **mã CLB** thì vẫn tự sinh từ tên khi để trống.
+
+Từ 10/11/2026, giao diện quản trị gọi thống nhất là **lớp** thay cho "ca học"; cột "Mã lớp" cũng đọc được khi nhập danh mục từ Excel.
 
 **Nhóm môn** là bảng riêng `club_categories`, nhưng `clubs.category` **vẫn là chữ** chứ không đổi sang khoá ngoại: cổng phụ huynh lọc theo chữ, Dashboard gom theo chữ, file Excel nhập vào cũng mang chữ. Danh mục là lớp khai báo nằm trên dữ liệu chữ sẵn có.
 

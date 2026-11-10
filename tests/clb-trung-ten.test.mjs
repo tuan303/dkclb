@@ -163,7 +163,7 @@ test("dòng 'CLB chưa có lớp' không mời ẩn một CLB còn ca ở đợt
   const html = renderClasses();
   const conCa = html.slice(html.indexOf("CON-CA"), html.indexOf("</span></span>", html.indexOf("CON-CA")));
   const hetCa = html.slice(html.indexOf("HET-CA"), html.indexOf("</span></span>", html.indexOf("HET-CA")));
-  assert.match(conCa, /còn 1 ca ở đợt khác/);
+  assert.match(conCa, /còn 1 lớp ở đợt khác/);
   assert.doesNotMatch(conCa, /data-edit-club/);
   assert.match(hetCa, /data-edit-club="b"/);
 });

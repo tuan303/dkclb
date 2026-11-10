@@ -376,6 +376,7 @@ function initializeDatabase() {
       club_id TEXT NOT NULL REFERENCES clubs(id),
       period_id TEXT NOT NULL REFERENCES registration_periods(id),
       name TEXT NOT NULL DEFAULT '',
+      code TEXT NOT NULL DEFAULT '',
       min_capacity INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
       day_of_week INTEGER NOT NULL,
@@ -474,6 +475,7 @@ function initializeDatabase() {
   ensureColumn("club_classes", "so_buoi", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("club_classes", "dang_tuyen", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("club_classes", "nguong_sap_du", "INTEGER NOT NULL DEFAULT 3");
+  ensureColumn("club_classes", "code", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("users", "activation_code", "TEXT");
   ensureColumn("users", "last_login_at", "TEXT");
   widenUserRoleConstraint();
@@ -1818,7 +1820,8 @@ async function adminCatalogData() {
         sortOrder: asInt(club.sortOrder), active: club.active !== false,
       })),
       classes: catalog.classes.map((row) => ({
-        id: row.id, clubId: row.clubId, periodId: row.periodId, name: row.name || "", dayOfWeek: asInt(row.dayOfWeek),
+        id: row.id, clubId: row.clubId, periodId: row.periodId, name: row.name || "", code: row.code || "",
+        dayOfWeek: asInt(row.dayOfWeek),
         startTime: row.startTime, endTime: row.endTime, scheduleLabel: row.scheduleLabel, room: row.room, teacher: row.teacher,
         capacity: asInt(row.capacity), minCapacity: asInt(row.minCapacity), enrolledBase: asInt(row.enrolledBase),
         grades: Array.isArray(row.grades) ? row.grades : [],
@@ -1842,7 +1845,7 @@ async function adminCatalogData() {
     COALESCE(SUM(CASE WHEN r.status IN (${PENDING_SEAT_SQL}) THEN 1 ELSE 0 END), 0) AS pendingRegistrations
     FROM club_classes cc LEFT JOIN registrations r ON r.class_id = cc.id GROUP BY cc.id`).all()
     .map((row) => [row.id, { held: asInt(row.activeRegistrations), pending: asInt(row.pendingRegistrations) }]));
-  const classes = db.prepare(`SELECT id, club_id AS clubId, period_id AS periodId, name, day_of_week AS dayOfWeek,
+  const classes = db.prepare(`SELECT id, club_id AS clubId, period_id AS periodId, name, code, day_of_week AS dayOfWeek,
     start_time AS startTime, end_time AS endTime, schedule_label AS scheduleLabel, room, teacher, capacity,
     min_capacity AS minCapacity, enrolled_base AS enrolledBase, fee, hoc_lieu AS hocLieu, so_buoi AS soBuoi,
     dang_tuyen AS dangTuyen, nguong_sap_du AS nguongSapDu, waitlist_enabled AS waitlistEnabled,
@@ -2105,6 +2108,17 @@ async function saveClassRecord({ actorUserId, classId, input }) {
     if (clubCu?.grades?.length) data.grades = [...clubCu.grades];
   }
   const targetId = classId || id("class");
+  // Mã lớp để trống được (dữ liệu cũ và file nhập chưa có cột này), nhưng đã đặt thì
+  // phải là duy nhất — nó là thứ giáo vụ dùng để gọi tên một lớp trong file Excel và
+  // trên giấy điểm danh. Hai lớp cùng mã là hai lần nhầm người.
+  if (data.code) {
+    const trungMa = catalog.classes.find((row) => row.id !== targetId && String(row.code || "").toUpperCase() === data.code);
+    if (trungMa) {
+      const clbTrung = catalog.clubs.find((item) => item.id === trungMa.clubId);
+      throw httpError(409, "CLASS_CODE_TAKEN",
+        `Mã lớp "${data.code}" đã dùng cho lớp "${trungMa.name || "Ca chính"}" của CLB "${clbTrung?.name || trungMa.clubId}".`);
+    }
+  }
   const held = existing ? existing.activeRegistrations : 0;
   const pending = existing ? (existing.pendingRegistrations || 0) : 0;
   const occupied = data.enrolledBase + held;
@@ -2128,20 +2142,20 @@ async function saveClassRecord({ actorUserId, classId, input }) {
   if (businessStore) {
     await businessStore.saveClass(targetId, data);
   } else if (existing) {
-    db.prepare(`UPDATE club_classes SET club_id = ?, period_id = ?, name = ?, day_of_week = ?, start_time = ?, end_time = ?,
+    db.prepare(`UPDATE club_classes SET club_id = ?, period_id = ?, name = ?, code = ?, day_of_week = ?, start_time = ?, end_time = ?,
       schedule_label = ?, grades_json = ?, room = ?, teacher = ?, capacity = ?, min_capacity = ?, enrolled_base = ?, fee = ?,
       hoc_lieu = ?, so_buoi = ?, dang_tuyen = ?, nguong_sap_du = ?,
       waitlist_enabled = ?, sort_order = ?, active = ? WHERE id = ?`)
-      .run(data.clubId, data.periodId, data.name, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
+      .run(data.clubId, data.periodId, data.name, data.code, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
         JSON.stringify(data.grades), data.room, data.teacher, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
         data.hocLieu, data.soBuoi, data.dangTuyen ? 1 : 0, data.nguongSapDu,
         data.waitlistEnabled ? 1 : 0, data.sortOrder, data.active ? 1 : 0, targetId);
   } else {
-    db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
+    db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, code, day_of_week, start_time, end_time, schedule_label,
       grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
       waitlist_enabled, sort_order, active)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(targetId, data.clubId, data.periodId, data.name, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(targetId, data.clubId, data.periodId, data.name, data.code, data.dayOfWeek, data.startTime, data.endTime, data.scheduleLabel,
         JSON.stringify(data.grades), data.room, data.teacher, data.capacity, data.minCapacity, data.enrolledBase, data.fee,
         data.hocLieu, data.soBuoi, data.dangTuyen ? 1 : 0, data.nguongSapDu,
         data.waitlistEnabled ? 1 : 0, data.sortOrder, data.active ? 1 : 0);
@@ -2293,11 +2307,11 @@ async function commitCatalogImport({ actorUserId, analysis, periodId }) {
               item.data.minCapacity, item.data.enrolledBase, item.data.fee, item.data.hocLieu, item.data.soBuoi,
               item.data.dangTuyen ? 1 : 0, item.data.nguongSapDu, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder, item.id);
         } else {
-          db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, day_of_week, start_time, end_time,
+          db.prepare(`INSERT INTO club_classes (id, club_id, period_id, name, code, day_of_week, start_time, end_time,
             schedule_label, grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi,
             dang_tuyen, nguong_sap_du, waitlist_enabled, sort_order, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
-            .run(item.id, item.data.clubId, item.data.periodId, item.data.name, item.data.dayOfWeek, item.data.startTime,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
+            .run(item.id, item.data.clubId, item.data.periodId, item.data.name, item.data.code || "", item.data.dayOfWeek, item.data.startTime,
               item.data.endTime, item.data.scheduleLabel, JSON.stringify(item.data.grades), item.data.room, item.data.teacher, item.data.capacity,
               item.data.minCapacity, item.data.enrolledBase, item.data.fee, item.data.hocLieu, item.data.soBuoi,
               item.data.dangTuyen ? 1 : 0, item.data.nguongSapDu, item.data.waitlistEnabled ? 1 : 0, item.data.sortOrder);
@@ -2674,10 +2688,10 @@ function sqliteBackupData() {
       })),
     clubClasses: all(`SELECT id, club_id, period_id, name, day_of_week, start_time, end_time, schedule_label,
       grades_json, room, teacher, capacity, min_capacity, enrolled_base, fee, hoc_lieu, so_buoi, dang_tuyen, nguong_sap_du,
-      waitlist_enabled, sort_order, active
+      waitlist_enabled, sort_order, active, code
       FROM club_classes`)
       .map((row) => ({
-        id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "",
+        id: row.id, clubId: row.club_id, periodId: row.period_id, name: row.name || "", code: row.code || "",
         dayOfWeek: asInt(row.day_of_week), startTime: row.start_time, endTime: row.end_time,
         scheduleLabel: row.schedule_label, grades: parseJsonField(row.grades_json, []),
         room: row.room, teacher: row.teacher, capacity: asInt(row.capacity), minCapacity: asInt(row.min_capacity),

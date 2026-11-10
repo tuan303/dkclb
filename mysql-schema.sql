@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS club_categories (
 
 CREATE TABLE IF NOT EXISTS club_classes (
   id              VARCHAR(64)  NOT NULL,
+  code            VARCHAR(64)  NOT NULL DEFAULT '',
   club_id         VARCHAR(64)  NOT NULL,
   period_id       VARCHAR(64)  NOT NULL,
   name            VARCHAR(120) NOT NULL DEFAULT '',
