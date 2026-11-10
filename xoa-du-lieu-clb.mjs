@@ -2,7 +2,8 @@
 // Xoá dữ liệu CLB đã cấu hình và đơn đăng ký của học sinh, để khai báo lại từ đầu.
 //
 // XOÁ:   registrations (đơn đăng ký) → club_classes (ca học) → clubs (CLB).
-// GIỮ:   students (danh bạ học sinh), users + parent_students (tài khoản phụ huynh,
+// GIỮ:   club_categories (danh mục nhóm môn đã khai báo — xoá CLB không có nghĩa là
+//        phải gõ lại bốn nhóm môn), students (danh bạ học sinh), users + parent_students (tài khoản phụ huynh,
 //        mật khẩu đã đặt vẫn dùng được), registration_periods (đợt đăng ký),
 //        tài khoản nhà trường, audit_logs (nhật ký, kể cả nhật ký của dữ liệu vừa xoá).
 //

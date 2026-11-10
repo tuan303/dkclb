@@ -34,6 +34,7 @@ function nap({ khoi = 2, filters = {}, nhomMonSapXep = [] } = {}) {
   const nguon = [
     catDong("const escapeHtml = "),
     catDong("const boDau = "),
+    catDong("const khoaNhomMon = "),
     ...["eligibleClubs", "nhomClbCuaEm", "thuTuNhomMon", "nhomDangLoc", "clubsTruocLocNhom", "filteredClubs", "renderLocNhomClb"].map(catHam),
     "return { eligibleClubs, nhomClbCuaEm, nhomDangLoc, filteredClubs, renderLocNhomClb, clubsTruocLocNhom };",
   ].join("\n");
@@ -90,6 +91,7 @@ test("tên nhóm được thoát HTML trong nút lọc", () => {
   const nguon = [
     catDong("const escapeHtml = "),
     catDong("const boDau = "),
+    catDong("const khoaNhomMon = "),
     ...["eligibleClubs", "nhomClbCuaEm", "thuTuNhomMon", "nhomDangLoc", "renderLocNhomClb"].map(catHam),
     "return renderLocNhomClb;",
   ].join("\n");

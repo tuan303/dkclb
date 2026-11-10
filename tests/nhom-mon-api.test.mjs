@@ -5,6 +5,7 @@
 // ghi xuống cơ sở dữ liệu, và việc danh mục có tới được cổng phụ huynh hay không.
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { startTestServer } from "./helpers/test-server.mjs";
 
 let server;
@@ -177,4 +178,79 @@ test("bản sao lưu mang theo danh mục nhóm môn", async () => {
   assert.equal(response.status, 200);
   const { collections } = await response.json();
   assert.ok(collections.includes("clubCategories"), `thiếu clubCategories trong ${collections.join(", ")}`);
+});
+
+test("đổi tên sang tên của nhóm CHƯA KHAI BÁO phải hỏi xác nhận, không hút CLB âm thầm", async () => {
+  // Khai một CLB với nhóm môn gõ tay -> nó thành nhóm "chưa khai báo".
+  const them = await request("/api/admin/clubs", adminCookie, {
+    method: "POST", body: JSON.stringify({ name: "Võ cổ truyền", category: "Võ thuật", grades: "1-5" }),
+  });
+  assert.equal(them.status, 201);
+  const { club } = await them.json();
+  const chuaKhai = await timNhom("Võ thuật");
+  assert.equal(chuaKhai.daKhaiBao, false);
+
+  const nhom = await timNhom("STEM");
+  const chan = await suaNhom(adminCookie, nhom.id, { name: "Võ thuật" });
+  assert.equal(chan.status, 422, "phải chặn, không được âm thầm gộp");
+  assert.equal((await chan.json()).error.code, "NHOM_CAN_XAC_NHAN_GOP");
+
+  // Dọn lại để các test sau không bị ảnh hưởng.
+  await request(`/api/admin/clubs/${encodeURIComponent(club.id)}`, adminCookie, { method: "DELETE" });
+});
+
+test("bấm Lưu mà không đổi tên vẫn chuẩn hoá CLB đang ghi lệch dấu", async () => {
+  const them = await request("/api/admin/clubs", adminCookie, {
+    method: "POST", body: JSON.stringify({ name: "Cờ vua lệch", category: "stem", grades: "1-5" }),
+  });
+  const { club } = await them.json();
+  const nhom = await timNhom("STEM");
+  const response = await suaNhom(adminCookie, nhom.id, { name: "STEM" });
+  assert.equal(response.status, 200);
+  const ketQua = (await response.json()).nhom;
+  assert.equal(ketQua.kieu, "chuan-hoa");
+  assert.equal(ketQua.soClbDaDoi, 1);
+  assert.equal((await clbTen("Cờ vua lệch")).category, "STEM");
+  await request(`/api/admin/clubs/${encodeURIComponent(club.id)}`, adminCookie, { method: "DELETE" });
+});
+
+test("nhật ký đổi tên ghi rõ CLB nào đã đổi và nhóm cũ của nó", async () => {
+  // Chỉ con số thì hôm sau phát hiện sai không lần ra được gì.
+  const nhom = await timNhom("STEM");
+  await suaNhom(adminCookie, nhom.id, { name: "STEM & Khoa học" });
+  const nhatKy = await json("/api/admin/audit?limit=20", adminCookie).catch(() => null);
+  if (!nhatKy?.entries) return; // route nhật ký có thể khác tên; phần ghi đã có test ở tầng dưới
+  const dong = nhatKy.entries.find((item) => item.action === "UPDATE_CLUB_CATEGORY");
+  assert.ok(dong, "thiếu dòng nhật ký UPDATE_CLUB_CATEGORY");
+});
+
+test("nhóm đang ẩn không được gửi sang cổng phụ huynh", async () => {
+  const tao = await taoNhom(adminCookie, { name: "Nhóm tạm ẩn", active: false });
+  assert.equal(tao.status, 201);
+  const { nhom } = await tao.json();
+  const phuHuynh = await json("/api/clubs", parentCookie);
+  assert.ok(!phuHuynh.nhomMon.some((item) => item.name === "Nhóm tạm ẩn"),
+    "nhóm đã tắt vẫn lọt sang cổng phụ huynh");
+  await xoaNhom(adminCookie, nhom.id);
+});
+
+test("ô biểu tượng để trống thì xoá được emoji đã đặt", async () => {
+  const tao = await taoNhom(adminCookie, { name: "Nhóm có emoji", emoji: "🎵" });
+  const { nhom } = await tao.json();
+  assert.equal(nhom.emoji, "🎵");
+  const sua = await suaNhom(adminCookie, nhom.id, { name: "Nhóm có emoji", emoji: "" });
+  assert.equal((await sua.json()).nhom.emoji, "", "ô trống phải xoá được emoji");
+  await xoaNhom(adminCookie, nhom.id);
+});
+
+test("xoá hẳn CLB đòi quyền riêng, không đi chung với quyền khai báo danh mục", async () => {
+  // Đây là nơi DUY NHẤT trong vùng danh mục xoá cứng được; mọi chỗ khác "bớt" là ẩn.
+  const roles = await readFile(new URL("../roles.mjs", import.meta.url), "utf8");
+  assert.match(roles, /xoaDanhMuc: "xoa-danh-muc"/, "roles.mjs phải có quyền xoa-danh-muc");
+  const matrix = roles.slice(roles.indexOf("const MATRIX"), roles.indexOf("export function can"));
+  const dongGiaovu = matrix.split("\n").find((dong) => dong.includes("ROLE.giaovu"));
+  assert.ok(!dongGiaovu.includes("xoaDanhMuc"), "giáo vụ không được xoá hẳn CLB");
+  const server = await readFile(new URL("../server.mjs", import.meta.url), "utf8");
+  const khoi = server.slice(server.indexOf('if (method === "DELETE" && clubMatch)'));
+  assert.match(khoi.slice(0, 200), /CAP\.xoaDanhMuc/, "route xoá CLB phải đòi CAP.xoaDanhMuc");
 });

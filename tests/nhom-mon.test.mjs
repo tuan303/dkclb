@@ -6,9 +6,10 @@
 // trong danh mục. Vì vậy mọi nhánh của lapKeHoachDoiTen đều có test riêng.
 import { strict as assert } from "node:assert";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import {
-  MAX_SO_NHOM, chuanHoaTenNhom, clbTheoNhom, docYeuCauNhom, ghepDanhMucNhom, khoaNhom,
-  kiemTrungKhiTao, lapKeHoachDoiTen, lapKeHoachXoa, nhomTuClubs, timNhomTrung,
+  MAX_SO_NHOM, chuanHoaTenNhom, clbLechChinhTa, clbTheoNhom, docYeuCauNhom, ghepDanhMucNhom,
+  khoaNhom, kiemTrungKhiTao, lapKeHoachDoiTen, lapKeHoachXoa, nhomTuClubs, timNhomTrung,
 } from "../nhom-mon.mjs";
 
 const nhom = (id, name, extra = {}) => ({ id, name, sortOrder: 0, active: true, ...extra });
@@ -157,4 +158,72 @@ test("tìm nhóm trùng bỏ qua chính nó khi đang sửa", () => {
 test("không tìm thấy nhóm thì báo rõ thay vì ném lỗi khó hiểu", () => {
   assert.throws(() => lapKeHoachDoiTen({ nhom: null, tenMoi: "A" }), { code: "NHOM_NOT_FOUND" });
   assert.throws(() => lapKeHoachXoa({ nhom: null }), { code: "NHOM_NOT_FOUND" });
+});
+
+test("tên y hệt nhưng có CLB ghi lệch dấu thì bấm Lưu vẫn phải chuẩn hoá", () => {
+  // Nếu nhánh này trả clubIds rỗng thì người dùng KHÔNG có cách nào sửa: màn Khai báo
+  // hiện một nhóm duy nhất, mà cổng phụ huynh lại hiện hai nút lọc gần giống nhau.
+  const clubs = [clb("c1", "Bóng đá", "Thể thao"), clb("c2", "Bóng rổ", "THỂ THAO")];
+  const keHoach = lapKeHoachDoiTen({ nhom: BON_NHOM[0], tenMoi: "Thể thao", clubs, danhSach: BON_NHOM });
+  assert.equal(keHoach.kieu, "chuan-hoa");
+  assert.deepEqual(keHoach.clubIds, ["c2"], "chỉ ghi lại CLB đang lệch, không ghi lại CLB đã đúng");
+});
+
+test("tên y hệt và mọi CLB đã ghi đúng thì không đụng gì", () => {
+  const clubs = [clb("c1", "Bóng đá", "Thể thao")];
+  const keHoach = lapKeHoachDoiTen({ nhom: BON_NHOM[0], tenMoi: "Thể thao", clubs, danhSach: BON_NHOM });
+  assert.equal(keHoach.kieu, "khong-doi");
+  assert.deepEqual(keHoach.clubIds, []);
+});
+
+test("đổi tên sang tên của nhóm CHƯA KHAI BÁO cũng là gộp, phải xác nhận", () => {
+  // Nhóm chưa khai báo không có dòng trong danh mục nhưng vẫn là một nhóm thật đang
+  // có CLB. Bỏ qua nó là hút CLB của người khác vào mà không ai được hỏi.
+  const clubs = [clb("c1", "Bóng đá", "Thể thao"), clb("c9", "Võ cổ truyền", "Võ thuật")];
+  const daGhep = ghepDanhMucNhom(BON_NHOM, clubs);
+  assert.throws(
+    () => lapKeHoachDoiTen({ nhom: BON_NHOM[0], tenMoi: "Võ thuật", clubs, danhSach: daGhep }),
+    (error) => error.code === "NHOM_CAN_XAC_NHAN_GOP" && error.message.includes("chưa khai báo"),
+  );
+  const keHoach = lapKeHoachDoiTen({ nhom: BON_NHOM[0], tenMoi: "Võ thuật", clubs, danhSach: daGhep, choPhepGop: true });
+  assert.equal(keHoach.kieu, "gop");
+  assert.equal(keHoach.gopVaoId, null, "nhóm đích chưa khai báo thì không có dòng nào để xoá");
+  assert.deepEqual(keHoach.clubIds, ["c1"], "CLB của nhóm đích đã ghi đúng chữ, không cần ghi lại");
+});
+
+test("gộp cũng chuẩn hoá luôn CLB của nhóm đích đang ghi lệch dấu", () => {
+  const clubs = [clb("c1", "Bóng đá", "Thể thao"), clb("c5", "Cờ vua", "HỌC THUẬT")];
+  const keHoach = lapKeHoachDoiTen({ nhom: BON_NHOM[0], tenMoi: "Học thuật", clubs, danhSach: BON_NHOM, choPhepGop: true });
+  assert.deepEqual(keHoach.clubIds.sort(), ["c1", "c5"]);
+  assert.equal(keHoach.soClbChuyen, 1, "câu báo cho người dùng chỉ đếm CLB thật sự CHUYỂN nhóm");
+});
+
+test("câu xác nhận gộp nói rõ khi nhóm đích đang ẩn", () => {
+  const danhSach = [BON_NHOM[0], { ...BON_NHOM[3], active: false }];
+  assert.throws(
+    () => lapKeHoachDoiTen({ nhom: BON_NHOM[0], tenMoi: "Học thuật", clubs: [], danhSach }),
+    (error) => error.message.includes("đang ẩn"),
+  );
+});
+
+test("clbLechChinhTa chỉ nhặt CLB cùng nhóm nhưng khác chuỗi", () => {
+  const clubs = [clb("c1", "A", "Thể thao"), clb("c2", "B", "thể thao"), clb("c3", "C", "Nghệ thuật")];
+  assert.deepEqual(clbLechChinhTa("Thể thao", clubs).map((club) => club.id), ["c2"]);
+});
+
+test("bản sao khoá nhóm môn trong app.js khớp từng ký tự với khoaNhom", async () => {
+  // app.js nạp bằng thẻ <script> thường nên không import được nhom-mon.mjs. Hai bản
+  // lệch nhau thì máy chủ gom hai cách viết thành một nhóm còn bảng quản trị tách
+  // thành hai khối — đếm lệch nhau ngay trên cùng một màn hình.
+  const app = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const dau = app.indexOf("const khoaNhomMon = ");
+  assert.ok(dau > 0, "public/app.js không còn khoaNhomMon");
+  const nguon = app.slice(dau, app.indexOf(";", app.indexOf(".trim()", dau)) + 1);
+  const banTrinhDuyet = new Function(`${nguon} return khoaNhomMon;`)();
+  for (const mau of [
+    "Thể thao", "THỂ THAO", "Kỹ năng & Công nghệ", "Kỹ năng - Công nghệ", "Nghệ Thuật",
+    "Học thuật", "  nhiều   dấu  cách  ", "Đá cầu", "", null, undefined, "***",
+  ]) {
+    assert.equal(banTrinhDuyet(mau), khoaNhom(mau), `lệch ở "${mau}"`);
+  }
 });

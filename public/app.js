@@ -629,8 +629,8 @@ function nhomClbCuaEm() {
 
 /** Thứ tự đã khai báo của một nhóm môn; chưa khai báo thì đứng sau tất cả. */
 function thuTuNhomMon(ten) {
-  const khoa = boDau(ten);
-  const nhom = (state.nhomMonSapXep || []).find((item) => boDau(item.name) === khoa);
+  const khoa = khoaNhomMon(ten);
+  const nhom = (state.nhomMonSapXep || []).find((item) => khoaNhomMon(item.name) === khoa);
   return nhom ? Number(nhom.sortOrder) || 0 : Number.MAX_SAFE_INTEGER;
 }
 
@@ -3076,6 +3076,23 @@ function bindSuaLienHe(hocSinh) {
 // Phân vai: màn này trả lời "trường có những CLB nào, thuộc nhóm nào"; màn
 // "CLB & lịch học" trả lời "mỗi CLB mở những ca nào, ai dạy, phòng nào, bao nhiêu chỗ".
 
+/**
+ * Bản sao của khoaNhom trong nhom-mon.mjs (vốn là normalizeHeader) cho phía trình
+ * duyệt: app.js nạp bằng thẻ <script> thường nên không import được.
+ *
+ * Phải GIỐNG HỆT bản máy chủ. Dùng boDau (chỉ bỏ dấu, giữ nguyên "&", "-") thì máy
+ * chủ gom "Kỹ năng & Công nghệ" với "Kỹ năng - Công nghệ" thành một nhóm, còn bảng
+ * ở đây tách thành hai khối — hai phía đếm lệch nhau ngay trên cùng một màn hình.
+ * tests/nhom-mon.test.mjs so hai bản với nhau.
+ */
+const khoaNhomMon = (value) => String(value ?? "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .replace(/đ/gi, "d")
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, " ")
+  .trim();
+
 function khaiBaoState() {
   state.khaiBao = state.khaiBao || null;
   return state.khaiBao;
@@ -3089,9 +3106,12 @@ function khaiBaoState() {
  * dễ lưu đè mất nhóm cũ. Đây cũng là lý do ô này vẫn là input chứ không phải select.
  */
 function oNhomMonGoiY(hienTai = "") {
-  const ten = (state.catalog?.nhomMon || []).map((nhom) => nhom.name);
+  const ten = (state.catalog?.nhomMon || [])
+    // Nhóm đã tắt "Dùng khi khai báo CLB" thì không gợi ý nữa — đó là ý nghĩa của ô đó.
+    .filter((nhom) => nhom.active !== false)
+    .map((nhom) => nhom.name);
   if (!ten.length) ten.push(...CATEGORY_SUGGESTIONS);
-  const co = ten.some((item) => boDau(item) === boDau(hienTai));
+  const co = ten.some((item) => khoaNhomMon(item) === khoaNhomMon(hienTai));
   const danhSach = hienTai && !co ? [hienTai, ...ten] : ten;
   return danhSach.map((item) => `<option value="${escapeHtml(item)}"></option>`).join("");
 }
@@ -3140,13 +3160,19 @@ function renderKhaiBaoClb() {
   if (!kb || kb.loi) return `<div class="panel-body"><p class="field-hint">Đang tải danh sách CLB…</p></div>`;
   const { clubs, nhomMon } = kb;
   const theoNhom = new Map();
+  const tenGoc = new Map();
   for (const club of clubs) {
-    const khoa = boDau(club.category || "");
+    const khoa = khoaNhomMon(club.category || "");
     if (!theoNhom.has(khoa)) theoNhom.set(khoa, []);
     theoNhom.get(khoa).push(club);
+    // Nhãn hiển thị là chuỗi NGUYÊN VĂN của CLB đầu tiên gặp được, không phải chuỗi
+    // khoá đã bỏ dấu — in khoá ra màn hình thì người dùng đọc thấy "ky nang cong nghe".
+    if (!tenGoc.has(khoa)) tenGoc.set(khoa, String(club.category || "").trim());
   }
-  const thuTuNhom = nhomMon.map((nhom) => [boDau(nhom.name), nhom.name]);
-  for (const [khoa] of theoNhom) if (!thuTuNhom.some(([k]) => k === khoa)) thuTuNhom.push([khoa, khoa || "Chưa có nhóm môn"]);
+  const thuTuNhom = nhomMon.map((nhom) => [khoaNhomMon(nhom.name), nhom.name]);
+  for (const [khoa] of theoNhom) {
+    if (!thuTuNhom.some(([k]) => k === khoa)) thuTuNhom.push([khoa, tenGoc.get(khoa) || "Chưa có nhóm môn"]);
+  }
 
   const khoi = thuTuNhom.map(([khoa, ten]) => {
     const ds = (theoNhom.get(khoa) || []).slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "vi"));
@@ -3189,7 +3215,8 @@ async function taiKhaiBao() {
   dangTaiKhaiBao = true;
   try {
     const [duLieu] = await Promise.all([api("/admin/nhom-mon"), refreshCatalog()]);
-    state.khaiBao = { nhomMon: duLieu.nhomMon, clubs: duLieu.clubs };
+    // CLB lấy từ state.catalog (refreshCatalog vừa nạp), không đọc lần hai.
+    state.khaiBao = { nhomMon: duLieu.nhomMon, clubs: state.catalog?.clubs || [] };
   } catch (error) {
     state.khaiBao = { nhomMon: [], clubs: [], loi: error.message };
     toast(error.message, "error");
@@ -3241,31 +3268,33 @@ function moFormNhomMon(nhomId, tenGoiY = "") {
     <div class="modal-foot"><button class="button button-secondary" data-close-modal>Hủy</button>
     <button class="button button-primary" data-submit-nhom="${escapeHtml(nhomId || "")}">${nhom ? "Lưu thay đổi" : "Khai báo"}</button></div>`);
 
-  const gui = (gopNhom = false) => {
-    const button = $("[data-submit-nhom]");
+  const guiThat = async (gopNhom) => {
+    const targetId = $("[data-submit-nhom]").dataset.submitNhom;
     const form = readForm("nhom-form");
-    const targetId = button.dataset.submitNhom;
-    return withBusyButton(button, "Đang lưu…", async () => {
-      const { nhom: daLuu } = await api(targetId ? `/admin/nhom-mon/${encodeURIComponent(targetId)}` : "/admin/nhom-mon", {
-        method: targetId ? "PATCH" : "POST",
-        body: JSON.stringify({ ...form, sortOrder: Number(form.sortOrder || 0), gopNhom }),
-      });
-      closeModal();
-      await taiKhaiBao();
-      const them = daLuu.soClbDaDoi ? ` ${daLuu.soClbDaDoi} CLB đã đổi theo.` : "";
-      toast(daLuu.kieu === "gop" ? `Đã gộp vào nhóm "${daLuu.name}".${them}` : `Đã lưu nhóm "${daLuu.name}".${them}`, "success");
+    const { nhom: daLuu } = await api(targetId ? `/admin/nhom-mon/${encodeURIComponent(targetId)}` : "/admin/nhom-mon", {
+      method: targetId ? "PATCH" : "POST",
+      body: JSON.stringify({ ...form, sortOrder: Number(form.sortOrder || 0), gopNhom }),
     });
+    closeModal();
+    await taiKhaiBao();
+    const them = daLuu.soClbDaDoi ? ` ${daLuu.soClbDaDoi} CLB đã đổi theo.` : "";
+    toast(daLuu.kieu === "gop" ? `Đã gộp vào nhóm "${daLuu.name}".${them}` : `Đã lưu nhóm "${daLuu.name}".${them}`, "success");
   };
 
-  $("[data-submit-nhom]").addEventListener("click", async () => {
+  // Hỏi gộp phải nằm TRONG action của withBusyButton: withBusyButton bắt lỗi và
+  // không ném lại, nên try/catch bọc ngoài nó không bao giờ chạy — cả đường gộp sẽ
+  // thành mã chết, người dùng chỉ nhận một toast đỏ và không có cách nào đi tiếp.
+  $("[data-submit-nhom]").addEventListener("click", (event) => withBusyButton(event.currentTarget, "Đang lưu…", async () => {
     try {
-      await gui(false);
+      await guiThat(false);
     } catch (error) {
-      // Trùng tên với một nhóm khác là chuyện GỘP, không tự làm thay người dùng.
       if (error.code !== "NHOM_CAN_XAC_NHAN_GOP") throw error;
-      if (confirm(`${error.message}\n\nTiếp tục gộp?`)) await gui(true);
+      // Bấm Huỷ thì ném lại chính lỗi đó: withBusyButton chỉ bật lại nút ở nhánh lỗi,
+      // nên "return" lặng lẽ sẽ để hộp thoại mở với một cái nút Lưu chết.
+      if (!confirm(`${error.message}\n\nTiếp tục gộp?`)) throw error;
+      await guiThat(true);
     }
-  });
+  }));
   $("#nhom-form").addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); $("[data-submit-nhom]").click(); }
   });

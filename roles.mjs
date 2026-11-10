@@ -42,6 +42,10 @@ export const CAP = {
   dongBoDanhBa: "dong-bo-danh-ba",
   duyetDon: "duyet-don",
   danhMuc: "danh-muc",
+  // Xoá HẲN một CLB khỏi cơ sở dữ liệu. Tách khỏi danh-muc vì đây là nơi duy nhất
+  // trong vùng danh mục xoá cứng được: mọi chỗ khác "bớt" đều là ẩn (active = 0).
+  // Giáo vụ khai báo danh mục hằng ngày, nhưng xoá vĩnh viễn thì không.
+  xoaDanhMuc: "xoa-danh-muc",
   baoCao: "bao-cao",
   // Tra cứu vì sao một phụ huynh không đăng nhập được: chỉ đọc trạng thái, KHÔNG
   // thấy mã kích hoạt.
@@ -62,7 +66,7 @@ const ALL_CAPS = Object.values(CAP);
 // KHÔNG quản lý tài khoản nhà trường.
 const MATRIX = {
   [ROLE.superadmin]: ALL_CAPS,
-  [ROLE.admin]: [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.maKichHoat, CAP.thongTinHocSinh],
+  [ROLE.admin]: [CAP.xuatDuLieu, CAP.danhSachVanHanh, CAP.dongBoDanhBa, CAP.duyetDon, CAP.danhMuc, CAP.xoaDanhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.maKichHoat, CAP.thongTinHocSinh],
   [ROLE.giaovu]: [CAP.danhMuc, CAP.baoCao, CAP.traCuuHoTro, CAP.danhSachVanHanh],
   [ROLE.parent]: [],
 };

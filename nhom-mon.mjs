@@ -79,6 +79,17 @@ export function clbTheoNhom(ten, clubs = []) {
 }
 
 /**
+ * CLB thuộc nhóm này nhưng ghi lệch chính tả so với tên chuẩn — cần ghi lại.
+ *
+ * Danh mục gom theo khoá đã bỏ dấu, còn cổng phụ huynh dựng nút lọc bằng CHUỖI
+ * NGUYÊN VĂN. Nên một CLB ghi "THỂ THAO" cạnh một CLB ghi "Thể thao" hiện ra ở màn
+ * quản trị là MỘT nhóm, nhưng phía phụ huynh là HAI nút lọc gần giống hệt nhau.
+ */
+export function clbLechChinhTa(ten, clubs = []) {
+  return clbTheoNhom(ten, clubs).filter((club) => club.category !== ten);
+}
+
+/**
  * Kế hoạch đổi tên một nhóm môn.
  *
  * Ba tình huống khác hẳn nhau, nên trả về kiểu rõ ràng chứ không chỉ true/false:
@@ -92,20 +103,37 @@ export function lapKeHoachDoiTen({ nhom, tenMoi, clubs = [], danhSach = [], choP
   if (!nhom) throw invalid("NHOM_NOT_FOUND", "Không tìm thấy nhóm môn cần sửa.", "id");
   const ten = chuanHoaTenNhom(tenMoi);
   const trung = timNhomTrung(ten, danhSach, { boQuaId: nhom.id });
-  const clbPhaiDoi = clbTheoNhom(nhom.name, clubs).map((club) => club.id);
+  const tenDich = trung ? trung.name : ten;
+
+  // Mọi CLB sẽ mang tên đích: CLB của nhóm nguồn, CỘNG cả CLB đang thuộc nhóm đích mà
+  // ghi lệch chính tả. Bỏ qua CLB đã ghi đúng y hệt chuỗi đích — ghi lại cũng vô ích.
+  const clubIds = [...new Set([
+    ...clbTheoNhom(nhom.name, clubs).map((club) => club.id),
+    ...clbLechChinhTa(tenDich, clubs).map((club) => club.id),
+  ])].filter((id) => clubs.find((club) => club.id === id)?.category !== tenDich);
+  const soClbChuyen = clbTheoNhom(nhom.name, clubs).length;
 
   if (trung) {
     if (!choPhepGop) {
+      const them = trung.id ? "" : " Nhóm này chưa khai báo: nó đang nằm trong dữ liệu CLB.";
+      const an = trung.active === false ? " LƯU Ý: nhóm đích đang ẩn." : "";
       throw invalid("NHOM_CAN_XAC_NHAN_GOP",
-        `Nhóm môn “${trung.name}” đã có. Đổi sang tên này là GỘP hai nhóm: ${clbPhaiDoi.length} CLB của “${nhom.name}” sẽ chuyển sang “${trung.name}”. Việc này không tự hoàn lại được.`,
+        `Nhóm môn “${trung.name}” đã có. Đổi sang tên này là GỘP hai nhóm: ${soClbChuyen} CLB của “${nhom.name}” sẽ chuyển sang “${trung.name}”. Việc này không tự hoàn lại được.${them}${an}`,
         "name");
     }
-    return { kieu: "gop", tenCu: nhom.name, tenMoi: trung.name, gopVaoId: trung.id, clubIds: clbPhaiDoi };
+    // gopVaoId rỗng nghĩa là nhóm đích CHƯA khai báo: không có dòng danh mục nào để
+    // xoá, chỉ đổi tên chính nhóm nguồn rồi hút các CLB kia vào.
+    return { kieu: "gop", tenCu: nhom.name, tenMoi: trung.name, gopVaoId: trung.id || null, clubIds, soClbChuyen };
   }
 
-  if (nhom.name === ten) return { kieu: "khong-doi", tenCu: nhom.name, tenMoi: ten, gopVaoId: null, clubIds: [] };
+  if (nhom.name === ten) {
+    // Tên không đổi nhưng vẫn có CLB ghi lệch dấu/hoa thường: bấm Lưu phải chuẩn hoá
+    // chúng, nếu không thì người dùng không có cách nào sửa ngoài việc gõ bừa một
+    // cách viết khác rồi gõ lại — gần như không ai đoán ra.
+    return { kieu: clubIds.length ? "chuan-hoa" : "khong-doi", tenCu: nhom.name, tenMoi: ten, gopVaoId: null, clubIds, soClbChuyen };
+  }
   const kieu = khoaNhom(nhom.name) === khoaNhom(ten) ? "sua-chinh-ta" : "doi-ten";
-  return { kieu, tenCu: nhom.name, tenMoi: ten, gopVaoId: null, clubIds: clbPhaiDoi };
+  return { kieu, tenCu: nhom.name, tenMoi: ten, gopVaoId: null, clubIds, soClbChuyen };
 }
 
 /**

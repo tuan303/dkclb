@@ -30,7 +30,7 @@ import {
 } from "./xep-lop-import.mjs";
 import { MAX_ACCOUNT_IMPORT_ROWS, analyzeSchoolAccountImport } from "./school-account-import.mjs";
 import {
-  clbTheoNhom, docYeuCauNhom, ghepDanhMucNhom, khoaNhom, kiemTrungKhiTao,
+  clbLechChinhTa, clbTheoNhom, docYeuCauNhom, ghepDanhMucNhom, khoaNhom, kiemTrungKhiTao,
   lapKeHoachDoiTen, lapKeHoachXoa, nhomTuClubs,
 } from "./nhom-mon.mjs";
 import { taoBieuMau } from "./bieu-mau.mjs";
@@ -1959,33 +1959,61 @@ async function luuNhomMonRecord({ actorUserId, nhomId, input }) {
   const timestamp = nowIso();
 
   if (!existing) {
+    // Chỉ so với nhóm ĐÃ khai báo: khai báo một nhóm đang nằm sẵn trong dữ liệu CLB
+    // chính là việc mà nút "Khai báo" ở hàng "chưa khai báo" làm.
     kiemTrungKhiTao(data.name, danhSach);
+    // Và chuẩn hoá luôn các CLB cùng nhóm nhưng ghi lệch dấu/hoa thường, để sau lượt
+    // khai báo này cổng phụ huynh chỉ còn một nút lọc.
+    const canDoiChu = clbLechChinhTa(data.name, clubs).map((club) => club.id);
     const taoMoi = await ghiNhomMonVaoKho({
       id: id("nhom"), name: data.name, nameKey: khoaNhom(data.name), emoji: data.emoji,
-      sortOrder: data.sortOrder, active: data.active, clubIds: [], updatedAt: timestamp,
+      sortOrder: data.sortOrder, active: data.active, clubIds: canDoiChu, updatedAt: timestamp,
     });
-    await writeAudit({ actorUserId, action: "CREATE_CLUB_CATEGORY", entityType: "clubCategory", entityId: taoMoi.id, before: null, after: taoMoi });
-    return taoMoi;
+    await writeAudit({
+      actorUserId, action: "CREATE_CLUB_CATEGORY", entityType: "clubCategory", entityId: taoMoi.id,
+      before: null, after: { ...taoMoi, clubIds: canDoiChu },
+    });
+    return { ...taoMoi, soClbDaDoi: canDoiChu.length };
   }
 
   const keHoach = lapKeHoachDoiTen({
-    nhom: existing, tenMoi: data.name, clubs, danhSach, choPhepGop: input.gopNhom === true,
+    nhom: existing, tenMoi: data.name, clubs,
+    // Danh mục ĐÃ GHÉP: nhóm "chưa khai báo" cũng là một nhóm thật đang có CLB. So
+    // trùng mà bỏ qua chúng thì đổi tên sang tên của một nhóm như vậy sẽ hút CLB của
+    // nó vào mà không ai được hỏi — đúng cái mà cổng xác nhận gộp sinh ra để chặn.
+    danhSach: ghepDanhMucNhom(danhSach, clubs),
+    choPhepGop: input.gopNhom === true,
   });
-  const dich = keHoach.kieu === "gop" ? danhSach.find((item) => item.id === keHoach.gopVaoId) : existing;
+  // Gộp vào một nhóm chưa khai báo thì không có dòng danh mục nào để ghi đè hay xoá:
+  // chính nhóm đang sửa đổi tên, rồi hút các CLB kia vào.
+  const dich = keHoach.gopVaoId ? danhSach.find((item) => item.id === keHoach.gopVaoId) : existing;
+  const gopVaoDongKhac = keHoach.kieu === "gop" && Boolean(keHoach.gopVaoId);
   const daGhi = await ghiNhomMonVaoKho({
     id: dich.id,
     name: keHoach.tenMoi,
     nameKey: khoaNhom(keHoach.tenMoi),
-    emoji: data.emoji || dich.emoji || "",
-    sortOrder: keHoach.kieu === "gop" ? asInt(dich.sortOrder) : data.sortOrder,
-    active: keHoach.kieu === "gop" ? dich.active !== false : data.active,
+    // Ô trống phải xoá được emoji; `||` thì không bao giờ xoá nổi.
+    emoji: gopVaoDongKhac ? (dich.emoji || "") : (data.emoji ?? dich.emoji ?? ""),
+    sortOrder: gopVaoDongKhac ? asInt(dich.sortOrder) : data.sortOrder,
+    active: gopVaoDongKhac ? dich.active !== false : data.active,
     clubIds: keHoach.clubIds,
-    xoaId: keHoach.kieu === "gop" ? existing.id : null,
+    xoaId: gopVaoDongKhac ? existing.id : null,
     updatedAt: timestamp,
   });
   await writeAudit({
     actorUserId, action: keHoach.kieu === "gop" ? "MERGE_CLUB_CATEGORY" : "UPDATE_CLUB_CATEGORY",
-    entityType: "clubCategory", entityId: daGhi.id, before: existing, after: { ...daGhi, soClbDaDoi: keHoach.clubIds.length },
+    entityType: "clubCategory", entityId: daGhi.id, before: existing,
+    // Ghi CẢ danh sách CLB đã đổi, không chỉ con số: đổi tên nhóm là sửa dữ liệu hàng
+    // loạt, hôm sau phát hiện sai thì "những CLB nào, trước đó mang chữ gì" phải trả
+    // lời được từ nhật ký.
+    after: {
+      ...daGhi, kieu: keHoach.kieu, tenCu: keHoach.tenCu,
+      soClbDaDoi: keHoach.clubIds.length,
+      clubs: keHoach.clubIds.map((clubId) => {
+        const club = clubs.find((item) => item.id === clubId);
+        return { id: clubId, name: club?.name || "", nhomCu: club?.category || "" };
+      }),
+    },
   });
   return { ...daGhi, kieu: keHoach.kieu, soClbDaDoi: keHoach.clubIds.length };
 }
@@ -3004,7 +3032,9 @@ async function handleApi(req, res, url) {
     ]);
     // Thứ tự nhóm môn đã khai báo đi kèm luôn, để hàng nút lọc ở cổng phụ huynh xếp
     // theo đúng thứ tự nhà trường đặt chứ không phải theo bảng chữ cái.
-    const nhomMon = danhSachNhom.map((nhom) => ({ name: nhom.name, sortOrder: nhom.sortOrder }));
+    const nhomMon = danhSachNhom
+      .filter((nhom) => nhom.active !== false)
+      .map((nhom) => ({ name: nhom.name, sortOrder: nhom.sortOrder }));
     return sendJson(res, 200, {
       clubs: user.role === "parent" ? danhSach.map(choPhuHuynhXem) : danhSach,
       period: publicPeriod(active), nhomMon,
@@ -3671,7 +3701,10 @@ const groupId = maTheoNgay("GR");
   if (method === "GET" && url.pathname === "/api/admin/catalog") {
     await requireSchoolUser(req, CAP.danhMuc);
     const [catalog, periods, active, danhSachNhom] = await Promise.all([
-      adminCatalogData(), listPeriodRows(), getActivePeriod(), listNhomMonRows(),
+      adminCatalogData(), listPeriodRows(), getActivePeriod(),
+      // .catch như /api/clubs: route này dựng TOÀN BỘ giao diện nhà trường, nền
+      // kế thừa thiếu bảng danh mục thì chỉ được mất danh mục, không được mất màn hình.
+      listNhomMonRows().catch(() => []),
     ]);
     // Form tạo/sửa CLB cần danh mục nhóm môn ngay trong lượt tải này, nếu không ô
     // "Nhóm môn" sẽ rỗng cho tới khi người dùng ghé qua màn Khai báo.
@@ -3682,10 +3715,12 @@ const groupId = maTheoNgay("GR");
   if (method === "GET" && url.pathname === "/api/admin/nhom-mon") {
     const user = await requireSchoolUser(req, CAP.danhMuc);
     // Nạp lần đầu ngay trong lượt xem: màn Khai báo mở ra phải thấy đúng các nhóm
-    // mà cổng phụ huynh đang lọc, chứ không phải một danh mục trống.
-    await napNhomMonLanDau({ actorUserId: user.id });
-    const { nhomMon, clubs } = await danhMucNhomMon();
-    return sendJson(res, 200, { nhomMon, clubs });
+    // mà cổng phụ huynh đang lọc, chứ không phải một danh mục trống. Đi qua hàng đợi
+    // ghi để hai người cùng mở màn không chen nhau giữa lượt kiểm "còn rỗng không"
+    // và lượt chèn.
+    await ghiLienHeTuanTu(() => napNhomMonLanDau({ actorUserId: user.id }));
+    const { nhomMon } = await danhMucNhomMon();
+    return sendJson(res, 200, { nhomMon });
   }
 
   if (method === "POST" && url.pathname === "/api/admin/nhom-mon") {
@@ -3721,7 +3756,7 @@ const groupId = maTheoNgay("GR");
   }
 
   if (method === "DELETE" && clubMatch) {
-    const user = await requireSchoolUser(req, CAP.danhMuc);
+    const user = await requireSchoolUser(req, CAP.xoaDanhMuc);
     const daXoa = await xoaClbRecord({ actorUserId: user.id, clubId: decodeURIComponent(clubMatch[1]) });
     return sendJson(res, 200, { daXoa });
   }

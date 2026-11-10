@@ -28,6 +28,7 @@ test("mỗi mục điều hướng quản trị gắn với một quyền", () =
   for (const [id, capability] of [
     ["dashboard", "bao-cao"],
     ["campaigns", "danh-muc"],
+    ["khaiBao", "danh-muc"],
     ["classes", "danh-muc"],
     ["applications", "duyet-don"],
     ["rosters", "danh-sach-van-hanh"],
